@@ -73,6 +73,7 @@ def model_info(registry: Registry, spec: ModelSpec, allowed_regions: list[str]) 
         "price_in": spec.price_in, "price_out": spec.price_out, "data_region": spec.data_region,
         "verified": spec.verified, "notes": spec.notes, "available": status.available, "reason": status.reason,
         "demo": spec.provider == "fake",
+        "key_hint": config.key_hint(spec.key_env) if spec.key_env else "",
     }
 
 

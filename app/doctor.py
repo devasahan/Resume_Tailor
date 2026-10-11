@@ -86,10 +86,14 @@ def check_models() -> list[Check]:
         registry = Registry.load()
     except Exception as exc:
         return [Check("Model list (models.yaml)", False, f"{type(exc).__name__}: {exc}", "Fix models.yaml, or restore it from the project")]
-    ready = [s.label for s in registry.all() if s.provider != "fake" and s.has_key()]
+    from . import config
+
+    ready = [s for s in registry.all() if s.provider != "fake" and s.has_key()]
     checks = [Check("Model list (models.yaml)", True, f"{len(registry.all())} models listed")]
     if ready:
-        checks.append(Check("API keys", True, "ready: " + ", ".join(ready)))
+        names = sorted({s.key_env for s in ready})
+        detail = "; ".join(f"{n} = {config.key_hint(n)}" for n in names)
+        checks.append(Check("API keys", True, f"{detail} -> ready: " + ", ".join(s.label for s in ready)))
     else:
         checks.append(Check(
             "API keys", False, "none found, so the app starts in demo mode (offline demo models only)",

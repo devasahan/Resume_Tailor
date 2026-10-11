@@ -70,7 +70,7 @@ async function init() {
     el('td', {}, x.label, x.notes ? el('div', { class: 'small muted', text: x.notes }) : null),
     el('td', { text: x.provider }), el('td', { text: x.model }),
     el('td', { text: x.demo ? 'free' : `${x.price_in} / ${x.price_out}` }), el('td', { text: x.data_region }),
-    el('td', {}, x.available ? chip('ready', 'ok') : chip('off', 'warn'), x.verified ? null : chip('unverified'), x.available ? null : el('div', { class: 'small muted', text: x.reason })))));
+    el('td', {}, x.available ? chip('ready', 'ok') : chip('off', 'warn'), x.verified ? null : chip('unverified'), x.available ? null : el('div', { class: 'small muted', text: x.reason }), x.key_hint ? el('div', { class: 'small muted', text: 'key ' + x.key_hint }) : null))));
   const st = s.settings;
   modelOptions(field('resume_model'), st.resume_model, `Automatic (${s.resolved.resume || 'none available'})`);
   modelOptions(field('cover_letter_model'), st.cover_letter_model, 'Same as the resume model');

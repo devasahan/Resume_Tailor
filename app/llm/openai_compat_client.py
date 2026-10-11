@@ -12,6 +12,8 @@ import json
 
 import httpx
 
+from .. import config
+
 from .base import (
     InvalidOutputError,
     LLMClient,
@@ -126,7 +128,11 @@ class OpenAICompatClient(LLMClient):
                 break
         assert resp is not None
         if resp.status_code >= 400:
-            raise ProviderError(f"{self.spec.label}: HTTP {resp.status_code}: {resp.text[:300]}", resp.status_code)
+            hint = ""
+            if resp.status_code in (401, 403):
+                hint = (f" -> The API key was rejected. In use: {config.key_hint(self.spec.key_env) or 'none'}. "
+                        "Put a valid key in .env and restart.")
+            raise ProviderError(f"{self.spec.label}: HTTP {resp.status_code}: {resp.text[:300]}{hint}", resp.status_code)
         return self._parse(resp)
 
     # ------------------------------------------------------------------ response parsing

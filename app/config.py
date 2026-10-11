@@ -7,19 +7,38 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 
 
+FROM_DOTENV: set[str] = set()  # variable names whose value came from .env
+
+
 def load_dotenv(path: Path | None = None) -> None:
-    """Read KEY=VALUE lines from .env into os.environ without overriding real env vars."""
+    """Read KEY=VALUE lines from .env into os.environ.
+
+    A non-empty value in .env wins over a variable inherited from the system (for example an old
+    ANTHROPIC_API_KEY set in Windows settings): the README tells people to edit .env, so that is
+    what has to take effect. Empty values in .env are ignored.
+    """
     path = path or ROOT / ".env"
     if not path.exists():
         return
-    for raw in path.read_text(encoding="utf-8").splitlines():
+    for raw in path.read_text(encoding="utf-8-sig").splitlines():  # utf-8-sig: Notepad may add a BOM
         line = raw.strip()
         if not line or line.startswith("#") or "=" not in line:
             continue
         key, _, value = line.partition("=")
-        key, value = key.strip(), value.strip().strip('"').strip("'")
+        key, value = key.strip(), value.strip().strip('"').strip("'").strip()
         if key and value:
-            os.environ.setdefault(key, value)
+            os.environ[key] = value
+            FROM_DOTENV.add(key)
+
+
+def key_hint(name: str) -> str:
+    """Safe description of a secret: its prefix, last 4 characters and where it came from."""
+    value = os.environ.get(name, "")
+    if not value:
+        return ""
+    prefix = "-".join(value.split("-")[:3]) if value.count("-") >= 2 else value[:4]
+    source = ".env" if name in FROM_DOTENV else "system environment variable"
+    return f"{prefix}-...{value[-4:]} (from {source})"
 
 
 load_dotenv()

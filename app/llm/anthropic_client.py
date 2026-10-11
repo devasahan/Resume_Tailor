@@ -5,6 +5,8 @@ import json
 
 import anthropic
 
+from .. import config
+
 from .base import (
     InvalidOutputError,
     LLMClient,
@@ -74,7 +76,11 @@ class AnthropicClient(LLMClient):
                     raise
                 resp = await self._create(params, False)
         except anthropic.APIStatusError as exc:
-            raise ProviderError(f"Anthropic API error {exc.status_code}: {exc.message}", exc.status_code) from exc
+            hint = ""
+            if exc.status_code in (401, 403):
+                hint = (f" -> The API key was rejected. In use: {config.key_hint(self.spec.key_env) or 'none'}. "
+                        "Put a valid key in .env and restart.")
+            raise ProviderError(f"Anthropic API error {exc.status_code}: {exc.message}{hint}", exc.status_code) from exc
         except anthropic.APIConnectionError as exc:
             raise ProviderError(f"Anthropic connection error: {exc}") from exc
 

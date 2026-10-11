@@ -117,3 +117,22 @@ def test_relative_data_dir_is_resolved_inside_the_project(monkeypatch, tmp_path)
         assert folder == config.ROOT / "data_dir_test_tmp" and folder.is_dir()
     finally:
         folder.rmdir()
+
+
+def test_dotenv_wins_over_inherited_variables_and_hint_is_masked(tmp_path, monkeypatch):
+    from app import config
+
+    monkeypatch.setenv("ZZ_TEST_KEY", "sk-ant-api03-OLDOLDOLD-old1")
+    env = tmp_path / ".env"
+    env.write_text("\ufeffZZ_TEST_KEY = 'sk-ant-api03-NEWNEWNEW-new9'\nZZ_EMPTY=\n# comment\n", encoding="utf-8")
+    config.load_dotenv(env)
+    try:
+        assert os.environ["ZZ_TEST_KEY"] == "sk-ant-api03-NEWNEWNEW-new9"
+        assert "ZZ_EMPTY" not in os.environ
+        hint = config.key_hint("ZZ_TEST_KEY")
+        assert hint == "sk-ant-api03-...new9 (from .env)" and "NEWNEWNEW" not in hint
+    finally:
+        config.FROM_DOTENV.discard("ZZ_TEST_KEY")
+    monkeypatch.setenv("ZZ_OTHER", "abcdefgh1234")
+    assert config.key_hint("ZZ_OTHER") == "abcd-...1234 (from system environment variable)"
+    assert config.key_hint("ZZ_MISSING") == ""

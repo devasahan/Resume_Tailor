@@ -41,6 +41,8 @@ def server():
         body = await request.json()
         beta_header = request.headers.get("anthropic-beta", "")
         seen.append({"body": body, "beta": beta_header, "key": request.headers.get("x-api-key"), "query": str(request.url.query)})
+        if behaviour.get("auth_fail"):
+            return JSONResponse({"type": "error", "error": {"type": "authentication_error", "message": "invalid x-api-key"}}, status_code=401)
         if FALLBACK_BETA in beta_header and behaviour["beta_status"] != 200:
             return JSONResponse(
                 {"type": "error", "error": {"type": "invalid_request_error", "message": "fallbacks is not available"}},
@@ -117,3 +119,14 @@ def test_real_connection_error_becomes_provider_error():
     sdk = anthropic.AsyncAnthropic(api_key="k", base_url="http://127.0.0.1:9", max_retries=0, timeout=2)
     with pytest.raises(ProviderError, match="connection"):
         call(AnthropicClient(spec, client=sdk))
+
+
+
+def test_rejected_key_message_says_what_to_do_without_leaking_the_key(server, monkeypatch):
+    server["behaviour"]["auth_fail"] = True
+    monkeypatch.setenv("X", "sk-ant-api03-SECRETSECRET-abcd")
+    with pytest.raises(ProviderError) as info:
+        call(make_client(server))
+    message = str(info.value)
+    assert info.value.status == 401 and "rejected" in message and ".env" in message
+    assert "sk-ant-api03-...abcd" in message and "SECRETSECRET" not in message
