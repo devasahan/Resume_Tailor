@@ -117,6 +117,7 @@ def test_history_and_costs(client):
     runs = client.get("/api/runs").json()
     assert len(runs["runs"]) == 2
     assert {r["requested_model"] for r in runs["runs"]} == {"demo-concise", "demo-detailed"}
+    assert {r["task"] for r in runs["runs"]} == {"resume"}
 
 
 def test_unavailable_model_is_rejected(client):
@@ -175,3 +176,19 @@ def test_models_endpoint_never_leaks_keys(client, monkeypatch):
     assert "sk-ant-very-secret" not in body
     models = {m["id"]: m for m in client.get("/api/models").json()["models"]}
     assert models["claude-sonnet-5-5"]["available"] is True and models["deepseek-v4-flash"]["available"] is False
+
+
+def test_security_headers_on_pages_but_not_on_pdfs(client):
+    page = client.get("/tailor")
+    assert page.headers["x-content-type-options"] == "nosniff" and page.headers["x-frame-options"] == "SAMEORIGIN"
+    assert "default-src 'self'" in page.headers["content-security-policy"] and "object-src 'none'" in page.headers["content-security-policy"]
+    save_profile(client)
+    run_id = tailor(client).json()["run_id"]
+    pdf = client.get(f"/api/runs/{run_id}/resume.pdf")
+    assert "content-security-policy" not in pdf.headers and pdf.headers["x-content-type-options"] == "nosniff"
+
+
+def test_cross_site_style_requests_cannot_use_a_non_json_content_type(client):
+    save_profile(client)
+    r = client.post("/api/tailor", content='{"jd": "x", "model": "demo-concise"}', headers={"content-type": "text/plain"})
+    assert r.status_code == 422

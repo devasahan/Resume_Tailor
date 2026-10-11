@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import json
 import sqlite3
+import os
 from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -49,6 +50,10 @@ class Database:
         self.path = path or (config.data_dir() / "resume_tailor.db")
         with self._conn() as conn:
             conn.executescript(SCHEMA)
+        try:
+            os.chmod(self.path, 0o600)  # profiles and resumes are personal data
+        except OSError:
+            pass
 
     @contextmanager
     def _conn(self):
@@ -134,7 +139,7 @@ class Database:
     def list_runs(self, limit: int = 100) -> list[dict]:
         with self._conn() as conn:
             rows = conn.execute(
-                "SELECT id, created_at, requested_model, served_model, status, cost_usd, input_tokens,"
+                "SELECT id, created_at, task, requested_model, served_model, status, cost_usd, input_tokens,"
                 " output_tokens, latency_ms, result FROM runs ORDER BY id DESC LIMIT ?",
                 (limit,),
             ).fetchall()

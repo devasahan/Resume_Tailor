@@ -25,6 +25,7 @@ def test_demo_run_is_ok_one_page_and_keeps_fixed_facts(router, db, profile, jd):
     assert result.analysis.target_role.startswith("Senior Data Engineer")
     assert result.run_id and db.get_run(result.run_id).resume.headline == result.resume.headline
     assert result.coverage.score > 0.5 and result.prompt_version
+    assert result.attempts == 1 and result.retries == 0
 
 
 def test_titles_form_a_career_path(router, db, profile, jd):
@@ -41,7 +42,7 @@ def test_long_text_is_brought_to_one_page(router, db, profile, jd):
 
 def test_invalid_output_is_retried_with_feedback(router, db, profile, jd):
     result = tailor(router, db, profile, jd, model="demo-flaky")
-    assert result.status == "ok" and result.attempts == 2
+    assert result.status == "ok" and result.attempts == 2 and result.retries == 1
 
 
 class Boom(LLMClient):
@@ -104,3 +105,21 @@ def test_compare_runs_models_side_by_side_without_fallback(router, db, profile, 
     assert [r.requested_model for r in results] == ["demo-concise", "demo-detailed", "demo-flaky"]
     assert all(r.status == "ok" for r in results)
     assert results[0].resume.experience[0].bullets != results[1].resume.experience[0].bullets
+
+
+class Silent(LLMClient):
+    """A provider that does not report token usage."""
+
+    def __init__(self, inner):
+        self.inner = inner
+
+    async def generate_structured(self, **kwargs):
+        r = await self.inner.generate_structured(**kwargs)
+        return LLMResult(data=r.data, usage=Usage(0, 0), served_model="x", raw_text=r.raw_text)
+
+
+def test_missing_usage_is_called_out_instead_of_showing_zero_cost(router, db, registry, profile, jd, monkeypatch):
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "k")
+    router.overrides["claude-sonnet-5-5"] = Silent(FakeClient(registry.get("demo-concise")))
+    result = tailor(router, db, profile, jd, model="claude-sonnet-5-5")
+    assert result.status == "ok" and any("did not report token usage" in n for n in result.notes)

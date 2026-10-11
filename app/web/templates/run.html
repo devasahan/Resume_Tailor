@@ -17,7 +17,7 @@
     <div class="panel hidden" id="cover-panel"></div>
     <div class="panel"><h2>Check before sending</h2><div id="flags"></div></div>
   </div>
-  <div><iframe class="pdf" id="pdf" title="Resume preview"></iframe></div>
+  <div class="sticky"><iframe class="pdf" id="pdf" title="Resume preview"></iframe></div>
 </div>
 {% endblock %}
 {% block scripts %}
@@ -31,8 +31,8 @@ function buildEditor() {
   const r = run.resume, p = r.profile;
   const headline = el('input', { type: 'text', value: r.headline });
   const summary = textArea(r.summary, 3);
-  skillRows = r.skills.map(g => ({ cat: el('input', { type: 'text', value: g.category }), items: textArea(g.items.join(', '), 2) }));
-  const skillBox = el('div', {}, skillRows.map(row => el('div', { class: 'repeat' }, el('label', {}, 'Skill group'), row.cat, el('label', {}, 'Items, comma separated'), row.items)));
+  skillRows = r.skills.map(g => ({ cat: el('input', { type: 'text', value: g.category }), list: textArea(g.skills.join(', '), 2) }));
+  const skillBox = el('div', {}, skillRows.map(row => el('div', { class: 'repeat' }, el('label', {}, 'Skill group'), row.cat, el('label', {}, 'Skills, comma separated'), row.list)));
   const jobs = r.experience.map(e => {
     const c = p.companies[e.company_index];
     const title = el('input', { type: 'text', value: e.job_title });
@@ -45,7 +45,7 @@ function buildEditor() {
     el('h3', {}, 'Skills'), skillBox, el('h3', {}, 'Experience'), ...jobs.map(j => j.node));
   buildEditor.collect = () => ({
     headline: headline.value, summary: summary.value,
-    skills: skillRows.map(row => ({ category: row.cat.value, items: row.items.value.split(',').map(s => s.trim()).filter(Boolean) })),
+    skills: skillRows.map(row => ({ category: row.cat.value, skills: row.list.value.split(',').map(s => s.trim()).filter(Boolean) })),
     experience: jobs.map(j => ({ company_index: j.index, job_title: j.title.value, bullets: j.bullets.value.split('\n').map(s => s.trim()).filter(Boolean) })),
     ...(run.cover_letter ? buildCover.collect() : {}),
   });
@@ -82,7 +82,7 @@ function showMeta() {
   $('#flags').replaceChildren(
     verify.length ? el('p', { class: 'small' }, 'Numbers and claims you did not provide. Remove or confirm each one:') : el('p', { class: 'small muted' }, 'No unverified numbers.'),
     ...verify.map(row), info.length ? el('h3', {}, 'Suggestions to confirm') : null, ...info.map(row));
-  $('#pdf').src = `/api/runs/${RUN_ID}/resume.pdf?t=${Date.now()}`;
+  $('#pdf').src = `/api/runs/${RUN_ID}/resume.pdf?t=${Date.now()}#toolbar=0&navpanes=0&view=FitH`;
 }
 
 async function load() {

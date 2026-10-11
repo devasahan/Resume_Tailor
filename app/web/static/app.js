@@ -18,6 +18,12 @@ function el(tag, attrs = {}, ...children) {
   return node;
 }
 
+// replaceChildren() turns null/false into the text "null"/"false". Drop them, and allow arrays, so conditional children are safe.
+const _replaceChildren = Element.prototype.replaceChildren;
+Element.prototype.replaceChildren = function (...nodes) {
+  return _replaceChildren.apply(this, nodes.flat().filter(n => n !== null && n !== undefined && n !== false));
+};
+
 function adminHeaders() {
   const token = sessionStorage.getItem('adminToken');
   return token ? { 'X-Admin-Token': token } : {};

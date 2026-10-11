@@ -59,7 +59,7 @@ class JDAnalysis(BaseModel):
 
 class SkillGroup(BaseModel):
     category: str
-    items: list[str]
+    skills: list[str]  # not called `items`: that is a JSON Schema keyword and confuses some providers
 
 
 class ExperienceOut(BaseModel):
@@ -149,7 +149,8 @@ class TailorResult(BaseModel):
     output_tokens: int = 0
     cost_usd: float = 0.0
     latency_ms: int = 0
-    attempts: int = 1
+    attempts: int = 1  # model calls made in total (resume + cover letter + any retries)
+    retries: int = 0  # times a model was asked again because its answer was unusable
     fallback_chain: list[str] = Field(default_factory=list)  # models tried, in order
     prompt_version: str = ""
     hints: str = ""  # the user's own facts, kept so claim checks can be re-run after manual edits

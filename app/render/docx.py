@@ -88,7 +88,7 @@ def resume_docx(resume: Resume, style: FitStyle) -> bytes:
         para = doc.add_paragraph()
         para.paragraph_format.space_after = Pt(1)
         para.add_run(f"{group.category}: ").bold = True
-        para.add_run(", ".join(group.items))
+        para.add_run(", ".join(group.skills))
 
     _heading(doc, "EXPERIENCE", style.font_pt)
     for exp in resume.experience:

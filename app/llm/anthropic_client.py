@@ -66,12 +66,13 @@ class AnthropicClient(LLMClient):
         try:
             try:
                 resp = await self._create(params, use_fallback)
-            except anthropic.BadRequestError as exc:
-                # If the fallback feature itself is what the API objected to, retry without it.
-                if use_fallback and "fallback" in str(exc).lower():
-                    resp = await self._create(params, False)
-                else:
+            except anthropic.BadRequestError:
+                # The optional fallback feature may be what the API objected to (unsupported on this
+                # account or platform). A rejected request is never billed, so retry without it: if the
+                # request itself is wrong, the plain call raises the real error.
+                if not use_fallback:
                     raise
+                resp = await self._create(params, False)
         except anthropic.APIStatusError as exc:
             raise ProviderError(f"Anthropic API error {exc.status_code}: {exc.message}", exc.status_code) from exc
         except anthropic.APIConnectionError as exc:
@@ -82,7 +83,7 @@ class AnthropicClient(LLMClient):
             category = getattr(details, "category", None)
             raise RefusedError(f"Claude declined the request{f' ({category})' if category else ''}")
         if resp.stop_reason == "max_tokens":
-            raise TruncatedError("Claude hit the max_tokens limit before finishing the JSON")
+            raise TruncatedError("Claude hit the max_tokens limit before finishing the JSON (raise max_output_tokens in models.yaml)")
 
         text = next((b.text for b in resp.content if b.type == "text"), "")
         try:

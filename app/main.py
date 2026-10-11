@@ -17,7 +17,7 @@ from . import config
 from .llm.base import LLMError
 from .llm.registry import ModelSpec, Registry
 from .llm.router import Router
-from .parsing.resume_parser import extract_text, parse_resume, profile_warnings
+from .parsing.resume_parser import MAX_BYTES, extract_text, parse_resume, profile_warnings
 from .pipeline import validate
 from .pipeline.tailor import analysis_terms, fit_report, run_checks, run_tailor
 from .render.docx import cover_docx, resume_docx
@@ -118,6 +118,20 @@ def create_app(db: Database | None = None, registry: Registry | None = None, rou
 
     app = FastAPI(title="Resume Tailor")
     app.state.db, app.state.registry, app.state.router = db, registry, router
+    @app.middleware("http")
+    async def security_headers(request: Request, call_next):
+        response = await call_next(request)
+        response.headers.setdefault("X-Content-Type-Options", "nosniff")
+        response.headers.setdefault("Referrer-Policy", "no-referrer")
+        if response.headers.get("content-type", "").startswith("text/html"):
+            response.headers.setdefault("X-Frame-Options", "SAMEORIGIN")
+            response.headers.setdefault(
+                "Content-Security-Policy",
+                "default-src 'self'; img-src 'self' data:; style-src 'self' 'unsafe-inline'; "
+                "script-src 'self' 'unsafe-inline'; frame-src 'self'; object-src 'none'; base-uri 'none'; form-action 'self'",
+            )
+        return response
+
     app.mount("/static", StaticFiles(directory=WEB / "static"), name="static")
     templates = Jinja2Templates(directory=WEB / "templates")
 
@@ -202,7 +216,7 @@ def create_app(db: Database | None = None, registry: Registry | None = None, rou
     # ------------------------------------------------------------------ profile
     @app.post("/api/profile/parse")
     async def api_parse(file: UploadFile = File(...), model: str = Form("")):
-        data = await file.read()
+        data = await file.read(MAX_BYTES + 1)  # never buffer more than the limit
         try:
             text = extract_text(data, file.filename or "")
         except ValueError as exc:

@@ -16,7 +16,10 @@
 #                  refusal_fallback  (anthropic) retry a safety-declined request on Anthropic's default fallback model
 #                  reasoning_effort  (openai_compat) low | medium | high, sent only if the provider accepts it
 #                  json_mode         (openai_compat) json_schema | json_object | none
-#                  max_output_tokens cap on generated tokens per call
+#                  max_tokens_param  (openai_compat) name of the token-limit field: max_tokens (default) or
+#                                    max_completion_tokens for providers that reject the older name
+#                  max_output_tokens cap on generated tokens per call. Reasoning tokens count against it,
+#                                    so keep it generous (16000) or thinking models can run out before the JSON ends
 #
 # Prices and model strings below were collected in October 2026 from third-party
 # sites unless verified: true. Vendors change both often, so confirm before relying on them.
@@ -31,7 +34,7 @@ models:
     price_out: 10.00
     data_region: US
     verified: true
-    settings: {effort: medium, refusal_fallback: true, max_output_tokens: 8000}
+    settings: {effort: medium, refusal_fallback: true, max_output_tokens: 16000}
     notes: Quality baseline. Structured output via output_config.format; thinking cannot be disabled on this model.
 
   - id: gemini-3.8-flash
@@ -44,7 +47,7 @@ models:
     price_out: 3.75
     data_region: US
     verified: false
-    settings: {reasoning_effort: low, json_mode: json_schema, max_output_tokens: 8000}
+    settings: {reasoning_effort: low, json_mode: json_schema, max_output_tokens: 16000}
     notes: Introductory price reportedly ends 2026-12-31. Use a paid key, free-tier data may be used to improve Google models.
 
   - id: gemini-3.5-flash-lite
@@ -57,7 +60,7 @@ models:
     price_out: 2.50
     data_region: US
     verified: false
-    settings: {reasoning_effort: low, json_mode: json_schema, max_output_tokens: 8000}
+    settings: {reasoning_effort: low, json_mode: json_schema, max_output_tokens: 16000}
     notes: Cheap model, good for parsing the uploaded base resume.
 
   - id: grok-4.3
@@ -70,7 +73,7 @@ models:
     price_out: 2.50
     data_region: US
     verified: false
-    settings: {reasoning_effort: low, json_mode: json_schema, max_output_tokens: 8000}
+    settings: {reasoning_effort: low, json_mode: json_schema, max_output_tokens: 16000}
     notes: xAI keeps API data 30 days by default (zero-data-retention is an enterprise option).
 
   - id: grok-4.7
@@ -83,7 +86,7 @@ models:
     price_out: 6.00
     data_region: US
     verified: false
-    settings: {reasoning_effort: low, json_mode: json_schema, max_output_tokens: 8000}
+    settings: {reasoning_effort: low, json_mode: json_schema, max_output_tokens: 16000}
     notes: Verbose model, cap output tokens to control cost.
 
   - id: mistral-large
@@ -96,7 +99,7 @@ models:
     price_out: 1.50
     data_region: EU
     verified: false
-    settings: {json_mode: json_schema, max_output_tokens: 8000}
+    settings: {json_mode: json_schema, max_output_tokens: 16000}
     notes: Sources disagree on the price (older guides list 2.00 / 6.00).
 
   - id: deepseek-v4-flash
@@ -109,7 +112,7 @@ models:
     price_out: 1.20
     data_region: CN
     verified: false
-    settings: {json_mode: json_object, max_output_tokens: 8000}
+    settings: {json_mode: json_object, max_output_tokens: 16000}
     notes: Peak price shown, half price off-peak. Endpoint is hosted in China, check retention terms before sending resumes.
 
   - id: glm-5.3
@@ -122,7 +125,7 @@ models:
     price_out: 4.40
     data_region: UNKNOWN
     verified: false
-    settings: {json_mode: json_object, max_output_tokens: 8000}
+    settings: {json_mode: json_object, max_output_tokens: 16000}
     notes: Check where the endpoint is hosted before sending resumes.
 
   - id: qwen-3.8-max
@@ -135,7 +138,7 @@ models:
     price_out: 6.00
     data_region: SG
     verified: false
-    settings: {json_mode: json_object, max_output_tokens: 8000}
+    settings: {json_mode: json_object, max_output_tokens: 16000}
     notes: International (Singapore) endpoint. Exact model string is unconfirmed.
 
   - id: kimi-k2.6
@@ -148,7 +151,7 @@ models:
     price_out: 4.00
     data_region: UNKNOWN
     verified: false
-    settings: {json_mode: json_object, max_output_tokens: 8000}
+    settings: {json_mode: json_object, max_output_tokens: 16000}
     notes: Open weights, so a US/EU host (Together, Fireworks, DeepInfra) is an alternative if you add it here.
 
   # Offline demo models: no key, no network, no cost. They produce plausible but generic text

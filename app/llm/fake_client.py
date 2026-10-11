@@ -169,9 +169,9 @@ class FakeClient(LLMClient):
             experience.append({"company_index": index, "job_title": titles[index], "bullets": bullets})
 
         groups = [
-            {"category": "Core Skills", "items": k[:6]},
-            {"category": "Tools and Platforms", "items": k[6:12] or k[:3]},
-            {"category": "Ways of Working", "items": ["Cross-functional collaboration", "Clear documentation", "Continuous improvement"]},
+            {"category": "Core Skills", "skills": k[:6]},
+            {"category": "Tools and Platforms", "skills": k[6:12] or k[:3]},
+            {"category": "Ways of Working", "skills": ["Cross-functional collaboration", "Clear documentation", "Continuous improvement"]},
         ]
         return {
             "jd_analysis": {

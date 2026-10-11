@@ -1,0 +1,17 @@
+Senior Data Engineer
+
+About the role
+We are looking for a Senior Data Engineer to own the pipelines that move product and billing data into our analytics platform. You will work with analysts, product managers and finance stakeholders to turn messy source data into trusted datasets.
+
+What you will do
+- Design, build and operate batch and streaming ETL pipelines using Python, SQL, Airflow and Spark on AWS.
+- Model data in Snowflake and keep transformations tested and documented with dbt.
+- Improve data quality with monitoring, alerting and clear ownership.
+- Review code, mentor engineers and contribute to technical design discussions.
+- Work with stakeholders to define metrics and service levels.
+
+What we are looking for
+- 5+ years of experience in data engineering or backend engineering.
+- Strong SQL and Python, hands-on experience with Airflow and a cloud data warehouse.
+- Experience with CI/CD, Docker and infrastructure as code (Terraform) is a plus.
+- Clear written communication and a habit of documenting what you build.

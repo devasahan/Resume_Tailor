@@ -57,7 +57,9 @@ th { font-size: 12px; text-transform: uppercase; letter-spacing: .04em; color: v
 @media (max-width: 900px) { .two { grid-template-columns: 1fr; } }
 iframe.pdf { width: 100%; height: 820px; border: 1px solid var(--line); border-radius: 10px; background: #fff; }
 .models { columns: 2 260px; } .models label { font-weight: 400; margin: 2px 0; display: flex; gap: 8px; align-items: baseline; }
+.models label { break-inside: avoid; }
 .models input { width: auto; }
+.sticky { position: sticky; top: 12px; align-self: start; }
 .flag { font-size: 13px; padding: 6px 8px; border-left: 3px solid var(--line); margin: 4px 0; background: var(--bg); border-radius: 4px; }
 .flag.verify { border-color: var(--warn); } .flag q { color: var(--muted); }
 .hidden { display: none !important; }

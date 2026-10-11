@@ -205,3 +205,14 @@ def test_anthropic_refusal_truncation_and_bad_json():
         call(anthropic_client([message(stop="max_tokens")], []))
     with pytest.raises(InvalidOutputError):
         call(anthropic_client([message(text="not json")], []))
+
+
+def test_token_limit_field_name_is_configurable():
+    seen = []
+
+    def handler(request):
+        seen.append(json.loads(request.content))
+        return httpx.Response(200, json=ok_payload())
+
+    call(client_with(handler, json_mode="json_object", max_tokens_param="max_completion_tokens"))
+    assert seen[0]["max_completion_tokens"] == 500 and "max_tokens" not in seen[0]

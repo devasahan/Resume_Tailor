@@ -87,7 +87,7 @@ async function init() {
   modelList = models.models.filter(m => m.available);
   $('#parser').replaceChildren(
     el('option', { value: 'rules', text: 'Rules only (nothing is sent anywhere)' }),
-    ...modelList.map(m => el('option', { value: m.id, text: m.label + (m.demo ? ' (demo)' : ` - ${m.data_region}`) })));
+    ...modelList.map(m => el('option', { value: m.id, text: m.label + (m.demo ? '' : ` - ${m.data_region}`) })));
   $('#parser').addEventListener('change', parserNote);
   parserNote();
   if (saved.profile) {

@@ -10,7 +10,7 @@ def make_output(n=3, **overrides):
     sections = dict(
         headline="Senior Data Engineer | Python | SQL",
         summary="Senior Data Engineer with experience in Python and SQL.",
-        skills=[SkillGroup(category="Core", items=["Python", "SQL", "python"])],
+        skills=[SkillGroup(category="Core", skills=["Python", "SQL", "python"])],
         experience=[
             ExperienceOut(company_index=i, job_title=f"Engineer {i}", bullets=[f"• Built things {'abc'[i]}", "- Improved things"])
             for i in range(n)
@@ -29,7 +29,7 @@ def test_build_resume_keeps_fixed_fields_and_cleans_text(profile):
     resume = validate.build_resume(profile, make_output())
     assert resume.profile == profile
     assert resume.experience[0].bullets[0] == "Built things a"  # bullet glyph stripped
-    assert resume.skills[0].items == ["Python", "SQL"]  # duplicate removed, case-insensitive
+    assert resume.skills[0].skills == ["Python", "SQL"]  # duplicate removed, case-insensitive
 
 
 def test_experience_must_match_companies(profile):
@@ -56,7 +56,7 @@ def test_clean_text_removes_symbols_and_emoji_but_keeps_headline_separator():
 def test_claim_flags_catch_unsupplied_numbers_and_inferred_skills(profile, jd):
     out = make_output()
     out.sections.experience[0].bullets = ["Cut costs by 30% across teams", "Built pipelines in Python"]
-    out.sections.skills = [SkillGroup(category="Core", items=["Python", "Kubernetes"])]
+    out.sections.skills = [SkillGroup(category="Core", skills=["Python", "Kubernetes"])]
     resume = validate.build_resume(profile, out)
     flags = validate.claim_flags(resume, jd, hints="")
     verify = [f for f in flags if f.level == "verify"]

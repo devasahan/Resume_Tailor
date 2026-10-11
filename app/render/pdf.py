@@ -1,6 +1,7 @@
 """HTML (Jinja2) -> PDF (WeasyPrint). Single column, real text, standard fonts: what ATS parsers read best."""
 from __future__ import annotations
 
+import threading
 from datetime import date
 from pathlib import Path
 
@@ -8,6 +9,8 @@ from jinja2 import Environment, FileSystemLoader, select_autoescape
 from weasyprint import HTML
 
 from ..schemas import Contact, CoverLetter, FitStyle, Resume
+
+_render_lock = threading.Lock()  # WeasyPrint/Pango are not guaranteed thread-safe; rendering is quick
 
 _env = Environment(
     loader=FileSystemLoader(Path(__file__).parent / "templates"),
@@ -34,8 +37,10 @@ def render_resume_html(resume: Resume, style: FitStyle) -> str:
 
 def render_resume_pdf(resume: Resume, style: FitStyle) -> tuple[bytes, int]:
     """Return (pdf bytes, page count)."""
-    document = HTML(string=render_resume_html(resume, style)).render()
-    return document.write_pdf(), len(document.pages)
+    html = render_resume_html(resume, style)
+    with _render_lock:
+        document = HTML(string=html).render()
+        return document.write_pdf(), len(document.pages)
 
 
 def render_cover_pdf(profile_resume: Resume, letter: CoverLetter, paper: str = "Letter") -> tuple[bytes, int]:
@@ -47,5 +52,6 @@ def render_cover_pdf(profile_resume: Resume, letter: CoverLetter, paper: str = "
         contact=contact_line(profile_resume.profile.contact),
         today=f"{today:%B} {today.day}, {today.year}",
     )
-    document = HTML(string=html).render()
-    return document.write_pdf(), len(document.pages)
+    with _render_lock:
+        document = HTML(string=html).render()
+        return document.write_pdf(), len(document.pages)

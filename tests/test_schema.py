@@ -27,6 +27,12 @@ def test_strict_schema_is_self_contained_and_closed(model):
             assert node["required"] == list(node["properties"].keys())
 
 
+def test_no_property_is_named_after_a_json_schema_keyword():
+    keywords = {"items", "type", "properties", "required", "enum", "format", "default", "title"}
+    for node in walk(strict_json_schema(TailorOutput)):
+        assert not keywords & set(node.get("properties", {})), node
+
+
 def test_property_names_survive_even_if_they_look_like_keywords():
     schema = strict_json_schema(TailorOutput)
     assert "company_index" in schema["properties"]["sections"]["properties"]["experience"]["items"]["properties"]

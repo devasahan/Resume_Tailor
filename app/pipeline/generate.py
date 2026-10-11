@@ -26,6 +26,7 @@ class Outcome(Generic[T]):
     final_model_id: str = ""
     chain: list[str] = field(default_factory=list)  # model ids tried, in order
     attempts: int = 0
+    retries: int = 0
     input_tokens: int = 0
     output_tokens: int = 0
     cost_usd: float = 0.0
@@ -70,6 +71,7 @@ async def generate_validated(
                 out.errors.append(f"{model_id}: {exc}")
                 if attempt == 1:
                     prompt = user + retry_suffix(str(exc))
+                    out.retries += 1
                     continue
                 break
             except LLMError as exc:
@@ -83,6 +85,7 @@ async def generate_validated(
                 out.errors.append(f"{model_id}: invalid structure: {message}")
                 if attempt == 1:
                     prompt = user + retry_suffix(message)
+                    out.retries += 1
                     continue
                 break
             out.served_model = result.served_model

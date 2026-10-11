@@ -68,7 +68,7 @@ class OpenAICompatClient(LLMClient):
         body: dict = {
             "model": self.spec.model,
             "messages": [{"role": "system", "content": system}, {"role": "user", "content": user}],
-            "max_tokens": max_tokens,
+            self.spec.settings.get("max_tokens_param", "max_tokens"): max_tokens,
         }
         if kind == "json_schema":
             body["response_format"] = {
@@ -141,7 +141,10 @@ class OpenAICompatClient(LLMClient):
         if message.get("refusal") or finish == "content_filter":
             raise RefusedError(f"{self.spec.label} declined the request")
         if finish == "length":
-            raise TruncatedError(f"{self.spec.label} hit the token limit before finishing the JSON")
+            raise TruncatedError(
+                f"{self.spec.label} hit the token limit before finishing the JSON "
+                "(reasoning tokens count too: raise max_output_tokens or lower reasoning_effort in models.yaml)"
+            )
         text = message.get("content") or ""
         if not text.strip():
             raise InvalidOutputError(f"{self.spec.label} returned an empty answer")

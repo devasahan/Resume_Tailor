@@ -55,7 +55,7 @@ const field = id => $('#' + id);
 
 function modelOptions(select, current, blankLabel) {
   select.replaceChildren(el('option', { value: '', text: blankLabel }),
-    ...models.filter(m => m.available).map(m => el('option', { value: m.id, selected: m.id === current, text: m.label + (m.demo ? ' (demo)' : '') })));
+    ...models.filter(m => m.available).map(m => el('option', { value: m.id, selected: m.id === current, text: m.label })));
 }
 
 async function init() {

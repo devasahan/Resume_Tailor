@@ -55,7 +55,7 @@ async function init() {
   const real = usable.filter(x => !x.demo);
   if (!real.length) $('#models-note').replaceChildren(notice('warn', 'No API keys found, so only the offline demo models are available. Add keys to your .env file (see .env.example) and restart to use real models.'));
   const def = s.resolved.resume;
-  $('#single').replaceChildren(...usable.map(x => el('option', { value: x.id, selected: x.id === def, text: x.label + (x.demo ? ' (demo)' : '') })));
+  $('#single').replaceChildren(...usable.map(x => el('option', { value: x.id, selected: x.id === def, text: x.label })));
   $('#single').addEventListener('change', singleNote); singleNote();
   $('#compare-list').replaceChildren(...models.map(x => el('label', { title: x.reason || x.notes },
     el('input', { type: 'checkbox', value: x.id, disabled: !x.available }),
@@ -89,7 +89,7 @@ function fillCard(body, m, r) {
     chip(`${pct}% keywords`, pct >= 80 ? 'ok' : pct >= 50 ? 'warn' : 'bad'),
     chip(money(r.cost_usd)), chip(seconds(r.latency_ms)), chip(`${r.input_tokens + r.output_tokens} tokens`),
     verify ? chip(`${verify} to verify`, 'warn') : chip('nothing to verify', 'ok'),
-    r.attempts > 1 ? chip(`${r.attempts} attempts`, 'warn') : null,
+    r.retries > 0 ? chip(`asked again ${r.retries}x (first answer unusable)`, 'warn') : null,
     r.fallback_chain.length > 1 ? chip('fallback used: ' + r.fallback_chain.join(' > '), 'warn') : null,
     r.served_model && r.served_model !== m.model ? chip('answered by ' + r.served_model) : null));
   const res = r.resume, p = res.profile;
@@ -119,11 +119,11 @@ function updateSummary() {
     const verify = result.flags.filter(f => f.level === 'verify').length;
     return el('tr', {}, el('td', { text: m.label }), el('td', { text: money(result.cost_usd) }), el('td', { text: seconds(result.latency_ms) }),
       el('td', { text: result.fits ? '1' : String(result.pages) }), el('td', { text: Math.round(result.coverage.score * 100) + '%' }),
-      el('td', { text: String(verify) }), el('td', { text: String(result.attempts) }));
+      el('td', { text: String(verify) }), el('td', { text: String(result.retries) }));
   });
   const total = done.reduce((sum, x) => sum + x.result.cost_usd, 0);
   $('#summary').replaceChildren(el('div', { class: 'panel' }, el('h2', {}, 'Comparison'),
-    el('table', {}, el('thead', {}, el('tr', {}, ['Model', 'Cost', 'Time', 'Pages', 'Keyword match', 'To verify', 'Attempts'].map(h => el('th', { text: h })))), el('tbody', {}, rows)),
+    el('table', {}, el('thead', {}, el('tr', {}, ['Model', 'Cost', 'Time', 'Pages', 'Keyword match', 'To verify', 'Asked again'].map(h => el('th', { text: h })))), el('tbody', {}, rows)),
     el('p', { class: 'small muted', text: `Total cost of this comparison: ${money(total)}. Open each result to read it in full, then keep the one you like best.` })));
 }
 

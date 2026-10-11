@@ -43,6 +43,7 @@ def _absorb(total: Outcome, other: Outcome) -> None:
     total.output_tokens += other.output_tokens
     total.cost_usd += other.cost_usd
     total.attempts += other.attempts
+    total.retries += other.retries
 
 
 def analysis_terms(analysis: JDAnalysis) -> str:
@@ -138,6 +139,12 @@ async def run_tailor(
             notes += trim_notes
             fits = pages == 1
 
+        if outcome.input_tokens == 0 and outcome.output_tokens == 0:
+            try:
+                if router.registry.get(outcome.final_model_id).provider != "fake":
+                    notes.append("The provider did not report token usage, so the cost shown ($0) is unknown.")
+            except KeyError:
+                pass
         result.resume = resume
         result.analysis = output.jd_analysis
         result.style, result.pages, result.fits = style, pages, fits
@@ -164,6 +171,7 @@ async def run_tailor(
 
     result.notes = notes
     result.attempts = outcome.attempts
+    result.retries = outcome.retries
     result.fallback_chain = outcome.chain
     result.input_tokens = outcome.input_tokens
     result.output_tokens = outcome.output_tokens

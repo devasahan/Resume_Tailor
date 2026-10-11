@@ -1,0 +1,12 @@
+{
+  "name": "Jordan Rivera",
+  "contact": {"email": "jordan.rivera@example.com", "phone": "(555) 010-2030", "linkedin": "linkedin.com/in/jordanrivera", "location": "Austin, TX", "website": ""},
+  "companies": [
+    {"name": "Northwind Labs", "start": "Mar 2022", "end": "Present", "mode": "Remote", "location": ""},
+    {"name": "Contoso Systems", "start": "Jun 2019", "end": "Feb 2022", "mode": "Onsite", "location": "Dallas, TX"},
+    {"name": "Fabrikam Inc.", "start": "Jul 2016", "end": "May 2019", "mode": "Hybrid", "location": ""}
+  ],
+  "education": [
+    {"school": "University of Texas at Austin", "degree": "B.S.", "field": "Computer Science", "start": "", "end": "2016", "details": ""}
+  ]
+}

@@ -33,7 +33,7 @@
   <h2>SKILLS</h2>
   <div class="skills">
     {% for group in resume.skills %}
-    <p><b>{{ group.category }}:</b> {{ group.items | join(", ") }}</p>
+    <p><b>{{ group.category }}:</b> {{ group.skills | join(", ") }}</p>
     {% endfor %}
   </div>
 

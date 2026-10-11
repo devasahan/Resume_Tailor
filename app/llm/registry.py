@@ -37,7 +37,7 @@ class ModelSpec:
 
     @property
     def max_output_tokens(self) -> int:
-        return int(self.settings.get("max_output_tokens", 8000))
+        return int(self.settings.get("max_output_tokens", 16000))
 
 
 @dataclass

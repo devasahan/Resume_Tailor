@@ -7,6 +7,7 @@ the result on the Profile page before it is saved and locked.
 from __future__ import annotations
 
 import io
+import zipfile
 
 import pdfplumber
 from docx import Document
@@ -21,6 +22,8 @@ from .heuristic import parse_resume_text
 
 MAX_BYTES = 5 * 1024 * 1024
 MAX_CHARS = 24_000
+MAX_PDF_PAGES = 10
+MAX_UNZIPPED_BYTES = 50 * 1024 * 1024  # a DOCX is a zip: refuse ones that expand into something huge
 
 
 def extract_text(data: bytes, filename: str) -> str:
@@ -30,12 +33,17 @@ def extract_text(data: bytes, filename: str) -> str:
     if ext == "pdf":
         try:
             with pdfplumber.open(io.BytesIO(data)) as pdf:
-                text = "\n".join((page.extract_text() or "") for page in pdf.pages)
+                text = "\n".join((page.extract_text() or "") for page in pdf.pages[:MAX_PDF_PAGES])
         except Exception as exc:
             raise ValueError(f"Could not read the PDF: {exc}") from exc
     elif ext == "docx":
         try:
+            with zipfile.ZipFile(io.BytesIO(data)) as archive:
+                if sum(info.file_size for info in archive.infolist()) > MAX_UNZIPPED_BYTES:
+                    raise ValueError("The DOCX expands to an unreasonable size.")
             doc = Document(io.BytesIO(data))
+        except ValueError:
+            raise
         except Exception as exc:
             raise ValueError(f"Could not read the DOCX: {exc}") from exc
         lines = [p.text for p in doc.paragraphs]

@@ -65,16 +65,16 @@ def build_resume(profile: Profile, out: TailorOutput) -> Resume:
     skills: list[SkillGroup] = []
     seen: set[str] = set()
     for group in sections.skills:
-        items = []
-        for item in group.items:
+        cleaned = []
+        for item in group.skills:
             item = clean_text(item)
             if item and item.lower() not in seen:
                 seen.add(item.lower())
-                items.append(item)
-        if items and clean_text(group.category):
-            skills.append(SkillGroup(category=clean_text(group.category), items=items))
+                cleaned.append(item)
+        if cleaned and clean_text(group.category):
+            skills.append(SkillGroup(category=clean_text(group.category), skills=cleaned))
     if not skills:
-        raise ValueError("`skills` must contain at least one group with items.")
+        raise ValueError("`skills` must contain at least one group with skills.")
 
     experience: list[ResumeExperience] = []
     for entry in sorted(sections.experience, key=lambda e: e.company_index):
@@ -105,7 +105,7 @@ def resume_text(resume: Resume) -> str:
     parts = [resume.headline, resume.summary]
     for group in resume.skills:
         parts.append(group.category)
-        parts.extend(group.items)
+        parts.extend(group.skills)
     for exp in resume.experience:
         parts.append(exp.job_title)
         parts.extend(exp.bullets)
@@ -142,7 +142,7 @@ def ats_lint(resume: Resume) -> list[str]:
         warnings.append(f"Summary is long ({word_count(resume.summary)} words).")
     if _FIRST_PERSON.search(resume.summary):
         warnings.append("Summary uses first-person pronouns.")
-    total_skills = sum(len(g.items) for g in resume.skills)
+    total_skills = sum(len(g.skills) for g in resume.skills)
     if not 12 <= total_skills <= 35:
         warnings.append(f"{total_skills} skills listed (aim for roughly 15-28).")
     titles = [e.job_title.lower() for e in resume.experience]
@@ -194,7 +194,7 @@ def claim_flags(resume: Resume, jd: str, hints: str) -> list[Flag]:
         for bullet in exp.bullets:
             check_numbers(f"experience:{exp.company_index}", bullet)
     for group in resume.skills:
-        for item in group.items:
+        for item in group.skills:
             if item.lower() not in jd_l and item.lower() not in hints_l:
                 flags.append(
                     Flag(section="skills", text=item, level="info",
