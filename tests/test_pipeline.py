@@ -37,7 +37,7 @@ def test_long_text_is_brought_to_one_page(router, db, profile, jd):
     result = tailor(router, db, profile, jd, model="demo-detailed")
     assert result.status == "ok" and result.pages == 1 and result.fits
     assert result.notes  # something had to be done (smaller font, shorter bullets or trimming)
-    assert any(f.level == "verify" and "30%" in f.reason for f in result.flags)  # invented number is flagged
+    assert any(f.level == "verify" and "23.4%" in f.reason for f in result.flags)  # invented number is flagged
 
 
 def test_invalid_output_is_retried_with_feedback(router, db, profile, jd):

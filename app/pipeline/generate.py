@@ -49,16 +49,20 @@ async def generate_validated(
     parse: Callable[[dict], T],
     context: dict | None = None,
     outcome: Outcome | None = None,
+    refine: Callable[[T], str | None] | None = None,
 ) -> Outcome[T]:
     """Try each model in turn. Per model: up to 2 attempts, the second one told what was wrong.
 
     `parse` turns the raw dict into the final object and raises ValueError when it is not usable.
     Provider errors, refusals and truncation skip straight to the next model (no same-model retry).
+    `refine` may return feedback for a VALID first answer (style, not correctness): the model is asked
+    once to improve it, and if that second answer fails for any reason the first one is kept.
     """
     out = outcome or Outcome()
     for model_id in model_ids:
         out.chain.append(model_id)
         prompt = user
+        kept: tuple | None = None  # (value, served_model) of a valid first answer under refinement
         for attempt in (1, 2):
             out.attempts += 1
             try:
@@ -66,6 +70,8 @@ async def generate_validated(
                     model_id, system=system, user=prompt, schema=schema, schema_name=schema_name, context=context
                 )
             except CostCapError:
+                if kept is not None:
+                    break
                 raise
             except InvalidOutputError as exc:  # no usable JSON came back: no usage info either
                 out.errors.append(f"{model_id}: {exc}")
@@ -79,7 +85,7 @@ async def generate_validated(
                 break
             out.add_usage(result.usage, spec.cost(result.usage))
             try:
-                out.value = parse(result.data)
+                value = parse(result.data)
             except ValueError as exc:  # includes pydantic.ValidationError
                 message = str(exc)[:700]
                 out.errors.append(f"{model_id}: invalid structure: {message}")
@@ -88,7 +94,17 @@ async def generate_validated(
                     out.retries += 1
                     continue
                 break
-            out.served_model = result.served_model
+            if attempt == 1 and refine is not None:
+                feedback = refine(value)
+                if feedback:
+                    kept = (value, result.served_model)
+                    prompt = user + retry_suffix(feedback)
+                    out.retries += 1
+                    continue
+            out.value, out.served_model, out.final_model_id = value, result.served_model, model_id
+            return out
+        if kept is not None:  # the refinement failed: the first answer was valid, so use it
+            out.value, out.served_model = kept
             out.final_model_id = model_id
             return out
     raise GenerationFailed("; ".join(out.errors) or "No model could be used.", out)

@@ -169,6 +169,38 @@ def _numbers_in(text: str) -> list[str]:
     return [m.group(0).strip(" ,.") for m in _NUMBER.finditer(text)]
 
 
+_FIGURE_CORE = re.compile(r"[$€£]?(\d[\d,]*)(\.\d+)?")
+_APPROX = re.compile(r"~\s?[$€£]?\d[\d,.]*\s?%?|\b(?:approximately|approx\.)\s+[$€£]?\d[\d,.]*\s?%?", re.IGNORECASE)
+
+
+def is_round_figure(token: str) -> bool:
+    """25, 30%, 40+, $120K: whole numbers of 10 or more ending in 0 or 5. Years (1900-2100) are not figures."""
+    match = _FIGURE_CORE.match(token)
+    if not match or match.group(2):
+        return False
+    value = int(match.group(1).replace(",", "") or 0)
+    if 1900 <= value <= 2100 and token.isdigit():
+        return False
+    return value >= 10 and value % 5 == 0
+
+
+def figure_style_problems(resume: Resume, allowed_text: str) -> list[str]:
+    """Estimated figures that look like round guesses or approximations ("35%", "40+", "~30%").
+
+    Figures that appear in `allowed_text` (the user's hints and the computed facts) are never reported.
+    """
+    allowed = allowed_text.lower()
+    problems: list[str] = []
+    texts = [resume.summary] + [bullet for exp in resume.experience for bullet in exp.bullets]
+    for text in texts:
+        for match in _APPROX.finditer(text):
+            problems.append(match.group(0).strip())
+        for token in _numbers_in(text):
+            if token and token.lower() not in allowed and is_round_figure(token):
+                problems.append(token)
+    return list(dict.fromkeys(problems))
+
+
 def claim_flags(resume: Resume, jd: str, hints: str) -> list[Flag]:
     """Things the user did not provide and should confirm before sending the resume."""
     flags: list[Flag] = []

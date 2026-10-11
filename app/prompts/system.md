@@ -28,5 +28,5 @@ BULLETS: 5 for the most recent employer, 4 for the next, 3 for each older one (2
 - Everything you write is a draft the candidate will review, so write only what a person with this career path could plausibly say.
 
 ## Format
-- Plain text only. No markdown, emojis, bullet symbols, tables, or special characters beyond ordinary punctuation, "|" in the headline, "%", "$", "+", "~" in figures and "/" inside terms such as CI/CD.
+- Plain text only. No markdown, emojis, bullet symbols, tables, or special characters beyond ordinary punctuation, "|" in the headline, "%", "$" and "+" in figures and "/" inside terms such as CI/CD.
 - Output exactly one JSON object that follows the provided schema, with no text outside the JSON.

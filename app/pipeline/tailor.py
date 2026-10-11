@@ -60,7 +60,14 @@ def run_checks(result: TailorResult, jd_text: str) -> None:
     assert result.resume is not None and result.analysis is not None
     result.coverage = validate.keyword_coverage(result.resume, result.analysis)
     result.ats_warnings = validate.ats_lint(result.resume)
-    result.flags = validate.claim_flags(result.resume, jd_text, f"{result.hints}\n{result.facts}")
+    allowed = f"{result.hints}\n{result.facts}"
+    result.flags = validate.claim_flags(result.resume, jd_text, allowed)
+    rounded = validate.figure_style_problems(result.resume, allowed)
+    if rounded:
+        result.ats_warnings.append(
+            "These figures look rounded or approximate: " + ", ".join(rounded[:8])
+            + ". Replace them with your real numbers (specific values such as 23.4% or 21% read as measured)."
+        )
     if result.cover_letter:
         result.flags += validate.cover_flags(result.cover_letter, result.hints)
 
@@ -109,9 +116,24 @@ async def run_tailor(
             out = TailorOutput.model_validate(data)
             return out, validate.build_resume(profile, out)
 
+        allowed_figures = f"{hints}\n{facts}"
+
+        def refine(value) -> str | None:
+            """Ask once for specific, measured-looking figures if the draft relies on round guesses."""
+            problems = validate.figure_style_problems(value[1], allowed_figures)
+            if len(problems) < 2:
+                return None
+            return (
+                "Some figures look like round guesses or approximations: " + ", ".join(problems[:8])
+                + ". Rewrite only those figures as specific, measured-looking values (for example 23.4%, 21%, "
+                "17.8%, 1.7TB, 38 analysts): no numbers ending in 0 or 5, no '~', no 'approximately'. Keep any "
+                "figure the candidate gave exactly as it is, and keep everything else unchanged."
+            )
+
         await generate_validated(
             router, chain, system=tailor_system(metrics_mode), user=tailor_user(jd, profile.companies, hints, facts),
             schema=schema, schema_name="tailor_output", parse=parse, context=context, outcome=outcome,
+            refine=refine,
         )
         output, resume = outcome.value  # type: ignore[misc]
 
@@ -124,6 +146,7 @@ async def run_tailor(
                     router, [outcome.final_model_id], system=tailor_system(metrics_mode),
                     user=tailor_user(jd, profile.companies, hints, facts, shorten=True), schema=schema,
                     schema_name="tailor_output", parse=parse, context={**context, "shorten": True}, outcome=second,
+                    refine=refine,
                 )
                 _absorb(outcome, second)
                 short_output, short_resume = second.value  # type: ignore[misc]

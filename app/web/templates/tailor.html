@@ -89,7 +89,7 @@ function fillCard(body, m, r) {
     chip(`${pct}% keywords`, pct >= 80 ? 'ok' : pct >= 50 ? 'warn' : 'bad'),
     chip(money(r.cost_usd)), chip(seconds(r.latency_ms)), chip(`${r.input_tokens + r.output_tokens} tokens`),
     verify ? chip(`${verify} to verify`, 'warn') : chip('nothing to verify', 'ok'),
-    r.retries > 0 ? chip(`asked again ${r.retries}x (first answer unusable)`, 'warn') : null,
+    r.retries > 0 ? chip(`asked again ${r.retries}x`, 'warn') : null,
     r.fallback_chain.length > 1 ? chip('fallback used: ' + r.fallback_chain.join(' > '), 'warn') : null,
     r.served_model && r.served_model !== m.model ? chip('answered by ' + r.served_model) : null));
   const res = r.resume, p = res.profile;
