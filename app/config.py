@@ -27,6 +27,8 @@ load_dotenv()
 
 def data_dir() -> Path:
     path = Path(os.environ.get("DATA_DIR", ROOT / "data"))
+    if not path.is_absolute():  # "./data" in .env means inside the project, wherever the app was started from
+        path = ROOT / path
     path.mkdir(parents=True, exist_ok=True)
     return path
 

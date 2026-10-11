@@ -105,3 +105,15 @@ def test_anthropic_genuine_bad_request_surfaces_the_real_error():
     with pytest.raises(ProviderError):
         call(anthropic_client([OtherBadRequest("bad")], calls, refusal_fallback=False))
     assert [c[0] for c in calls] == ["plain"]
+
+
+def test_relative_data_dir_is_resolved_inside_the_project(monkeypatch, tmp_path):
+    from app import config
+
+    monkeypatch.setenv("DATA_DIR", "./data_dir_test_tmp")
+    monkeypatch.chdir(tmp_path)  # started from some other folder
+    folder = config.data_dir()
+    try:
+        assert folder == config.ROOT / "data_dir_test_tmp" and folder.is_dir()
+    finally:
+        folder.rmdir()
