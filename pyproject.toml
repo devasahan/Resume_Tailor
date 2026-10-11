@@ -9,13 +9,13 @@ description = "Multi-model resume tailoring app: fixed facts in, tailored one-pa
 requires-python = ">=3.11"
 dependencies = [
     "fastapi>=0.110",
-    "uvicorn[standard]>=0.29",
+    "uvicorn>=0.29",
     "jinja2>=3.1",
     "pydantic>=2.6",
     "pyyaml>=6.0",
     "anthropic>=1.0",
     "httpx>=0.27",
-    "weasyprint>=62",
+    "fpdf2>=2.8",
     "python-docx>=1.1",
     "pypdf>=4.0",
     "pdfplumber>=0.11",
@@ -33,4 +33,4 @@ filterwarnings = ["ignore::DeprecationWarning"]
 include = ["app*"]
 
 [tool.setuptools.package-data]
-app = ["prompts/*.md", "render/templates/*", "web/templates/*", "web/static/*"]
+app = ["prompts/*.md", "render/fonts/*", "web/templates/*", "web/static/*"]

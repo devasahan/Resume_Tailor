@@ -4,7 +4,7 @@ import pytest
 from docx import Document
 from fastapi.testclient import TestClient
 from pypdf import PdfReader
-from weasyprint import HTML
+from fpdf import FPDF
 
 from app.main import create_app
 from app.storage.db import Database
@@ -28,8 +28,12 @@ def docx_bytes(text=SAMPLE_RESUME_TEXT) -> bytes:
 
 
 def pdf_bytes(text=SAMPLE_RESUME_TEXT) -> bytes:
-    html = "<html><body>" + "".join(f"<p>{line}</p>" for line in text.splitlines()) + "</body></html>"
-    return HTML(string=html).write_pdf()
+    pdf = FPDF()
+    pdf.add_page()
+    pdf.set_font("Helvetica", size=11)
+    for line in text.splitlines():
+        pdf.cell(0, 6, line, new_x="LMARGIN", new_y="NEXT")
+    return bytes(pdf.output())
 
 
 def save_profile(client):

@@ -9,20 +9,36 @@ A resume tailoring app that works differently from the usual one.
 
 > Everything the AI writes is a draft. It cannot know your real history, so the app flags every number and every inferred skill for you to confirm. Do not send a resume you have not read.
 
-## Quick start
+## Run it on your PC
 
-Requires Python 3.11+. WeasyPrint needs the Pango library (Debian/Ubuntu: `apt install libpango-1.0-0 libpangoft2-1.0-0`; macOS: `brew install pango`).
+You need **Python 3.11 or newer** and nothing else: no API key, no other software. The app runs in **demo mode** (three offline demo models) until you add keys, so you can try the whole flow first.
 
-```bash
-python -m venv .venv && source .venv/bin/activate
-pip install -r requirements.txt
-cp .env.example .env          # then add the API keys you have
-python -m app                 # http://127.0.0.1:8000
-```
+| Your computer | Do this |
+|---|---|
+| **Windows** | 1. Install Python from <https://www.python.org/downloads/> and tick **"Add python.exe to PATH"** (or run `winget install -e --id Python.Python.3.12`).<br>2. Get the project (green **Code** button > **Download ZIP**, then unzip, or `git clone`).<br>3. Double-click **`start.bat`**. |
+| **macOS / Linux** | 1. Python 3.11+ (macOS: <https://www.python.org/downloads/> or `brew install python`; Ubuntu/Debian: `sudo apt install python3 python3-venv`).<br>2. In the project folder run **`./start.sh`**. |
+| **By hand** | `python -m venv .venv`, activate it (`source .venv/bin/activate` or `.venv\Scripts\activate`), `pip install -r requirements.txt`, `python -m app` |
 
-With **no API keys** the app still runs end to end using three offline demo models. Their text is template-based and says nothing about what real models write; they exist so you can try the whole flow.
+The first start takes a minute or two (it creates a private `.venv` folder and installs the libraries). Your browser then opens at <http://127.0.0.1:8000>. Press **Ctrl+C** (or close the window) to stop it.
 
-### Using it
+If something does not start, run **`python -m app.doctor`**. It checks Python, the libraries, PDF and DOCX export, the data folder, API keys and the port, and says how to fix each problem.
+
+### Try the demo (about two minutes)
+1. **Profile** > choose `evals/sample_base_resume.docx` (or `.pdf` / `.txt`) > **Read file** > check the fields > **Save profile**.
+2. **Tailor** > paste a job description (for example `evals/jds/01_data_engineer.txt`) > tick **Compare several** > tick the three *Demo* models > **Tailor resume**.
+3. Open a result with **Review and edit**: change text, watch the live PDF preview, download the PDF or DOCX.
+
+The demo models write generic template text. They exist to show the flow (compare, fit to one page, flags for invented numbers, retries); they say nothing about what real models write.
+
+### Then add real models
+1. Copy `.env.example` to `.env` (the start script does this for you) and open `.env` in any text editor.
+2. Paste the API key for the provider you have, for example `ANTHROPIC_API_KEY=...`. Use **paid** keys: free tiers may let the provider train on your data.
+3. Stop and start the app again. In **Settings**, press **Run check** to confirm each key and model name works (one tiny call per model, a fraction of a cent).
+4. In **Tailor**, pick the model, or compare several. Costs are shown per run.
+
+Nothing leaves your computer except the calls to the model providers you pick. See [Privacy and security](#privacy-and-security).
+
+## Using it
 1. **Profile**: upload your base resume (PDF, DOCX, TXT) or type the facts in. Check the fields, then save. By default the file is read by rules on your machine; you can choose a model to read it instead (then the resume text is sent to that provider).
 2. **Tailor**: paste a job description. Optionally add *real facts about you* (years, tools you actually used, real numbers); the AI treats these as true and invents nothing beyond them. Pick **One model**, or **Compare several**.
 3. **Review and edit**: change any AI-written text. A live PDF preview shows whether it still fits on one page. Items to confirm are listed.
@@ -72,15 +88,29 @@ It prints a cost estimate and asks before spending anything, then writes `result
 - **Fixed facts cannot change.** The model returns only the editable sections as JSON. Code merges them into your saved profile and asserts the profile is unchanged. The edit endpoint never reads profile fields from the request.
 - **No invented numbers.** The prompts forbid figures you did not supply. Anything numeric the model writes anyway is flagged "to verify". Skills that are not in the job description are flagged as inferred.
 - **One page.** The renderer shrinks font and margins (floor 9.5 pt / 0.5 in), then asks the model once for shorter bullets, then drops the lowest-priority bullets of the roles with the most bullets (keeping two each), and reports what it did. If it still does not fit, it says so.
-- **ATS-friendly layout.** Single column, real text, standard fonts, standard section headings, no tables, columns, images or icons, contact details in the body. No tool can guarantee how every ATS parses a file; this follows the common advice.
+- **ATS-friendly layout.** Single column, real text with an embedded standard-metrics font (Carlito, compatible with Calibri), standard section headings, no tables, columns, images or icons, contact details in the body. No tool can guarantee how every ATS parses a file; this follows the common advice.
 - **Bad model output is handled.** Invalid or incomplete JSON is sent back once with the error; if it still fails the next fallback model is used; failures show up in History instead of crashing.
 
 ## Privacy and security
 - Your resume text and job description go **only to the model you pick**, over HTTPS, with your own API key. Check each provider's retention terms; use paid keys (free tiers may let the provider train on your data).
 - Stored locally in SQLite (`data/`, file mode 600): your profile, generated resumes and cover letters, and the "real facts" text you typed for each run (kept so the number checks still work after you edit). Job descriptions are **not stored** (only a hash). Everything is deleted after the retention period, or immediately via Settings > Delete all stored data.
-- API keys come from environment variables only and are never returned by the API or stored in the database.
-- This is a **single-user app with no accounts**. Run it on your own machine. If you host it, put real authentication in front of it. Set `ADMIN_TOKEN` to protect settings changes and data deletion.
-- Uploads are limited to 5 MB, 10 PDF pages and a bounded DOCX unpack size; the browser UI inserts all text with `textContent`, so model output cannot inject markup.
+- API keys come from environment variables or your local `.env` only and are never returned by the API or stored in the database. `.env` is excluded from git.
+- This is a **single-user app with no accounts** and it listens on `127.0.0.1` (your computer only) by default. If you host it anywhere else, put real authentication in front of it. Set `ADMIN_TOKEN` to protect settings changes and data deletion.
+- Uploads are limited to 5 MB, 10 PDF pages and a bounded DOCX unpack size; the browser UI inserts all text with `textContent`, and pages are served with a content security policy.
+
+## Troubleshooting
+
+| Problem | What to do |
+|---|---|
+| Window closes immediately / "Python not found" | Install Python 3.11+ (tick "Add python.exe to PATH" on Windows), then run `start.bat` again |
+| Anything else that will not start | `python -m app.doctor` says what is wrong and how to fix it |
+| "Port 8000 is already in use" | Another copy is running. Close it, or set another port: Windows `set PORT=8001`, macOS/Linux `PORT=8001 ./start.sh` |
+| Browser did not open | Open <http://127.0.0.1:8000> yourself (or set `OPEN_BROWSER=0` to stop it trying) |
+| PDF preview is blank | Use **Download PDF** (some browsers block inline PDFs) |
+| A model says "no API key" | Put the key in `.env`, then stop and start the app again |
+| A model fails on the first call | Run **Settings > Run check**: the error names the problem (key, model name, unsupported feature). Fix the entry in `models.yaml` |
+| "hit the token limit" | Raise `max_output_tokens` for that model in `models.yaml` or lower its reasoning effort (reasoning tokens count too) |
+| Upload says "No readable text" | The PDF is a scan (an image). Export a text PDF or DOCX from your word processor |
 
 ## Development
 
@@ -88,20 +118,25 @@ It prints a cost estimate and asks before spending anything, then writes `result
 pip install pytest && python -m pytest        # no network or API keys needed
 ```
 
-Tests cover the schemas, validation and fixed-field integrity, both provider adapters (against mocked HTTP and a fake SDK client), routing, fallback and cost cap, the full pipeline with the demo models, every API endpoint and the upload hardening. The browser UI was also exercised end to end with headless Chromium.
+Tests cover the schemas, validation and fixed-field integrity, both provider adapters (against mocked HTTP, a local mock server, and the real Anthropic SDK pointed at a mock Messages API), routing, fallback and cost cap, the full pipeline with the demo models, the PDF/DOCX renderers, every API endpoint and the upload hardening. The browser UI was also exercised end to end with headless Chromium.
 
-**What is not verified:** calls to the real provider APIs (no keys were available while building), the exact model strings and prices marked unverified, and writing quality for any real model. Use `app.cli check` and the bake-off for those.
+**What is not verified:** calls to the real provider APIs (no keys were available while building), the exact model strings and prices marked unverified, writing quality for any real model, and running on Windows/macOS (built and tested on Linux; the PDF engine is pure Python and `start.bat` is plain batch, but neither has been run on those systems). Use `app.doctor`, `app.cli check` and the bake-off for those.
 
-Known limits: scanned (image-only) PDFs are not supported (no OCR); the rule-based reader is rough on unusual layouts, which is why you always review the profile; the page-fit logic is tuned for Letter/A4 resumes of roughly 3-5 employers.
+Known limits: scanned (image-only) PDFs are not supported (no OCR); names in scripts the bundled font lacks (for example Chinese) are missing from the PDF, but not the DOCX; the rule-based reader is rough on unusual layouts, which is why you always review the profile; the page-fit logic is tuned for Letter/A4 resumes of roughly 3-5 employers.
 
 ```
 models.yaml            model registry (prices, regions, key variables, settings)
+start.bat / start.sh   one-click start for Windows / macOS+Linux
+app/doctor.py          setup check (python -m app.doctor)
 app/llm/               adapters (anthropic, openai_compat, fake), registry, router, schema helpers
 app/pipeline/          tailor (whole run), generate (validate + retry + fallback), validate, fit, compare
 app/prompts/           versioned prompt files
-app/render/            HTML -> PDF (WeasyPrint) and DOCX
+app/render/            PDF (fpdf2, pure Python, bundled Carlito font) and DOCX (python-docx)
 app/parsing/           PDF/DOCX/TXT -> text -> profile
 app/web/               pages (Profile, Tailor, Review, History, Settings)
 app/cli.py             models, check, bakeoff
-evals/                 sample profile and job descriptions
+evals/                 sample base resume, sample profile and job descriptions
 ```
+
+### Third-party licenses
+The bundled font **Carlito** is licensed under the SIL Open Font License 1.1 (`app/render/fonts/OFL-Carlito.txt`). **fpdf2** is LGPL-3.0; the other libraries are listed in `requirements.txt` with their own permissive licenses.

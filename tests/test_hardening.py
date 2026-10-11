@@ -7,7 +7,7 @@ import zipfile
 import anthropic
 import pytest
 from fastapi.testclient import TestClient
-from weasyprint import HTML
+from fpdf import FPDF
 
 from app.main import create_app
 from app.parsing.resume_parser import extract_text
@@ -44,8 +44,12 @@ def test_oversized_upload_is_refused_without_buffering_it_all(tmp_path):
 
 
 def test_pdf_page_cap():
-    pages = "".join(f'<div style="page-break-after: always">PAGE {n} of the resume text here</div>' for n in range(1, 13))
-    text = extract_text(HTML(string=f"<html><body>{pages}</body></html>").write_pdf(), "long.pdf")
+    pdf = FPDF()
+    pdf.set_font("Helvetica", size=12)
+    for n in range(1, 13):
+        pdf.add_page()
+        pdf.cell(0, 8, f"PAGE {n} of the resume text here")
+    text = extract_text(bytes(pdf.output()), "long.pdf")
     assert "PAGE 1 " in text and "PAGE 12 " not in text
 
 

@@ -1,0 +1,4 @@
+# Windows batch files must keep CRLF line endings everywhere (cmd.exe can misparse LF-only files).
+*.bat -text
+# Shell scripts must keep LF (a CRLF shebang line breaks on macOS/Linux).
+*.sh text eol=lf
