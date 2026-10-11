@@ -1,0 +1,119 @@
+{% extends "base.html" %}
+{% block title %}Settings - Resume Tailor{% endblock %}
+{% block content %}
+<h1>Settings</h1>
+<p class="sub">Changes apply immediately to new runs. Runs already in progress finish on the model they started with.</p>
+<div id="admin" class="panel hidden">
+  <h2>Admin token</h2>
+  <p class="small muted">An ADMIN_TOKEN is set on the server. Enter it to change settings or delete data. It is kept only in this browser tab.</p>
+  <input type="password" id="token" autocomplete="off">
+</div>
+
+<div class="panel"><h2>Models</h2>
+  <p class="small muted">A model is usable when its API key variable is set and its data region is allowed below. Prices and model names marked "unverified" came from third-party sources: run the check below.</p>
+  <table><thead><tr><th>Model</th><th>Provider</th><th>Model string</th><th>$ per 1M in / out</th><th>Region</th><th>Status</th></tr></thead><tbody id="model-rows"></tbody></table>
+</div>
+
+<div class="panel"><h2>Defaults</h2>
+  <div class="grid2">
+    <div><label for="resume_model">Resume model</label><select id="resume_model"></select></div>
+    <div><label for="cover_letter_model">Cover letter model</label><select id="cover_letter_model"></select></div>
+    <div><label for="parser_model">Base-resume reader</label><select id="parser_model"></select></div>
+  </div>
+  <label>Fallback models <span class="opt">(tried in this order if the chosen model fails; not used when comparing)</span></label>
+  <div class="models" id="fallbacks"></div>
+</div>
+
+<div class="panel"><h2>Limits and privacy</h2>
+  <div class="grid2">
+    <div><label for="daily_cost_cap_usd">Daily cost cap, USD <span class="opt">(0 = none; soft cap)</span></label><input type="number" id="daily_cost_cap_usd" min="0" step="0.5"></div>
+    <div><label for="retention_days">Delete stored data after, days <span class="opt">(0 = keep)</span></label><input type="number" id="retention_days" min="0" max="3650"></div>
+    <div><label for="paper_size">Paper size</label><select id="paper_size"><option>Letter</option><option>A4</option></select></div>
+  </div>
+  <label>Allowed data regions <span class="opt">(models hosted elsewhere stay off until you tick them)</span></label>
+  <div class="models" id="regions"></div>
+  <p class="small muted" id="spent"></p>
+  <div class="row"><button class="primary" id="save">Save settings</button><span id="save-status" class="small"></span></div>
+</div>
+
+<div class="panel"><h2>Check models</h2>
+  <p class="small muted">Makes one tiny real call per ticked model to confirm the key, model name and JSON mode work. It costs a fraction of a cent each.</p>
+  <div class="models" id="check-list"></div>
+  <div class="row" style="margin-top:8px"><button id="check">Run check</button><span id="check-status" class="small muted"></span></div>
+  <div id="check-results"></div>
+</div>
+
+<div class="panel"><h2>Your data</h2>
+  <p class="small muted">Deletes the saved profile and every stored run (resumes, cover letters, history).</p>
+  <button class="danger" id="wipe">Delete all stored data</button> <span id="wipe-status" class="small"></span>
+</div>
+{% endblock %}
+{% block scripts %}
+<script>
+let models = [], regions = [], cfg = null;
+const field = id => $('#' + id);
+
+function modelOptions(select, current, blankLabel) {
+  select.replaceChildren(el('option', { value: '', text: blankLabel }),
+    ...models.filter(m => m.available).map(m => el('option', { value: m.id, selected: m.id === current, text: m.label + (m.demo ? ' (demo)' : '') })));
+}
+
+async function init() {
+  const [m, s] = await Promise.all([api('/api/models'), api('/api/settings')]);
+  models = m.models; regions = m.regions; cfg = s;
+  if (s.admin_token_required) {
+    field('admin').classList.remove('hidden');
+    field('token').value = sessionStorage.getItem('adminToken') || '';
+    field('token').addEventListener('input', () => sessionStorage.setItem('adminToken', field('token').value));
+  }
+  field('model-rows').replaceChildren(...models.map(x => el('tr', {},
+    el('td', {}, x.label, x.notes ? el('div', { class: 'small muted', text: x.notes }) : null),
+    el('td', { text: x.provider }), el('td', { text: x.model }),
+    el('td', { text: x.demo ? 'free' : `${x.price_in} / ${x.price_out}` }), el('td', { text: x.data_region }),
+    el('td', {}, x.available ? chip('ready', 'ok') : chip('off', 'warn'), x.verified ? null : chip('unverified'), x.available ? null : el('div', { class: 'small muted', text: x.reason })))));
+  const st = s.settings;
+  modelOptions(field('resume_model'), st.resume_model, `Automatic (${s.resolved.resume || 'none available'})`);
+  modelOptions(field('cover_letter_model'), st.cover_letter_model, 'Same as the resume model');
+  modelOptions(field('parser_model'), st.parser_model, `Automatic (${s.resolved.parser || 'none available'})`);
+  field('fallbacks').replaceChildren(...models.filter(x => x.available).map(x => el('label', {}, el('input', { type: 'checkbox', value: x.id, checked: st.fallback_models.includes(x.id) }), x.label)));
+  field('daily_cost_cap_usd').value = st.daily_cost_cap_usd; field('retention_days').value = st.retention_days; field('paper_size').value = st.paper_size;
+  field('regions').replaceChildren(...regions.map(r => el('label', {}, el('input', { type: 'checkbox', value: r, checked: st.allowed_regions.includes(r) }), r)));
+  field('spent').textContent = `Spent today: ${money(s.cost_today)}.`;
+  field('check-list').replaceChildren(...models.filter(x => x.available && !x.demo).map(x => el('label', {}, el('input', { type: 'checkbox', value: x.id }), x.label)));
+  if (!models.some(x => x.available && !x.demo)) field('check-list').replaceChildren(el('span', { class: 'muted small', text: 'No real models are available yet (no API keys set).' }));
+}
+
+field('save').addEventListener('click', async () => {
+  const body = {
+    resume_model: field('resume_model').value || null, cover_letter_model: field('cover_letter_model').value || null,
+    parser_model: field('parser_model').value || null,
+    fallback_models: $$('#fallbacks input:checked').map(i => i.value),
+    daily_cost_cap_usd: Number(field('daily_cost_cap_usd').value || 0), retention_days: Number(field('retention_days').value || 0),
+    paper_size: field('paper_size').value, allowed_regions: $$('#regions input:checked').map(i => i.value),
+  };
+  try { await api('/api/settings', { method: 'PUT', body, admin: true }); field('save-status').textContent = 'Saved.'; await init(); }
+  catch (err) { field('save-status').textContent = err.message; }
+});
+
+field('check').addEventListener('click', async () => {
+  const ids = $$('#check-list input:checked').map(i => i.value);
+  if (!ids.length) { field('check-status').textContent = 'Tick at least one model.'; return; }
+  field('check').disabled = true; field('check-status').replaceChildren(el('span', { class: 'spinner' }), 'Checking...');
+  try {
+    const data = await api('/api/models/check', { method: 'POST', body: { models: ids }, admin: true });
+    field('check-results').replaceChildren(el('table', {}, el('tbody', {}, data.results.map(r => el('tr', {},
+      el('td', { text: r.id }), el('td', {}, r.ok ? chip('works', 'ok') : chip('failed', 'bad')),
+      el('td', { text: r.ok ? `answered as ${r.served_model}, ${r.ms} ms, ${money(r.cost_usd)}` : r.error }))))));
+    field('check-status').textContent = '';
+  } catch (err) { field('check-status').textContent = err.message; }
+  finally { field('check').disabled = false; }
+});
+
+field('wipe').addEventListener('click', async () => {
+  if (!confirm('Delete the saved profile and all stored runs? This cannot be undone.')) return;
+  try { await api('/api/data', { method: 'DELETE', admin: true }); field('wipe-status').textContent = 'Deleted.'; }
+  catch (err) { field('wipe-status').textContent = err.message; }
+});
+init().catch(err => field('model-rows').replaceChildren(el('tr', {}, el('td', { colspan: 6 }, notice('bad', err.message)))));
+</script>
+{% endblock %}

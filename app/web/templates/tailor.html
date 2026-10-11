@@ -1,0 +1,156 @@
+{% extends "base.html" %}
+{% block title %}Tailor - Resume Tailor{% endblock %}
+{% block content %}
+<h1>Tailor a resume</h1>
+<p class="sub">Paste a job description, pick one model, or tick several to compare them side by side.</p>
+<div id="profile-note"></div>
+
+<div class="two">
+  <div class="panel">
+    <h2>Job</h2>
+    <label for="jd">Job description</label>
+    <textarea id="jd" style="min-height: 240px" placeholder="Paste the full job description here"></textarea>
+    <label for="hints">Real facts about you <span class="opt">(optional)</span></label>
+    <textarea id="hints" style="min-height: 70px" placeholder="Years of experience, tools you actually used, real numbers. The AI treats these as true and invents nothing beyond them."></textarea>
+    <div class="grid2">
+      <div><label for="company">Company applying to <span class="opt">(cover letter)</span></label><input type="text" id="company"></div>
+      <div><label for="manager">Hiring manager <span class="opt">(cover letter)</span></label><input type="text" id="manager"></div>
+    </div>
+    <label class="row" style="font-weight:400"><input type="checkbox" id="cover" style="width:auto"> Also write a cover letter</label>
+  </div>
+
+  <div class="panel">
+    <h2>Model</h2>
+    <div class="row">
+      <label class="row" style="font-weight:400;margin:0"><input type="radio" name="mode" value="single" checked style="width:auto"> One model</label>
+      <label class="row" style="font-weight:400;margin:0"><input type="radio" name="mode" value="compare" style="width:auto"> Compare several</label>
+    </div>
+    <div id="single-box"><label for="single">Model</label><select id="single"></select><p class="small muted" id="single-note"></p></div>
+    <div id="compare-box" class="hidden"><p class="small muted">Each ticked model gets the same job. Fallback is off here so each result shows that model alone.</p><div class="models" id="compare-list"></div></div>
+    <div id="models-note"></div>
+    <div class="row" style="margin-top:14px"><button class="primary" id="run">Tailor resume</button><span id="run-status" class="small muted"></span></div>
+  </div>
+</div>
+
+<div id="summary"></div>
+<div class="cards" id="results"></div>
+{% endblock %}
+{% block scripts %}
+<script>
+let models = [], settings = null, collected = [];
+
+const priceText = m => m.demo ? 'demo, free' : `$${m.price_in} / $${m.price_out} per 1M tokens`;
+
+async function init() {
+  const [m, p, s] = await Promise.all([api('/api/models'), api('/api/profile'), api('/api/settings')]);
+  models = m.models; settings = s;
+  const usable = models.filter(x => x.available);
+  if (!p.profile) {
+    $('#profile-note').replaceChildren(notice('warn', 'No profile saved yet. ', [])); 
+    $('#profile-note').firstChild.append(el('a', { href: '/profile', text: 'Create your profile first.' }));
+    $('#run').disabled = true;
+  } else {
+    $('#profile-note').replaceChildren(el('p', { class: 'small muted' }, `Using the saved profile of ${p.profile.name} (${p.profile.companies.length} employers). `, el('a', { href: '/profile', text: 'Edit' })));
+  }
+  const real = usable.filter(x => !x.demo);
+  if (!real.length) $('#models-note').replaceChildren(notice('warn', 'No API keys found, so only the offline demo models are available. Add keys to your .env file (see .env.example) and restart to use real models.'));
+  const def = s.resolved.resume;
+  $('#single').replaceChildren(...usable.map(x => el('option', { value: x.id, selected: x.id === def, text: x.label + (x.demo ? ' (demo)' : '') })));
+  $('#single').addEventListener('change', singleNote); singleNote();
+  $('#compare-list').replaceChildren(...models.map(x => el('label', { title: x.reason || x.notes },
+    el('input', { type: 'checkbox', value: x.id, disabled: !x.available }),
+    el('span', {}, x.label, el('span', { class: 'muted small', text: x.available ? ` ${priceText(x)}` : ` - ${x.reason}` })))));
+  for (const radio of $$('input[name=mode]')) radio.addEventListener('change', () => {
+    const compare = $('input[name=mode]:checked').value === 'compare';
+    $('#single-box').classList.toggle('hidden', compare); $('#compare-box').classList.toggle('hidden', !compare);
+  });
+}
+function singleNote() {
+  const m = models.find(x => x.id === $('#single').value);
+  $('#single-note').textContent = m ? `${priceText(m)}. Data region: ${m.data_region}.${m.verified ? '' : ' Price and model name not yet verified.'} ${m.notes || ''}` : '';
+}
+
+function makeCard(m) {
+  const body = el('div', {}, el('span', { class: 'spinner' }), 'Working...');
+  return { body, card: el('div', { class: 'card' }, el('h3', {}, el('span', { text: m.label }), el('span', { class: 'muted small', text: priceText(m) })), body) };
+}
+
+function fillCard(body, m, r) {
+  const parts = [];
+  if (r.status === 'error') {
+    parts.push(notice('bad', 'Failed: ' + r.error));
+    parts.push(el('div', { class: 'metrics' }, chip(money(r.cost_usd)), chip(seconds(r.latency_ms))));
+    body.replaceChildren(...parts); return;
+  }
+  const verify = r.flags.filter(f => f.level === 'verify').length;
+  const pct = Math.round(r.coverage.score * 100);
+  parts.push(el('div', { class: 'metrics' },
+    chip(r.fits ? '1 page' : `${r.pages} pages`, r.fits ? 'ok' : 'bad'),
+    chip(`${pct}% keywords`, pct >= 80 ? 'ok' : pct >= 50 ? 'warn' : 'bad'),
+    chip(money(r.cost_usd)), chip(seconds(r.latency_ms)), chip(`${r.input_tokens + r.output_tokens} tokens`),
+    verify ? chip(`${verify} to verify`, 'warn') : chip('nothing to verify', 'ok'),
+    r.attempts > 1 ? chip(`${r.attempts} attempts`, 'warn') : null,
+    r.fallback_chain.length > 1 ? chip('fallback used: ' + r.fallback_chain.join(' > '), 'warn') : null,
+    r.served_model && r.served_model !== m.model ? chip('answered by ' + r.served_model) : null));
+  const res = r.resume, p = res.profile;
+  parts.push(el('div', { class: 'preview' },
+    el('div', { class: 'headline', text: res.headline }), el('div', { text: res.summary }),
+    ...res.experience.flatMap(e => [
+      el('div', { class: 'job', text: `${e.job_title}, ${p.companies[e.company_index].name}` }),
+      el('ul', {}, e.bullets.map(b => el('li', { text: b })))])));
+  if (r.notes.length) parts.push(el('p', { class: 'small muted', text: r.notes.join(' ') }));
+  if (r.ats_warnings.length) parts.push(notice('warn', 'Format notes:', r.ats_warnings));
+  const id = r.run_id;
+  parts.push(el('div', { class: 'row', style: 'margin-top:10px' },
+    el('a', { class: 'btn primary small', href: `/run/${id}`, text: 'Review and edit' }),
+    el('a', { class: 'btn small', href: `/api/runs/${id}/resume.pdf`, target: '_blank', text: 'PDF' }),
+    el('a', { class: 'btn small', href: `/api/runs/${id}/resume.docx`, text: 'DOCX' }),
+    r.cover_letter ? el('a', { class: 'btn small', href: `/api/runs/${id}/cover.pdf`, target: '_blank', text: 'Cover PDF' }) : null,
+    r.cover_letter ? el('a', { class: 'btn small', href: `/api/runs/${id}/cover.docx`, text: 'Cover DOCX' }) : null));
+  body.replaceChildren(...parts);
+}
+
+function updateSummary() {
+  const done = collected.filter(x => x.result);
+  if (collected.length < 2) { $('#summary').replaceChildren(); return; }
+  const rows = collected.map(({ m, result }) => {
+    if (!result) return el('tr', {}, el('td', { text: m.label }), el('td', { colspan: 6, class: 'muted', text: 'working...' }));
+    if (result.status === 'error') return el('tr', {}, el('td', { text: m.label }), el('td', { colspan: 6, text: 'failed: ' + result.error.slice(0, 120) }));
+    const verify = result.flags.filter(f => f.level === 'verify').length;
+    return el('tr', {}, el('td', { text: m.label }), el('td', { text: money(result.cost_usd) }), el('td', { text: seconds(result.latency_ms) }),
+      el('td', { text: result.fits ? '1' : String(result.pages) }), el('td', { text: Math.round(result.coverage.score * 100) + '%' }),
+      el('td', { text: String(verify) }), el('td', { text: String(result.attempts) }));
+  });
+  const total = done.reduce((sum, x) => sum + x.result.cost_usd, 0);
+  $('#summary').replaceChildren(el('div', { class: 'panel' }, el('h2', {}, 'Comparison'),
+    el('table', {}, el('thead', {}, el('tr', {}, ['Model', 'Cost', 'Time', 'Pages', 'Keyword match', 'To verify', 'Attempts'].map(h => el('th', { text: h })))), el('tbody', {}, rows)),
+    el('p', { class: 'small muted', text: `Total cost of this comparison: ${money(total)}. Open each result to read it in full, then keep the one you like best.` })));
+}
+
+$('#run').addEventListener('click', async () => {
+  const jd = $('#jd').value.trim();
+  if (jd.length < 40) { $('#run-status').textContent = 'Paste the full job description (at least a few sentences).'; return; }
+  const compare = $('input[name=mode]:checked').value === 'compare';
+  const ids = compare ? $$('#compare-list input:checked').map(i => i.value) : [$('#single').value];
+  if (!ids.length || !ids[0]) { $('#run-status').textContent = 'Pick at least one model.'; return; }
+  $('#run').disabled = true; $('#run-status').textContent = '';
+  collected = ids.map(id => ({ m: models.find(x => x.id === id), result: null }));
+  const cards = collected.map(c => makeCard(c.m));
+  $('#results').replaceChildren(...cards.map(c => c.card)); updateSummary();
+  await Promise.all(collected.map(async (c, i) => {
+    try {
+      c.result = await api('/api/tailor', { method: 'POST', body: {
+        jd, hints: $('#hints').value, model: c.m.id, compare, cover_letter: $('#cover').checked,
+        company_name: $('#company').value, hiring_manager: $('#manager').value } });
+      fillCard(cards[i].body, c.m, c.result);
+    } catch (err) {
+      c.result = { status: 'error', error: err.message, cost_usd: 0, latency_ms: 0 };
+      cards[i].body.replaceChildren(notice('bad', err.message));
+    }
+    updateSummary();
+  }));
+  $('#run').disabled = false;
+});
+init().catch(err => $('#models-note').replaceChildren(notice('bad', err.message)));
+</script>
+{% endblock %}

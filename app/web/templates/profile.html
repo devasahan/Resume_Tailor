@@ -1,0 +1,135 @@
+{% extends "base.html" %}
+{% block title %}Profile - Resume Tailor{% endblock %}
+{% block content %}
+<h1>Base profile</h1>
+<p class="sub">The fixed facts. The AI never changes these: name, contact details, employers with dates and work mode, and education.</p>
+
+<div class="panel">
+  <h2>1. Read your base resume <span class="muted small">(optional, you can also type everything in)</span></h2>
+  <div class="grid2">
+    <div><label for="file">File <span class="opt">PDF, DOCX or TXT, up to 5 MB</span></label><input type="file" id="file" accept=".pdf,.docx,.txt"></div>
+    <div><label for="parser">Read it with</label><select id="parser"></select></div>
+  </div>
+  <p class="small muted" id="parser-note"></p>
+  <div class="row"><button id="parse">Read file</button><span id="parse-status" class="muted small"></span></div>
+  <div id="parse-notices"></div>
+</div>
+
+<div class="panel">
+  <h2>2. Check and save</h2>
+  <div id="form"></div>
+  <div class="row"><button class="primary" id="save">Save profile</button><span id="save-status" class="small"></span></div>
+  <div id="save-notices"></div>
+</div>
+{% endblock %}
+{% block scripts %}
+<script>
+let state = { name: '', contact: { email: '', phone: '', linkedin: '', location: '', website: '' }, companies: [], education: [] };
+let modelList = [];
+
+function field(label, obj, key, opts = {}) {
+  const input = el('input', { type: 'text', value: obj[key] || '', placeholder: opts.placeholder || '' });
+  input.addEventListener('input', () => { obj[key] = input.value; });
+  return el('div', {}, el('label', {}, label, opts.optional ? el('span', { class: 'opt', text: ' (optional)' }) : null), input);
+}
+function modeSelect(company) {
+  const select = el('select', {}, ['', 'Remote', 'Onsite', 'Hybrid'].map(v => el('option', { value: v, selected: company.mode === v, text: v || 'Not stated' })));
+  select.addEventListener('change', () => { company.mode = select.value; });
+  return el('div', {}, el('label', {}, 'Work mode'), select);
+}
+function move(list, index, delta) {
+  const target = index + delta;
+  if (target < 0 || target >= list.length) return;
+  [list[index], list[target]] = [list[target], list[index]];
+  render();
+}
+
+function render() {
+  const form = $('#form');
+  form.replaceChildren(
+    field('Full name', state, 'name'),
+    el('h3', {}, 'Contact'),
+    el('div', { class: 'grid2' },
+      field('Email', state.contact, 'email'), field('Phone', state.contact, 'phone'),
+      field('LinkedIn', state.contact, 'linkedin'), field('Location', state.contact, 'location', { placeholder: 'City, State' }),
+      field('Website', state.contact, 'website', { optional: true })),
+    el('h3', {}, 'Employers, most recent first'),
+    ...state.companies.map((c, i) => el('div', { class: 'repeat' },
+      el('div', { class: 'grid2' },
+        field('Company', c, 'name'), field('Start', c, 'start', { placeholder: 'Jan 2021' }),
+        field('End', c, 'end', { placeholder: 'Mar 2023 or Present' }), modeSelect(c),
+        field('Location', c, 'location', { optional: true })),
+      el('div', { class: 'row' },
+        el('button', { class: 'small', onclick: () => move(state.companies, i, -1), text: 'Move up' }),
+        el('button', { class: 'small', onclick: () => move(state.companies, i, 1), text: 'Move down' }),
+        el('button', { class: 'small danger', onclick: () => { state.companies.splice(i, 1); render(); }, text: 'Remove' })))),
+    el('button', { class: 'small', onclick: () => { state.companies.push({ name: '', start: '', end: '', mode: '', location: '' }); render(); }, text: 'Add employer' }),
+    el('h3', {}, 'Education'),
+    ...state.education.map((e, i) => el('div', { class: 'repeat' },
+      el('div', { class: 'grid2' },
+        field('School', e, 'school'), field('Degree', e, 'degree', { placeholder: 'B.S.' }), field('Field', e, 'field', { optional: true }),
+        field('Start', e, 'start', { optional: true }), field('End', e, 'end'), field('Details', e, 'details', { optional: true })),
+      el('button', { class: 'small danger', onclick: () => { state.education.splice(i, 1); render(); }, text: 'Remove' }))),
+    el('button', { class: 'small', onclick: () => { state.education.push({ school: '', degree: '', field: '', start: '', end: '', details: '' }); render(); }, text: 'Add education' }));
+}
+
+function parserNote() {
+  const value = $('#parser').value;
+  const info = modelList.find(m => m.id === value);
+  $('#parser-note').textContent = !info
+    ? 'Rules only: nothing leaves this computer, but results are rougher. You can correct everything below.'
+    : info.demo ? 'Demo model: offline, no cost.'
+    : `Your resume text will be sent to ${info.label} (${info.data_region} endpoint) and may be kept by that provider per its terms.`;
+}
+
+async function init() {
+  const [models, saved] = await Promise.all([api('/api/models'), api('/api/profile')]);
+  modelList = models.models.filter(m => m.available);
+  $('#parser').replaceChildren(
+    el('option', { value: 'rules', text: 'Rules only (nothing is sent anywhere)' }),
+    ...modelList.map(m => el('option', { value: m.id, text: m.label + (m.demo ? ' (demo)' : ` - ${m.data_region}`) })));
+  $('#parser').addEventListener('change', parserNote);
+  parserNote();
+  if (saved.profile) {
+    state = saved.profile;
+    $('#save-notices').replaceChildren(saved.warnings.length ? notice('warn', 'Things to double-check in the saved profile:', saved.warnings) : '');
+  } else {
+    state.companies.push({ name: '', start: '', end: '', mode: '', location: '' });
+    state.education.push({ school: '', degree: '', field: '', start: '', end: '', details: '' });
+  }
+  render();
+}
+
+$('#parse').addEventListener('click', async () => {
+  const file = $('#file').files[0];
+  if (!file) { $('#parse-status').textContent = 'Choose a file first.'; return; }
+  const form = new FormData();
+  form.append('file', file);
+  form.append('model', $('#parser').value);
+  $('#parse').disabled = true;
+  $('#parse-status').replaceChildren(el('span', { class: 'spinner' }), 'Reading...');
+  try {
+    const data = await api('/api/profile/parse', { method: 'POST', form });
+    state = data.profile;
+    render();
+    $('#parse-status').textContent = `Done (${data.method}). Check every field below, then save.`;
+    $('#parse-notices').replaceChildren(data.warnings.length ? notice('warn', 'Please check:', data.warnings) : '');
+  } catch (err) {
+    $('#parse-status').textContent = '';
+    $('#parse-notices').replaceChildren(notice('bad', err.message));
+  } finally { $('#parse').disabled = false; }
+});
+
+$('#save').addEventListener('click', async () => {
+  try {
+    const data = await api('/api/profile', { method: 'POST', body: state });
+    $('#save-status').replaceChildren('Saved. ', el('a', { href: '/tailor', text: 'Go to Tailor' }));
+    $('#save-notices').replaceChildren(data.warnings.length ? notice('warn', 'Saved, but double-check:', data.warnings) : '');
+  } catch (err) {
+    $('#save-status').textContent = '';
+    $('#save-notices').replaceChildren(notice('bad', err.message));
+  }
+});
+init().catch(err => $('#form').replaceChildren(notice('bad', err.message)));
+</script>
+{% endblock %}

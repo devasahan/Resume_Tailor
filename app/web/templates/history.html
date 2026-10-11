@@ -1,0 +1,26 @@
+{% extends "base.html" %}
+{% block title %}History - Resume Tailor{% endblock %}
+{% block content %}
+<h1>History</h1>
+<p class="sub" id="sub"></p>
+<div class="panel"><table><thead><tr>
+  <th>When (UTC)</th><th>Task</th><th>Model asked</th><th>Model that answered</th><th>Role</th><th>Result</th><th>Cost</th><th>Tokens</th><th>Time</th><th></th>
+</tr></thead><tbody id="rows"></tbody></table></div>
+{% endblock %}
+{% block scripts %}
+<script>
+async function init() {
+  const data = await api('/api/runs');
+  $('#sub').textContent = `Spent today: ${money(data.cost_today)}. Stored runs are deleted after the retention period set in Settings.`;
+  $('#rows').replaceChildren(...(data.runs.length ? data.runs.map(r => {
+    const result = r.status === 'error' ? chip('failed', 'bad') : r.task === 'parse' ? chip('profile read') : chip(r.fits ? '1 page' : r.pages + ' pages', r.fits ? 'ok' : 'bad');
+    return el('tr', {}, el('td', { text: r.created_at.replace('T', ' ').replace('Z', '') }), el('td', { text: r.task }),
+      el('td', { text: r.requested_model }), el('td', { text: r.served_model || '-' }), el('td', { text: r.target_role || '-' }),
+      el('td', {}, result, r.error ? el('div', { class: 'small muted', text: r.error.slice(0, 100) }) : null),
+      el('td', { text: money(r.cost_usd) }), el('td', { text: String(r.input_tokens + r.output_tokens) }), el('td', { text: seconds(r.latency_ms) }),
+      el('td', {}, r.status === 'ok' && r.task === 'resume' ? el('a', { href: '/run/' + r.id, text: 'Open' }) : null));
+  }) : [el('tr', {}, el('td', { colspan: 10, class: 'muted', text: 'No runs yet.' }))]));
+}
+init().catch(err => $('#rows').replaceChildren(el('tr', {}, el('td', { colspan: 10 }, notice('bad', err.message)))));
+</script>
+{% endblock %}

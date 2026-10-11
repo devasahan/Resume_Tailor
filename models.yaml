@@ -1,0 +1,187 @@
+# Model registry. The app reads this file at startup.
+#
+# A model shows up as usable only when its key_env variable is set (demo models need no key).
+#
+# Fields
+#   id           unique id used in the UI, settings and run history
+#   provider     anthropic | openai_compat | fake
+#   model        the exact model string sent to the provider
+#   base_url     openai_compat only: API root that serves POST {base_url}/chat/completions
+#   key_env      environment variable holding the API key
+#   price_in/out USD per 1M tokens (used for cost estimates and the daily cap)
+#   data_region  US | EU | SG | CN | UNKNOWN | DEMO. Settings -> allowed regions controls which can be used
+#   verified     false = model string / price came from third-party sources, run `python -m app.cli check`
+#   settings     provider-specific knobs:
+#                  effort            (anthropic) low | medium | high | xhigh | max
+#                  refusal_fallback  (anthropic) retry a safety-declined request on Anthropic's default fallback model
+#                  reasoning_effort  (openai_compat) low | medium | high, sent only if the provider accepts it
+#                  json_mode         (openai_compat) json_schema | json_object | none
+#                  max_output_tokens cap on generated tokens per call
+#
+# Prices and model strings below were collected in October 2026 from third-party
+# sites unless verified: true. Vendors change both often, so confirm before relying on them.
+
+models:
+  - id: claude-sonnet-5-5
+    label: Claude Sonnet 5.5
+    provider: anthropic
+    model: claude-sonnet-5-5
+    key_env: ANTHROPIC_API_KEY
+    price_in: 2.00
+    price_out: 10.00
+    data_region: US
+    verified: true
+    settings: {effort: medium, refusal_fallback: true, max_output_tokens: 8000}
+    notes: Quality baseline. Structured output via output_config.format; thinking cannot be disabled on this model.
+
+  - id: gemini-3.8-flash
+    label: Gemini 3.8 Flash
+    provider: openai_compat
+    model: gemini-3.8-flash
+    base_url: https://generativelanguage.googleapis.com/v1beta/openai
+    key_env: GEMINI_API_KEY
+    price_in: 0.75
+    price_out: 3.75
+    data_region: US
+    verified: false
+    settings: {reasoning_effort: low, json_mode: json_schema, max_output_tokens: 8000}
+    notes: Introductory price reportedly ends 2026-12-31. Use a paid key, free-tier data may be used to improve Google models.
+
+  - id: gemini-3.5-flash-lite
+    label: Gemini 3.5 Flash-Lite
+    provider: openai_compat
+    model: gemini-3.5-flash-lite
+    base_url: https://generativelanguage.googleapis.com/v1beta/openai
+    key_env: GEMINI_API_KEY
+    price_in: 0.30
+    price_out: 2.50
+    data_region: US
+    verified: false
+    settings: {reasoning_effort: low, json_mode: json_schema, max_output_tokens: 8000}
+    notes: Cheap model, good for parsing the uploaded base resume.
+
+  - id: grok-4.3
+    label: Grok 4.3
+    provider: openai_compat
+    model: grok-4.3
+    base_url: https://api.x.ai/v1
+    key_env: XAI_API_KEY
+    price_in: 1.25
+    price_out: 2.50
+    data_region: US
+    verified: false
+    settings: {reasoning_effort: low, json_mode: json_schema, max_output_tokens: 8000}
+    notes: xAI keeps API data 30 days by default (zero-data-retention is an enterprise option).
+
+  - id: grok-4.7
+    label: Grok 4.7
+    provider: openai_compat
+    model: grok-4.7
+    base_url: https://api.x.ai/v1
+    key_env: XAI_API_KEY
+    price_in: 2.00
+    price_out: 6.00
+    data_region: US
+    verified: false
+    settings: {reasoning_effort: low, json_mode: json_schema, max_output_tokens: 8000}
+    notes: Verbose model, cap output tokens to control cost.
+
+  - id: mistral-large
+    label: Mistral Large 3
+    provider: openai_compat
+    model: mistral-large-latest
+    base_url: https://api.mistral.ai/v1
+    key_env: MISTRAL_API_KEY
+    price_in: 0.50
+    price_out: 1.50
+    data_region: EU
+    verified: false
+    settings: {json_mode: json_schema, max_output_tokens: 8000}
+    notes: Sources disagree on the price (older guides list 2.00 / 6.00).
+
+  - id: deepseek-v4-flash
+    label: DeepSeek V4.1 Flash
+    provider: openai_compat
+    model: deepseek-flash
+    base_url: https://api.deepseek.com
+    key_env: DEEPSEEK_API_KEY
+    price_in: 0.30
+    price_out: 1.20
+    data_region: CN
+    verified: false
+    settings: {json_mode: json_object, max_output_tokens: 8000}
+    notes: Peak price shown, half price off-peak. Endpoint is hosted in China, check retention terms before sending resumes.
+
+  - id: glm-5.3
+    label: GLM-5.3 (Z.ai)
+    provider: openai_compat
+    model: glm-5.3
+    base_url: https://api.z.ai/api/paas/v4
+    key_env: ZAI_API_KEY
+    price_in: 1.40
+    price_out: 4.40
+    data_region: UNKNOWN
+    verified: false
+    settings: {json_mode: json_object, max_output_tokens: 8000}
+    notes: Check where the endpoint is hosted before sending resumes.
+
+  - id: qwen-3.8-max
+    label: Qwen 3.8 Max
+    provider: openai_compat
+    model: qwen3.8-max
+    base_url: https://dashscope-intl.aliyuncs.com/compatible-mode/v1
+    key_env: DASHSCOPE_API_KEY
+    price_in: 2.00
+    price_out: 6.00
+    data_region: SG
+    verified: false
+    settings: {json_mode: json_object, max_output_tokens: 8000}
+    notes: International (Singapore) endpoint. Exact model string is unconfirmed.
+
+  - id: kimi-k2.6
+    label: Kimi K2.6
+    provider: openai_compat
+    model: kimi-k2.6
+    base_url: https://api.moonshot.ai/v1
+    key_env: MOONSHOT_API_KEY
+    price_in: 0.95
+    price_out: 4.00
+    data_region: UNKNOWN
+    verified: false
+    settings: {json_mode: json_object, max_output_tokens: 8000}
+    notes: Open weights, so a US/EU host (Together, Fireworks, DeepInfra) is an alternative if you add it here.
+
+  # Offline demo models: no key, no network, no cost. They produce plausible but generic text
+  # so the whole app can be tried end to end. Three styles make Compare mode meaningful.
+  - id: demo-concise
+    label: Demo (concise)
+    provider: fake
+    model: demo-concise
+    price_in: 0
+    price_out: 0
+    data_region: DEMO
+    verified: true
+    settings: {style: concise}
+    notes: Offline demo, template-based text.
+
+  - id: demo-detailed
+    label: Demo (detailed)
+    provider: fake
+    model: demo-detailed
+    price_in: 0
+    price_out: 0
+    data_region: DEMO
+    verified: true
+    settings: {style: detailed}
+    notes: Offline demo, produces long bullets so the one-page fit logic can be seen at work.
+
+  - id: demo-flaky
+    label: Demo (flaky)
+    provider: fake
+    model: demo-flaky
+    price_in: 0
+    price_out: 0
+    data_region: DEMO
+    verified: true
+    settings: {style: flaky}
+    notes: Offline demo that returns invalid output at first, to show retries and fallback.
