@@ -80,7 +80,7 @@ function showMeta() {
   const verify = r.flags.filter(f => f.level === 'verify'), info = r.flags.filter(f => f.level !== 'verify');
   const row = f => el('div', { class: 'flag ' + f.level }, el('div', {}, f.reason), el('q', { text: f.text.length > 160 ? f.text.slice(0, 160) + '...' : f.text }));
   $('#flags').replaceChildren(
-    verify.length ? el('p', { class: 'small' }, 'Numbers and claims you did not provide. Remove or confirm each one:') : el('p', { class: 'small muted' }, 'No unverified numbers.'),
+    verify.length ? el('p', { class: 'small' }, 'Estimated numbers you did not provide. Replace each with your real figure, or remove it:') : el('p', { class: 'small muted' }, 'No estimated numbers.'),
     ...verify.map(row), info.length ? el('h3', {}, 'Suggestions to confirm') : null, ...info.map(row));
   $('#pdf').src = `/api/runs/${RUN_ID}/resume.pdf?t=${Date.now()}#toolbar=0&navpanes=0&view=FitH`;
 }

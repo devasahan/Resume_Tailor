@@ -179,7 +179,7 @@ def claim_flags(resume: Resume, jd: str, hints: str) -> list[Flag]:
             if token and token.lower() not in hints_l:
                 flags.append(
                     Flag(section=section, text=text, level="verify",
-                         reason=f"Contains '{token}', which is not in your hints. Only keep figures you can back up.")
+                         reason=f"'{token}' is an estimate, not a number you gave. Replace it with your real figure or remove it.")
                 )
                 return
 
@@ -198,7 +198,7 @@ def claim_flags(resume: Resume, jd: str, hints: str) -> list[Flag]:
             if item.lower() not in jd_l and item.lower() not in hints_l:
                 flags.append(
                     Flag(section="skills", text=item, level="info",
-                         reason="Not mentioned in the job description. Inferred for this career path, keep it only if true.")
+                         reason="Related skill added (not in the job description). Keep it only if you have it.")
                 )
     return flags
 

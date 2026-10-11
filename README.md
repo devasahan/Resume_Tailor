@@ -71,6 +71,7 @@ Costs shown in the app are estimates: `tokens reported by the provider x the pri
 - a **soft daily cost cap** (new runs stop once today's recorded spend reaches it; runs already in flight finish)
 - allowed data regions (models hosted in `CN` or `UNKNOWN` regions stay off until you allow them)
 - retention (stored profile and runs are deleted after N days), paper size (Letter / A4)
+- numbers in bullets: realistic estimates flagged for you to confirm (default), or only the numbers you give
 
 ## Choosing a model: the bake-off
 
@@ -86,7 +87,9 @@ It prints a cost estimate and asks before spending anything, then writes `result
 
 ## How the guarantees work
 - **Fixed facts cannot change.** The model returns only the editable sections as JSON. Code merges them into your saved profile and asserts the profile is unchanged. The edit endpoint never reads profile fields from the request.
-- **No invented numbers.** The prompts forbid figures you did not supply. Anything numeric the model writes anyway is flagged "to verify". Skills that are not in the job description are flagged as inferred.
+- **Years of experience are calculated, not guessed.** The app computes them from your locked employment dates (overlapping jobs counted once, rounded down, e.g. "7+ years") and gives that figure to the model, which must use it exactly in the summary.
+- **Metrics are estimates until you confirm them.** By default (Settings > Numbers in bullets) the model adds realistic, conservative metrics to most bullets, using your real numbers from "Real facts about you" first. Every figure you did not give is flagged "to verify" in the review panel so you can replace or remove it. Switch the setting to "Only the numbers I give" to forbid estimates.
+- **Related skills are marked.** The skills list starts with the job description's skills, then adds closely related skills that support them; each added one is flagged so you keep only what you really have.
 - **One page.** The renderer shrinks font and margins (floor 9.5 pt / 0.5 in), then asks the model once for shorter bullets, then drops the lowest-priority bullets of the roles with the most bullets (keeping two each), and reports what it did. If it still does not fit, it says so.
 - **ATS-friendly layout.** Single column, real text with an embedded standard-metrics font (Carlito, compatible with Calibri), standard section headings, no tables, columns, images or icons, contact details in the body. No tool can guarantee how every ATS parses a file; this follows the common advice.
 - **Bad model output is handled.** Invalid or incomplete JSON is sent back once with the error; if it still fails the next fallback model is used; failures show up in History instead of crashing.

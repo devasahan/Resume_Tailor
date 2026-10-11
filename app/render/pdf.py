@@ -221,13 +221,14 @@ def render_resume_pdf(resume: Resume, style: FitStyle) -> tuple[bytes, int]:
     sheet = Sheet(style.paper, style.margin_in * 72, style.font_pt, RESUME_LINE, f"{p.name} - Resume", p.name)
     size = sheet.size
 
+    # Header: name, then the headline, then the contact line.
     sheet.para([Run(p.name, True)], size=sheet.fit_size(p.name, True, size + 9, sheet.width), align="C")
+    sheet.space(2)
+    sheet.para([Run(resume.headline, True)], align="C")
     line = contact_line(p.contact)
     if line:
         sheet.space(2)
         sheet.para([Run(line)], align="C")
-    sheet.space(4)
-    sheet.para([Run(resume.headline, True)], align="C")
 
     sheet.heading("SUMMARY")
     sheet.para([Run(resume.summary)])

@@ -71,14 +71,16 @@ def resume_docx(resume: Resume, style: FitStyle) -> bytes:
     run = name.add_run(p.name)
     run.bold = True
     run.font.size = Pt(style.font_pt + 9)
+    # Header: name, then the headline, then the contact line.
+    h = doc.add_paragraph()
+    h.alignment = WD_ALIGN_PARAGRAPH.CENTER
+    h.paragraph_format.space_before = Pt(2)
+    h.add_run(resume.headline).bold = True
     line = contact_line(p.contact)
     if line:
         c = doc.add_paragraph(line)
         c.alignment = WD_ALIGN_PARAGRAPH.CENTER
-    h = doc.add_paragraph()
-    h.alignment = WD_ALIGN_PARAGRAPH.CENTER
-    h.paragraph_format.space_before = Pt(4)
-    h.add_run(resume.headline).bold = True
+        c.paragraph_format.space_before = Pt(2)
 
     _heading(doc, "SUMMARY", style.font_pt)
     doc.add_paragraph(resume.summary)

@@ -1,0 +1,1 @@
+METRICS: do NOT invent numbers, percentages, money amounts, team sizes or user counts. Use a figure only if the candidate hints contain it, exactly as given. Otherwise describe scope and impact in words ("high-volume", "company-wide", "cross-functional").

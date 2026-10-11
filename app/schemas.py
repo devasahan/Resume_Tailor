@@ -154,4 +154,5 @@ class TailorResult(BaseModel):
     fallback_chain: list[str] = Field(default_factory=list)  # models tried, in order
     prompt_version: str = ""
     hints: str = ""  # the user's own facts, kept so claim checks can be re-run after manual edits
+    facts: str = ""  # facts computed from the profile (years of experience) that were given to the model
     created_at: str = ""

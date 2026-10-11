@@ -28,6 +28,7 @@ from ..schemas import (
 )
 from ..storage.db import Database
 from . import validate
+from .facts import candidate_facts
 from .fit import render_smallest, trim_to_fit, try_styles
 from .generate import GenerationFailed, Outcome, generate_validated
 
@@ -59,7 +60,7 @@ def run_checks(result: TailorResult, jd_text: str) -> None:
     assert result.resume is not None and result.analysis is not None
     result.coverage = validate.keyword_coverage(result.resume, result.analysis)
     result.ats_warnings = validate.ats_lint(result.resume)
-    result.flags = validate.claim_flags(result.resume, jd_text, result.hints)
+    result.flags = validate.claim_flags(result.resume, jd_text, f"{result.hints}\n{result.facts}")
     if result.cover_letter:
         result.flags += validate.cover_flags(result.cover_letter, result.hints)
 
@@ -91,8 +92,11 @@ async def run_tailor(
     save: bool = True,
 ) -> TailorResult:
     started = time.perf_counter()
-    paper = router.settings()["paper_size"]
-    result = TailorResult(requested_model=model_id, prompt_version=PROMPT_VERSION, hints=hints)
+    settings = router.settings()
+    paper = settings["paper_size"]
+    metrics_mode = settings.get("metrics_mode", "estimate")
+    facts = candidate_facts(profile)
+    result = TailorResult(requested_model=model_id, prompt_version=PROMPT_VERSION, hints=hints, facts=facts)
     outcome: Outcome = Outcome()
     notes: list[str] = []
 
@@ -106,7 +110,7 @@ async def run_tailor(
             return out, validate.build_resume(profile, out)
 
         await generate_validated(
-            router, chain, system=tailor_system(), user=tailor_user(jd, profile.companies, hints),
+            router, chain, system=tailor_system(metrics_mode), user=tailor_user(jd, profile.companies, hints, facts),
             schema=schema, schema_name="tailor_output", parse=parse, context=context, outcome=outcome,
         )
         output, resume = outcome.value  # type: ignore[misc]
@@ -117,8 +121,8 @@ async def run_tailor(
             second = Outcome()
             try:
                 await generate_validated(
-                    router, [outcome.final_model_id], system=tailor_system(),
-                    user=tailor_user(jd, profile.companies, hints, shorten=True), schema=schema,
+                    router, [outcome.final_model_id], system=tailor_system(metrics_mode),
+                    user=tailor_user(jd, profile.companies, hints, facts, shorten=True), schema=schema,
                     schema_name="tailor_output", parse=parse, context={**context, "shorten": True}, outcome=second,
                 )
                 _absorb(outcome, second)

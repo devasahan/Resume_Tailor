@@ -19,6 +19,7 @@ from .llm.registry import ModelSpec, Registry
 from .llm.router import Router
 from .parsing.resume_parser import MAX_BYTES, extract_text, parse_resume, profile_warnings
 from .pipeline import validate
+from .prompts import METRICS_MODES
 from .pipeline.tailor import analysis_terms, fit_report, run_checks, run_tailor
 from .render.docx import cover_docx, resume_docx
 from .render.pdf import render_cover_pdf, render_resume_pdf
@@ -100,6 +101,10 @@ def validate_settings(registry: Registry, values: dict) -> dict:
                 out[key] = list(value)
             elif key == "retention_days":
                 out[key] = max(0, min(3650, int(value)))
+            elif key == "metrics_mode":
+                if value not in METRICS_MODES:
+                    raise ValueError(f"metrics_mode must be one of {', '.join(METRICS_MODES)}")
+                out[key] = value
             elif key == "paper_size":
                 if value not in ("Letter", "A4"):
                     raise ValueError("paper_size must be Letter or A4")

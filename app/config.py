@@ -71,6 +71,7 @@ DEFAULT_SETTINGS: dict = {
     "allowed_regions": ["US", "EU", "SG", "DEMO"],  # CN / UNKNOWN endpoints are opt-in
     "retention_days": 30,  # stored profiles and runs are deleted after this; 0 = keep
     "paper_size": "Letter",  # Letter | A4
+    "metrics_mode": "estimate",  # estimate: realistic figures, flagged for the user | hints_only: only the user's numbers
 }
 
 # Used only when a task has no model chosen in Settings. Real models first, demo last.

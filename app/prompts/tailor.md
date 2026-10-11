@@ -6,6 +6,10 @@
 {{companies}}
 </employers>
 
+<candidate_facts>
+{{facts}}
+</candidate_facts>
+
 <candidate_hints>
 {{hints}}
 </candidate_hints>

@@ -9,7 +9,7 @@ from pathlib import Path
 
 from ..schemas import Company, Resume
 
-PROMPT_VERSION = "v1"
+PROMPT_VERSION = "v2"
 RETRY_MARKER = "Your previous answer was rejected"
 
 _DIR = Path(__file__).parent
@@ -45,16 +45,22 @@ def describe_companies(companies: list[Company]) -> str:
     return "\n".join(lines) or "(none)"
 
 
-def tailor_system() -> str:
-    return _read("system.md")
+METRICS_MODES = ("estimate", "hints_only")
 
 
-def tailor_user(jd: str, companies: list[Company], hints: str, shorten: bool = False) -> str:
+def tailor_system(metrics_mode: str = "estimate") -> str:
+    if metrics_mode not in METRICS_MODES:
+        raise ValueError(f"metrics_mode must be one of {METRICS_MODES}")
+    return _fill(_read("system.md"), metrics_rule=_read(f"metrics_{metrics_mode}.md").strip())
+
+
+def tailor_user(jd: str, companies: list[Company], hints: str, facts: str = "", shorten: bool = False) -> str:
     return _fill(
         _read("tailor.md"),
         jd=jd.strip(),
         count=str(len(companies)),
         companies=describe_companies(companies),
+        facts=facts.strip() or "Total professional experience: unknown (do not state a number of years).",
         hints=hints.strip() or "(none given)",
         extra=SHORTEN_NOTE if shorten else "",
     )
