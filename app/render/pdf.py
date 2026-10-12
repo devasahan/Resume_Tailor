@@ -44,8 +44,10 @@ def display_url(url: str) -> str:
 
 
 def contact_line(contact: Contact) -> str:
-    parts = [contact.email, contact.phone, display_url(contact.linkedin), contact.location, display_url(contact.website)]
-    return " | ".join(part for part in parts if part)
+    """The usual resume order, whatever order the base resume used: City, State | Phone | Email | LinkedIn |
+    Portfolio/GitHub. Missing parts are left out."""
+    parts = [contact.location, contact.phone, contact.email, display_url(contact.linkedin), display_url(contact.website)]
+    return " | ".join(part.strip() for part in parts if part and part.strip())
 
 
 def fmt_dates(start: str, end: str) -> str:

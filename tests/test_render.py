@@ -159,6 +159,15 @@ def test_docx_resume_content_and_layout_primitives(resume):
 
 
 def test_small_helpers():
-    assert contact_line(Contact(email="a@b.c", phone="1", location="X")) == "a@b.c | 1 | X"
+    assert contact_line(Contact(email="a@b.c", phone="1", location="X")) == "X | 1 | a@b.c"
     assert contact_line(Contact()) == ""
     assert fmt_dates("Jan 2020", "Present") == "Jan 2020 - Present" and fmt_dates("", "2016") == "2016" and fmt_dates("", "") == ""
+
+
+def test_contact_line_uses_the_usual_resume_order_whatever_the_input_order():
+    contact = Contact(website="https://github.com/jrivera/", linkedin="https://www.linkedin.com/in/jrivera/",
+                      email="jordan@example.com", phone="(555) 010-2030", location="Austin, TX")
+    assert contact_line(contact) == (
+        "Austin, TX | (555) 010-2030 | jordan@example.com | linkedin.com/in/jrivera | github.com/jrivera")
+    assert contact_line(Contact(email="jordan@example.com", location="Austin, TX", phone="  ")) == (
+        "Austin, TX | jordan@example.com")  # missing parts are left out

@@ -89,7 +89,7 @@ def test_header_order_is_name_headline_contact(profile):
     lines = PdfReader(io.BytesIO(render_resume_pdf(resume, FitStyle())[0])).pages[0].extract_text().splitlines()
     assert lines[0] == "Jordan Rivera"
     assert lines[1] == resume.headline
-    assert lines[2].startswith("jordan@example.com")
+    assert lines[2] == "Austin, TX | (555) 010-2030 | jordan@example.com | linkedin.com/in/jordanrivera"
     paragraphs = [p.text for p in Document(io.BytesIO(resume_docx(resume, FitStyle()))).paragraphs]
     assert paragraphs[:3] == ["Jordan Rivera", resume.headline, lines[2]]
 
