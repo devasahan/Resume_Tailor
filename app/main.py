@@ -6,10 +6,13 @@ sign-ups) and Settings. New sign-ups wait until the admin approves them.
 """
 from __future__ import annotations
 
+import asyncio
 import logging
 import re
+import secrets
 import unicodedata
 import time
+from datetime import timedelta
 from pathlib import Path
 from urllib.parse import quote, urlsplit
 
@@ -93,6 +96,18 @@ _TECHNICAL = (
     "api key", "settings", ".env", "model", "provider", "region", "http ", "quota", "rate limit", "token",
     "json", "invalid structure", "empty answer", "response shape", "declined", "unexpected error", "network",
 )
+
+
+# Tailoring can take minutes when a model is slow or busy, longer than hosting proxies wait for an answer
+# (PythonAnywhere then shows "Gateway Time-out"). So a request waits at most JOB_WAIT_SECONDS; slower work goes on
+# in the background and the page asks GET /api/jobs/{id} every few seconds until it ends.
+JOB_WAIT_SECONDS = 20.0
+JOB_LOST_MINUTES = 30  # a job still running after this was stopped by a restart (Reload) and will never end
+JOB_LOST = "The server restarted before this finished. Try again."
+
+
+class JobFailed(Exception):
+    """Background work that ended without a result. The message is the admin's; users see failure_message."""
 
 
 class PlainError(HTTPException):
@@ -395,6 +410,49 @@ def create_app(db: Database | None = None, registry: Registry | None = None, rou
 
     def viewed(result: TailorResult, user: auth.User) -> dict:
         return result.model_dump() if user.is_admin else public_run(result)
+
+    def job_error(message: str, user: auth.User) -> HTTPException:
+        return HTTPException(502, message if user.is_admin else failure_message(message))
+
+    running: set[asyncio.Task] = set()  # a reference keeps a job that nobody waits for from being garbage collected
+
+    def forget(task: asyncio.Task) -> None:
+        running.discard(task)
+        if not task.cancelled():
+            task.exception()  # retrieved, so asyncio does not warn; run() has recorded it already
+
+    async def answer_soon(user: auth.User, kind: str, work):
+        """The run work() makes, if it is ready within JOB_WAIT_SECONDS. Otherwise 202 {"job", "status":
+        "running"}: the work goes on, and GET /api/jobs/{job} gives the same answer once it ends."""
+        job_id = secrets.token_urlsafe(16)
+        db.create_job(job_id, user.id, kind)
+
+        async def run() -> TailorResult:
+            try:
+                result = await work()
+            except JobFailed as exc:
+                db.finish_job(job_id, run_id=None, error=str(exc))
+                raise
+            except asyncio.CancelledError:  # the server is stopping (Reload): tell the page at once
+                db.finish_job(job_id, run_id=None, error=JOB_LOST)
+                raise
+            except Exception as exc:
+                log.exception("Background %s failed", kind)
+                db.finish_job(job_id, run_id=None, error=f"Unexpected error: {type(exc).__name__}")
+                raise
+            db.finish_job(job_id, run_id=result.run_id)
+            return result
+
+        task = asyncio.create_task(run())
+        running.add(task)
+        task.add_done_callback(forget)
+        await asyncio.wait({task}, timeout=JOB_WAIT_SECONDS)  # never cancels the task, even if this request ends
+        if not task.done():
+            return JSONResponse({"job": job_id, "status": "running"}, status_code=202)
+        try:
+            return viewed(task.result(), user)
+        except JobFailed as exc:
+            raise job_error(str(exc), user) from None
 
     def log_download(user: auth.User, run_id: int, result: TailorResult, kind: str, fmt: str, filename: str) -> None:
         analysis = result.analysis
@@ -715,12 +773,26 @@ def create_app(db: Database | None = None, registry: Registry | None = None, rou
                     cover_model = chosen
                 except LLMError:
                     cover_model = None
-        result = await run_tailor(
+        return await answer_soon(user, "tailor", lambda: run_tailor(
             router, db, profile=profile, profile_id=profile_id, jd=body.jd, hints=body.hints, model_id=model_id,
             allow_fallback=not compare, cover_letter=body.cover_letter, cover_model_id=cover_model,
             company_name=body.company_name.strip(), hiring_manager=body.hiring_manager.strip(), user_id=user.id,
-        )
-        return viewed(result, user)
+        ))
+
+    @app.get("/api/jobs/{job_id}")
+    def api_job(job_id: str, user: auth.User = Depends(current_user)):
+        """Slow work started by POST /api/tailor or /api/runs/{id}/cover-letter: still running, or its answer."""
+        job = db.get_job(job_id, user.id) if len(job_id) <= 64 else None
+        if job is None:
+            raise HTTPException(404, "Not found.")
+        if job["status"] == "running":
+            lost = auth.utc(auth.now_utc() - timedelta(minutes=JOB_LOST_MINUTES))
+            if job["created_at"] >= lost:
+                return JSONResponse({"job": job_id, "status": "running"}, status_code=202)
+            job["error"] = JOB_LOST
+        if job["error"]:
+            raise job_error(job["error"], user)
+        return viewed(load_run(job["run_id"], user), user)
 
     # ------------------------------------------------------------------ runs
     @app.get("/api/runs", dependencies=[Depends(admin_user)])
@@ -787,10 +859,14 @@ def create_app(db: Database | None = None, registry: Registry | None = None, rou
             router.usable_spec(model_id)
         except LLMError as exc:
             raise HTTPException(422, str(exc)) from exc
-        fresh, error = await write_cover_letter(router, db, run_id, jd=jd, model_id=model_id, user_id=user.id)
-        if error:
-            raise HTTPException(502, error if user.is_admin else failure_message(error))
-        return viewed(fresh, user)
+
+        async def work() -> TailorResult:
+            fresh, error = await write_cover_letter(router, db, run_id, jd=jd, model_id=model_id, user_id=user.id)
+            if error:
+                raise JobFailed(error)
+            return fresh
+
+        return await answer_soon(user, "cover_letter", work)
 
     # ------------------------------------------------------------------ files (a Download click is logged)
     @app.get("/api/runs/{run_id}/resume.pdf")

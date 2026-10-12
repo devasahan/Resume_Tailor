@@ -88,7 +88,8 @@ function readJd() {
 
 async function tailorNow(jd) {
   const profileId = chosenId();
-  const run = await api('/api/tailor', { method: 'POST', body: { jd, profile_id: profileId } });
+  const run = await finished(await api('/api/tailor', { method: 'POST', body: { jd, profile_id: profileId } }),
+    () => busy(true, 'Still tailoring the resume... The AI service is slow right now; this can take a few minutes.'));
   if (run.status === 'error') {
     current = null;  // no usable result: do not leave the previous one's downloads on screen
     $('#result').classList.add('hidden'); $('#empty').classList.remove('hidden');
@@ -118,7 +119,8 @@ $('#cover-letter').addEventListener('click', async () => {
       await tailorNow(jd);
     }
     busy(true, 'Writing the cover letter...');
-    const run = await api(`/api/runs/${current.run.run_id}/cover-letter`, { method: 'POST', body: {} });
+    const run = await finished(await api(`/api/runs/${current.run.run_id}/cover-letter`, { method: 'POST', body: {} }),
+      () => busy(true, 'Still writing the cover letter... The AI service is slow right now; this can take a few minutes.'));
     current.run = run;
     showResult(run, 'cover');
     busy(false, 'Resume and cover letter ready.');

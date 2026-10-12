@@ -55,6 +55,17 @@ async function api(path, { method = 'GET', body = null, form = null } = {}) {
   return data;
 }
 
+// Slow work (tailoring, a cover letter) answers {job, status: 'running'} instead of keeping the request open for
+// minutes, which hosting proxies cut off. Ask again every few seconds until the real answer arrives.
+async function finished(data, onWait) {
+  while (data && data.job && data.status === 'running') {
+    if (onWait) onWait();
+    await new Promise(resolve => setTimeout(resolve, 3000));
+    data = await api(`/api/jobs/${encodeURIComponent(data.job)}`);
+  }
+  return data;
+}
+
 function money(x) {
   if (!x) return '$0';
   if (x < 0.01) return '<$0.01';

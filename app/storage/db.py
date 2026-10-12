@@ -1,5 +1,5 @@
 """SQLite storage: settings, accounts and sessions, the uploaded base resumes (profiles), one row per run,
-and the download history the admin sees.
+the download history the admin sees, and the slow jobs (tailoring, cover letters) a page is waiting for.
 
 Privacy: uploaded resumes stay until their owner deletes them. Runs (including the job description they
 were made for) and download history are deleted after the `retention_days` setting. Full resume text is
@@ -82,6 +82,16 @@ CREATE TABLE IF NOT EXISTS downloads (
 );
 CREATE INDEX IF NOT EXISTS downloads_created ON downloads(created_at);
 CREATE INDEX IF NOT EXISTS downloads_user ON downloads(user_id);
+CREATE TABLE IF NOT EXISTS jobs (
+    id TEXT PRIMARY KEY,
+    user_id INTEGER NOT NULL,
+    kind TEXT NOT NULL,
+    status TEXT NOT NULL DEFAULT 'running',
+    run_id INTEGER,
+    error TEXT NOT NULL DEFAULT '',
+    created_at TEXT NOT NULL,
+    finished_at TEXT NOT NULL DEFAULT ''
+);
 """
 
 
@@ -489,6 +499,25 @@ class Database:
             ).fetchall()
         return [dict(row) for row in rows]
 
+    # ------------------------------------------------------------------ background work (tailoring, cover letters)
+    def create_job(self, job_id: str, user_id: int, kind: str) -> None:
+        with self._conn() as conn:
+            conn.execute("INSERT INTO jobs(id, user_id, kind, created_at) VALUES(?, ?, ?, ?)",
+                         (job_id, user_id, kind, now_iso()))
+
+    def finish_job(self, job_id: str, *, run_id: int | None, error: str = "") -> None:
+        with self._conn() as conn:
+            conn.execute(
+                "UPDATE jobs SET status = ?, run_id = ?, error = ?, finished_at = ? WHERE id = ?",
+                ("failed" if error else "done", run_id, error, now_iso(), job_id),
+            )
+
+    def get_job(self, job_id: str, user_id: int) -> dict | None:
+        """A job only its owner can see."""
+        with self._conn() as conn:
+            row = conn.execute("SELECT * FROM jobs WHERE id = ? AND user_id = ?", (job_id, user_id)).fetchone()
+        return dict(row) if row else None
+
     # ------------------------------------------------------------------ retention
     def purge_all(self) -> None:
         """Every resume, run and download for everyone. Accounts, sessions and settings stay."""
@@ -496,10 +525,13 @@ class Database:
             conn.execute("DELETE FROM runs")
             conn.execute("DELETE FROM profiles")
             conn.execute("DELETE FROM downloads")
+            conn.execute("DELETE FROM jobs")
 
     def purge(self, retention_days: int) -> int:
+        day_ago = (datetime.now(timezone.utc) - timedelta(days=1)).strftime("%Y-%m-%dT%H:%M:%SZ")
         with self._conn() as conn:
             conn.execute("DELETE FROM sessions WHERE expires_at <= ?", (now_iso(),))
+            conn.execute("DELETE FROM jobs WHERE created_at < ?", (day_ago,))  # the page stops asking long before
         if retention_days <= 0:
             return 0
         cutoff = (datetime.now(timezone.utc) - timedelta(days=retention_days)).strftime("%Y-%m-%dT%H:%M:%SZ")
