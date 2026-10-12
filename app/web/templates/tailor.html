@@ -86,13 +86,24 @@ function readJd() {
   return jd;
 }
 
+function stillWorking(text, waited) {  // the slow-service note only once the wait is really long
+  return waited > 60000 ? `${text} The AI service is slow right now; this can take a few minutes.` : text;
+}
+
+function clearResult() {  // no usable result: do not leave the previous one's downloads on screen
+  current = null;
+  $('#result').classList.add('hidden'); $('#empty').classList.remove('hidden');
+}
+
 async function tailorNow(jd) {
   const profileId = chosenId();
-  const run = await finished(await api('/api/tailor', { method: 'POST', body: { jd, profile_id: profileId } }),
-    () => busy(true, 'Still tailoring the resume... The AI service is slow right now; this can take a few minutes.'));
+  let run;
+  try {
+    run = await finished(await api('/api/tailor', { method: 'POST', body: { jd, profile_id: profileId } }),
+      waited => busy(true, stillWorking('Still tailoring the resume...', waited)));
+  } catch (err) { clearResult(); throw err; }
   if (run.status === 'error') {
-    current = null;  // no usable result: do not leave the previous one's downloads on screen
-    $('#result').classList.add('hidden'); $('#empty').classList.remove('hidden');
+    clearResult();
     throw new Error(run.error || 'Tailoring failed.');
   }
   current = { run, jd, profileId };
@@ -120,7 +131,7 @@ $('#cover-letter').addEventListener('click', async () => {
     }
     busy(true, 'Writing the cover letter...');
     const run = await finished(await api(`/api/runs/${current.run.run_id}/cover-letter`, { method: 'POST', body: {} }),
-      () => busy(true, 'Still writing the cover letter... The AI service is slow right now; this can take a few minutes.'));
+      waited => busy(true, stillWorking('Still writing the cover letter...', waited)));
     current.run = run;
     showResult(run, 'cover');
     busy(false, 'Resume and cover letter ready.');

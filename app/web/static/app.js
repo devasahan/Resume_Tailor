@@ -40,7 +40,12 @@ async function api(path, { method = 'GET', body = null, form = null } = {}) {
   const init = { method, headers };
   if (form) init.body = form;
   else if (body !== null) { headers['Content-Type'] = 'application/json'; init.body = JSON.stringify(body); }
-  const response = await fetch(path, init);
+  let response;
+  try { response = await fetch(path, init); }
+  catch (e) {  // no answer at all: offline, Wi-Fi changed, the phone put the tab to sleep
+    throw Object.assign(new Error('Lost contact with the server. Check your internet connection and try again.'),
+      { transient: true });
+  }
   let data = null;
   try { data = await response.json(); } catch (e) { /* not JSON */ }
   if (response.status === 401 && ME.id) {  // the session ended (logged out elsewhere, disabled, expired)
@@ -48,6 +53,9 @@ async function api(path, { method = 'GET', body = null, form = null } = {}) {
     throw new Error('Please log in again.');
   }
   if (!response.ok) {
+    if (data === null && response.status >= 500) {  // the hosting proxy's own error page, not the app's answer
+      throw Object.assign(new Error('The server is busy or restarting. Try again in a few minutes.'), { transient: true });
+    }
     let message = (data && data.detail) || response.statusText || 'Request failed';
     if (Array.isArray(message)) message = message.map(d => (d.loc ? d.loc.slice(1).join('.') + ': ' : '') + d.msg).join('; ');
     throw new Error(message);
@@ -56,12 +64,21 @@ async function api(path, { method = 'GET', body = null, form = null } = {}) {
 }
 
 // Slow work (tailoring, a cover letter) answers {job, status: 'running'} instead of keeping the request open for
-// minutes, which hosting proxies cut off. Ask again every few seconds until the real answer arrives.
+// minutes, which hosting proxies cut off. Ask again every few seconds until the real answer arrives. A lost
+// connection or a proxy error page does not end the wait (the work goes on on the server), unless nothing has been
+// heard for 10 minutes. onWait(ms) gets the time waited so far.
 async function finished(data, onWait) {
+  const started = Date.now();
+  let heard = started;
   while (data && data.job && data.status === 'running') {
-    if (onWait) onWait();
+    if (onWait) onWait(Date.now() - started);
     await new Promise(resolve => setTimeout(resolve, 3000));
-    data = await api(`/api/jobs/${encodeURIComponent(data.job)}`);
+    try {
+      data = await api(`/api/jobs/${encodeURIComponent(data.job)}`);
+      heard = Date.now();
+    } catch (err) {
+      if (!err.transient || Date.now() - heard > 10 * 60 * 1000) throw err;
+    }
   }
   return data;
 }

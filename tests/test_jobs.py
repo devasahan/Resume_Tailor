@@ -11,7 +11,7 @@ from fastapi.testclient import TestClient
 
 from app import main
 from app.main import create_app
-from app.storage.db import Database
+from app.storage.db import Database, now_iso
 
 from .conftest import (
     ADMIN_EMAIL,
@@ -89,22 +89,80 @@ def test_a_failed_slow_cover_letter_tells_the_user_only_to_try_again(browsers, m
     assert failed.status_code == 502 and failed.json()["detail"] == main.BUSY_MESSAGE
 
 
-def test_a_job_stopped_by_a_restart_ends_instead_of_waiting_forever(browsers):
+def age(db, job_id, created="2020-01-01T00:00:00Z", beat="2020-01-01T00:00:00Z"):
+    with sqlite3.connect(db.path) as raw:
+        raw.execute("UPDATE jobs SET created_at = ?, beat_at = ? WHERE id = ?", (created, beat, job_id))
+
+
+def finish_all(app):
+    """Wait until this app's background jobs have ended (the page may no longer be asking)."""
+    for _ in range(500):
+        if not app.state.jobs:
+            return
+        threading.Event().wait(0.02)
+    raise AssertionError("a job never ended")
+
+
+def test_a_job_whose_process_stopped_is_reported_within_minutes(browsers):
+    """A Reload ends the process without warning: the missing heartbeat, not the job's age, tells the page."""
     admin, user, db = browsers
     user_id = db.user_by_email("user@example.com")["id"]
-    db.create_job("old", user_id, "tailor")
-    db.create_job("new", user_id, "tailor")
-    with sqlite3.connect(db.path) as raw:
-        raw.execute("UPDATE jobs SET created_at = '2020-01-01T00:00:00Z' WHERE id = 'old'")
-    assert user.get("/api/jobs/new").status_code == 202  # still within the time a job can take
-    lost = user.get("/api/jobs/old")
+    for job_id in ("gone", "long", "new"):
+        db.create_job(job_id, user_id, "tailor")
+    age(db, "gone")
+    age(db, "long", beat=now_iso())  # running for years, but its process is still beating: never reported lost
+    assert user.get("/api/jobs/new").status_code == 202 and user.get("/api/jobs/long").status_code == 202
+    lost = user.get("/api/jobs/gone")
     assert lost.status_code == 502 and lost.json()["detail"] == main.BUSY_MESSAGE
-    db.create_job("admin-old", db.user_by_email(ADMIN_EMAIL)["id"], "tailor")
-    with sqlite3.connect(db.path) as raw:
-        raw.execute("UPDATE jobs SET created_at = '2020-01-01T00:00:00Z' WHERE id = 'admin-old'")
-    assert admin.get("/api/jobs/admin-old").json()["detail"] == main.JOB_LOST
+    db.create_job("admin-gone", db.user_by_email(ADMIN_EMAIL)["id"], "tailor")
+    age(db, "admin-gone")
+    assert admin.get("/api/jobs/admin-gone").json()["detail"] == main.JOB_LOST
     db.purge(0)  # old jobs are deleted after a day
-    assert db.get_job("old", user_id) is None and db.get_job("new", user_id) is not None
+    assert db.get_job("gone", user_id) is None and db.get_job("new", user_id) is not None
+
+
+def test_a_job_running_here_keeps_beating_and_is_never_reported_lost(browsers, monkeypatch):
+    admin, _user, db = browsers
+    monkeypatch.setattr(main, "JOB_BEAT_SECONDS", 0.05)
+    monkeypatch.setenv("FAKE_DELAY", "1.0")
+    save_profile(admin)
+    started = admin.post("/api/tailor", json={"jd": SAMPLE_JD, "model": "demo-concise"})
+    job_id = started.json()["job"]
+    age(db, job_id)  # as if the heartbeat were late (the Web-tab website pauses the loop between requests)
+    assert admin.get(f"/api/jobs/{job_id}").status_code == 202  # this process still runs it
+    for _ in range(100):
+        threading.Event().wait(0.02)
+        if db.get_job(job_id, db.user_by_email(ADMIN_EMAIL)["id"])["beat_at"] > "2020-01-01T00:00:00Z":
+            break
+    else:
+        raise AssertionError("the job never wrote a heartbeat")
+    assert answer(admin, started).json()["status"] == "ok"
+
+
+@pytest.mark.parametrize("delete", ["the account", "all data"])
+def test_a_deleted_account_keeps_nothing_from_a_job_still_running(browsers, monkeypatch, delete):
+    admin, user, db = browsers
+    monkeypatch.setenv("FAKE_DELAY", "0.5")
+    save_profile(user)
+    user_id = db.user_by_email("user@example.com")["id"]
+    assert user.post("/api/tailor", json={"jd": SAMPLE_JD}).status_code == 202
+    url = f"/api/users/{user_id}" if delete == "the account" else "/api/data"
+    assert admin.delete(url).json() == {"deleted": True}
+    finish_all(admin.app)
+    with sqlite3.connect(db.path) as raw:
+        assert raw.execute("SELECT COUNT(*) FROM runs WHERE user_id = ?", (user_id,)).fetchone()[0] == 0
+        assert raw.execute("SELECT COUNT(*) FROM jobs WHERE user_id = ?", (user_id,)).fetchone()[0] == 0
+
+
+def test_the_heartbeat_column_is_added_to_a_database_from_the_first_job_version(tmp_path):
+    path = tmp_path / "old.db"
+    with sqlite3.connect(path) as raw:
+        raw.execute("CREATE TABLE jobs (id TEXT PRIMARY KEY, user_id INTEGER NOT NULL, kind TEXT NOT NULL,"
+                    " status TEXT NOT NULL DEFAULT 'running', run_id INTEGER, error TEXT NOT NULL DEFAULT '',"
+                    " created_at TEXT NOT NULL, finished_at TEXT NOT NULL DEFAULT '')")
+    db = Database(path)
+    db.create_job("j", 1, "tailor")
+    assert db.get_job("j", 1)["beat_at"] == db.get_job("j", 1)["created_at"]
 
 
 def test_fast_work_still_answers_in_the_same_request(client):

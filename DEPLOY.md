@@ -66,7 +66,8 @@ If it says ASGI websites are not enabled, you can ask PythonAnywhere to switch o
 support@pythonanywhere.com), or use B now and move to A later.
 
 ### B. Web tab website (always works on a free account)
-It handles one request at a time: while one person tailors a resume (about a minute), the others wait.
+It handles one request at a time, so the others wait while it works. A slow tailoring also moves forward only
+while the Tailor page stays open and says "Still tailoring...".
 1. **Web** > **Add a new web app** > **Next** > **Manual configuration** > choose the Python version that the
    setup script printed (for example 3.13) > **Next**.
 2. On the Web page that opens:
@@ -116,6 +117,6 @@ Changing `.env` also needs this restart. A new `ADMIN_PASSWORD` replaces the old
 | Check models says "network error (ConnectError)" | The website does not know PythonAnywhere's proxy. In a PythonAnywhere Bash console run `echo $https_proxy`, add `HTTPS_PROXY=` and `HTTP_PROXY=` lines with that address (usually `http://proxy.server:3128`) to `.env`, and restart the website |
 | Gemini check fails with "403" or "Tunnel connection failed" | The free account cannot reach that address; a paid account has full internet access |
 | Gemini says "HTTP 503" and "high demand" | Google's servers are busy for a while; free keys get this more often. Wait a few minutes and try again, or turn on billing in Google AI Studio |
-| "Gateway Time-out" while tailoring | Update to the newest version (see **Updating** above): it lets slow work finish in the background, and the page shows "Still tailoring..." |
+| "Gateway Time-out" or "finished is not defined" while tailoring | Update to the newest version (see **Updating** above), then press **Ctrl+F5** on the Tailor page once. Slow work then goes on in the background and the page shows "Still tailoring..." |
 | Gemini says "quota" or "429" | The Gemini free tier allows few requests per minute; wait a minute, or turn on billing in Google AI Studio |
 | The site stopped after a month | Free accounts must be renewed: on the Web tab (B) press **Run until 1 month from today**; for A, log in to PythonAnywhere and follow its renewal notice |

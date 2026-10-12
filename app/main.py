@@ -112,9 +112,11 @@ _TECHNICAL = (
 
 # Tailoring can take minutes when a model is slow or busy, longer than hosting proxies wait for an answer
 # (PythonAnywhere then shows "Gateway Time-out"). So a request waits at most JOB_WAIT_SECONDS; slower work goes on
-# in the background and the page asks GET /api/jobs/{id} every few seconds until it ends.
+# in the background and the page asks GET /api/jobs/{id} every few seconds until it ends. While it runs, the job
+# writes a heartbeat; a restart (Reload) ends the process without warning, and the missing heartbeat tells the page.
 JOB_WAIT_SECONDS = 20.0
-JOB_LOST_MINUTES = 30  # a job still running after this was stopped by a restart (Reload) and will never end
+JOB_BEAT_SECONDS = 15.0
+JOB_LOST_SECONDS = 90.0  # no heartbeat for this long: the process that ran the job is gone
 JOB_LOST = "The server restarted before this finished. Try again."
 
 
@@ -427,10 +429,14 @@ def create_app(db: Database | None = None, registry: Registry | None = None, rou
     def job_error(message: str, user: auth.User) -> HTTPException:
         return HTTPException(502, message if user.is_admin else failure_message(message))
 
-    running: set[asyncio.Task] = set()  # a reference keeps a job that nobody waits for from being garbage collected
+    # This process's unfinished jobs. The reference also keeps a task that nobody waits for from being garbage
+    # collected. On the Web-tab website (uWSGI) the event loop may only move while a request is served, so a job
+    # here is never reported lost for a late heartbeat.
+    running: dict[str, asyncio.Task] = {}
+    app.state.jobs = running
 
-    def forget(task: asyncio.Task) -> None:
-        running.discard(task)
+    def forget(job_id: str, task: asyncio.Task) -> None:
+        running.pop(job_id, None)
         if not task.cancelled():
             task.exception()  # retrieved, so asyncio does not warn; run() has recorded it already
 
@@ -440,25 +446,34 @@ def create_app(db: Database | None = None, registry: Registry | None = None, rou
         job_id = secrets.token_urlsafe(16)
         db.create_job(job_id, user.id, kind)
 
+        async def beat() -> None:
+            while True:
+                await asyncio.sleep(JOB_BEAT_SECONDS)
+                db.touch_job(job_id)
+
         async def run() -> TailorResult:
+            beating = asyncio.create_task(beat())
             try:
                 result = await work()
             except JobFailed as exc:
                 db.finish_job(job_id, run_id=None, error=str(exc))
                 raise
-            except asyncio.CancelledError:  # the server is stopping (Reload): tell the page at once
+            except asyncio.CancelledError:  # Ctrl+C; a host's restart ends the process before this, see beat()
                 db.finish_job(job_id, run_id=None, error=JOB_LOST)
                 raise
             except Exception as exc:
                 log.exception("Background %s failed", kind)
                 db.finish_job(job_id, run_id=None, error=f"Unexpected error: {type(exc).__name__}")
                 raise
-            db.finish_job(job_id, run_id=result.run_id)
+            finally:
+                beating.cancel()
+            if not db.finish_job(job_id, run_id=result.run_id) and kind == "tailor" and result.run_id is not None:
+                db.delete_run(result.run_id)  # the account (or all data) was deleted meanwhile: keep nothing of it
             return result
 
         task = asyncio.create_task(run())
-        running.add(task)
-        task.add_done_callback(forget)
+        running[job_id] = task
+        task.add_done_callback(lambda done: forget(job_id, done))
         await asyncio.wait({task}, timeout=JOB_WAIT_SECONDS)  # never cancels the task, even if this request ends
         if not task.done():
             return JSONResponse({"job": job_id, "status": "running"}, status_code=202)
@@ -799,8 +814,8 @@ def create_app(db: Database | None = None, registry: Registry | None = None, rou
         if job is None:
             raise HTTPException(404, "Not found.")
         if job["status"] == "running":
-            lost = auth.utc(auth.now_utc() - timedelta(minutes=JOB_LOST_MINUTES))
-            if job["created_at"] >= lost:
+            lost = auth.utc(auth.now_utc() - timedelta(seconds=JOB_LOST_SECONDS))
+            if job_id in running or max(job["created_at"], job["beat_at"]) >= lost:
                 return JSONResponse({"job": job_id, "status": "running"}, status_code=202)
             job["error"] = JOB_LOST
         if job["error"]:

@@ -90,7 +90,8 @@ CREATE TABLE IF NOT EXISTS jobs (
     run_id INTEGER,
     error TEXT NOT NULL DEFAULT '',
     created_at TEXT NOT NULL,
-    finished_at TEXT NOT NULL DEFAULT ''
+    finished_at TEXT NOT NULL DEFAULT '',
+    beat_at TEXT NOT NULL DEFAULT ''
 );
 """
 
@@ -104,6 +105,7 @@ _PROFILE_COLUMNS = [
     ("user_id", "INTEGER"),
 ]
 _RUN_COLUMNS = [("user_id", "INTEGER")]
+_JOB_COLUMNS = [("beat_at", "TEXT NOT NULL DEFAULT ''")]
 
 
 def _add_column(conn: sqlite3.Connection, table: str, name: str, ddl: str) -> bool:
@@ -132,6 +134,8 @@ def _migrate(conn: sqlite3.Connection) -> None:
             conn.execute("UPDATE profiles SET hidden = 1 WHERE id <> (SELECT MAX(id) FROM profiles)")
     for name, ddl in _RUN_COLUMNS:
         _add_column(conn, "runs", name, ddl)
+    for name, ddl in _JOB_COLUMNS:
+        _add_column(conn, "jobs", name, ddl)
     # only now that the columns exist on an older database too
     conn.execute("CREATE INDEX IF NOT EXISTS profiles_user ON profiles(user_id)")
     conn.execute("CREATE INDEX IF NOT EXISTS runs_user ON runs(user_id)")
@@ -278,6 +282,10 @@ class Database:
                 (result.model_dump_json(), result.status, result.run_id),
             )
 
+    def delete_run(self, run_id: int) -> None:
+        with self._conn() as conn:
+            conn.execute("DELETE FROM runs WHERE id = ?", (run_id,))
+
     def get_run(self, run_id: int) -> TailorResult | None:
         with self._conn() as conn:
             row = conn.execute("SELECT result FROM runs WHERE id = ?", (run_id,)).fetchone()
@@ -388,6 +396,7 @@ class Database:
                 return False
             conn.execute("DELETE FROM sessions WHERE user_id = ?", (user_id,))
             conn.execute("DELETE FROM profiles WHERE user_id = ?", (user_id,))
+            conn.execute("DELETE FROM jobs WHERE user_id = ?", (user_id,))  # before runs: see finish_job
             conn.execute("DELETE FROM runs WHERE user_id = ?", (user_id,))
         return True
 
@@ -501,16 +510,24 @@ class Database:
 
     # ------------------------------------------------------------------ background work (tailoring, cover letters)
     def create_job(self, job_id: str, user_id: int, kind: str) -> None:
+        now = now_iso()
         with self._conn() as conn:
-            conn.execute("INSERT INTO jobs(id, user_id, kind, created_at) VALUES(?, ?, ?, ?)",
-                         (job_id, user_id, kind, now_iso()))
+            conn.execute("INSERT INTO jobs(id, user_id, kind, created_at, beat_at) VALUES(?, ?, ?, ?, ?)",
+                         (job_id, user_id, kind, now, now))
 
-    def finish_job(self, job_id: str, *, run_id: int | None, error: str = "") -> None:
+    def touch_job(self, job_id: str) -> None:
+        """The job's process is alive and still working on it."""
         with self._conn() as conn:
-            conn.execute(
+            conn.execute("UPDATE jobs SET beat_at = ? WHERE id = ? AND status = 'running'", (now_iso(), job_id))
+
+    def finish_job(self, job_id: str, *, run_id: int | None, error: str = "") -> bool:
+        """False when the job is gone: its account or all data was deleted while it ran (jobs are deleted before
+        runs, so a run the job saved afterwards is still there for the caller to delete)."""
+        with self._conn() as conn:
+            return conn.execute(
                 "UPDATE jobs SET status = ?, run_id = ?, error = ?, finished_at = ? WHERE id = ?",
                 ("failed" if error else "done", run_id, error, now_iso(), job_id),
-            )
+            ).rowcount > 0
 
     def get_job(self, job_id: str, user_id: int) -> dict | None:
         """A job only its owner can see."""
@@ -522,10 +539,10 @@ class Database:
     def purge_all(self) -> None:
         """Every resume, run and download for everyone. Accounts, sessions and settings stay."""
         with self._conn() as conn:
+            conn.execute("DELETE FROM jobs")  # before runs: see finish_job
             conn.execute("DELETE FROM runs")
             conn.execute("DELETE FROM profiles")
             conn.execute("DELETE FROM downloads")
-            conn.execute("DELETE FROM jobs")
 
     def purge(self, retention_days: int) -> int:
         day_ago = (datetime.now(timezone.utc) - timedelta(days=1)).strftime("%Y-%m-%dT%H:%M:%SZ")
