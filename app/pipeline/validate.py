@@ -24,7 +24,7 @@ from ..schemas import (
     SkillGroup,
     TailorOutput,
 )
-from .facts import months_phrase, stay_months
+from .facts import months_phrase, parse_point, stay_months
 
 _PUNCT_MAP = str.maketrans(
     {"’": "'", "‘": "'", "“": '"', "”": '"', "–": "-", "—": "-", "…": "...", " ": " ", "\t": " "}
@@ -137,7 +137,7 @@ def _word_pattern(word: str, last: bool) -> str:
     return re.escape(word) + "(?:s|es)?"
 
 
-def mentions(text: str, term: str) -> bool:
+def mentions(text: str, term: str, case_sensitive: bool | None = None) -> bool:
     """contains_term, tolerant of the forms an ATS also matches: hyphen or space between words
     ('event-driven' ~ 'event driven') and a plural or singular last word ('REST APIs' ~ 'REST API')."""
     words = [w for w in re.split(r"[\s-]+", term.strip()) if w]
@@ -145,8 +145,9 @@ def mentions(text: str, term: str) -> bool:
         return False
     body = r"[\s-]+".join(_word_pattern(w, i == len(words) - 1) for i, w in enumerate(words))
     pattern = rf"(?<![A-Za-z0-9]){body}(?![A-Za-z0-9+#])"
-    flags = 0 if len(term.strip()) <= 3 else re.IGNORECASE
-    return re.search(pattern, text, flags) is not None
+    if case_sensitive is None:
+        case_sensitive = len(term.strip()) <= 3
+    return re.search(pattern, text, 0 if case_sensitive else re.IGNORECASE) is not None
 
 
 def _unique(terms: list[str]) -> list[str]:
@@ -263,6 +264,38 @@ def fix_title_regressions(resume: Resume) -> list[str]:
         notes.append(f"{company}: title changed from '{before}' to '{changed.job_title}' so the career path never "
                      "steps down.")
     return notes
+
+
+# The year each tool or practice first became available (only ones a recent career can get wrong). A job that
+# ended before that year cannot have used it. Lenient on purpose: compared with the job's END year.
+FIRST_YEAR: dict[str, int] = {
+    "agentic": 2023, "coding agent": 2023, "AI coding assistant": 2022, "Copilot": 2021, "ChatGPT": 2022,
+    "GPT-4": 2023, "LLM": 2022, "large language model": 2022, "LangChain": 2022, "OpenTofu": 2023,
+    "Microsoft Fabric": 2023, "Bun": 2022, "Astro": 2021, "Vite": 2020, "Polars": 2020, "GitHub Actions": 2019,
+    "OpenTelemetry": 2019, "Delta Lake": 2019, "Azure Synapse": 2019, "FastAPI": 2018, "Amazon EKS": 2018,
+    "EKS": 2018, "Argo CD": 2018, "Tailwind CSS": 2017, "Istio": 2017, "Helm": 2016, "Next.js": 2016, "dbt": 2016,
+    "Kubernetes": 2014,
+}
+_EVERYDAY_WORDS = {"Helm", "Astro", "Vite", "Copilot", "Bun", "Polars"}  # matched only as written: "at the helm" is fine
+
+
+def era_problems(resume: Resume) -> list[str]:
+    """Tools mentioned in a job that ended before they existed, e.g. OpenTofu at a job that ended in 2021.
+    The current job, and jobs whose end date cannot be read, are never flagged."""
+    problems: list[str] = []
+    for exp in resume.experience:
+        company = resume.profile.companies[exp.company_index]
+        end = parse_point(company.end, is_end=True)
+        if end is None or company.end.strip().lower() in ("", "present", "current", "now", "today"):
+            continue
+        text = "\n".join([exp.job_title, *exp.bullets])
+        for term, year in FIRST_YEAR.items():
+            if year > end[0] and mentions(text, term, case_sensitive=term in _EVERYDAY_WORDS or None):
+                problems.append(
+                    f"{company.name} ({company.start or '?'} - {company.end}) mentions {term}, which first appeared "
+                    f"in {year}."
+                )
+    return problems
 
 
 def title_growth_problems(resume: Resume) -> list[str]:

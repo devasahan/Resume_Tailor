@@ -42,6 +42,7 @@ ROLE_RE = re.compile(
     r"Consultant|Specialist|Administrator|Coordinator|Director|Accountant|Recruiter|Marketer))\b"
 )
 LEVELS = ["Junior", "", "Senior", "Lead", "Principal"]
+SCOPES = ["implemented", "built", "designed", "owned", "led"]
 COMPANY_RE = re.compile(
     r"(?:\bCompany:[ \t]*|\bAbout[ \t]+|\bJoin[ \t]+|\bat[ \t]+)"
     r"([A-Z][A-Za-z0-9&'-]*(?:\.[A-Za-z0-9]+)*(?:[ \t]+[A-Z][A-Za-z0-9&'-]*(?:\.[A-Za-z0-9]+)*){0,3})"
@@ -198,6 +199,10 @@ class FakeClient(LLMClient):
                 "keywords": keywords,
                 "key_responsibilities": ["Deliver reliable work", "Collaborate across teams", "Communicate progress clearly"],
             },
+            "career_plan": [  # recent jobs show more of the JD, with more scope
+                {"company_index": i, "focus": k[: max(2, 6 - 2 * i)], "scope": SCOPES[max(0, len(SCOPES) - 2 - i)]}
+                for i in range(len(companies))
+            ],
             "sections": {
                 "headline": f"{target} | {k[0]} | {k[1]} | {k[2]}",
                 "summary": (

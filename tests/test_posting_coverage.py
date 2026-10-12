@@ -13,7 +13,7 @@ from app.pipeline.tailor import (
     run_checks,
     run_tailor,
 )
-from app.prompts import RETRY_MARKER
+from app.prompts import RETRY_MARKER, tailor_system
 from app.schemas import Company, TailorResult
 
 from .test_validate import make_output
@@ -242,3 +242,71 @@ def test_flat_titles_are_rewritten_in_the_one_rewrite_pass(router, db, registry,
     assert result.status == "ok" and result.retries == 1 and len(client.prompts) == 2
     assert "do not read as a believable career path" in client.prompts[1]
     assert len({e.job_title for e in result.resume.experience}) > 1
+
+
+# ------------------------------------------------------------------ career flow from the job description
+def test_the_career_plan_is_written_before_the_sections():
+    from app.llm.schema import strict_json_schema
+    from app.schemas import TailorOutput
+
+    schema = strict_json_schema(TailorOutput)
+    assert list(schema["properties"]) == ["jd_analysis", "career_plan", "sections"]
+    assert "career_plan" in schema["required"]
+    step = schema["properties"]["career_plan"]["items"]
+    assert step["required"] == ["company_index", "focus", "scope"]
+
+
+def test_runs_keep_the_plan_and_old_runs_still_load(router, db, profile, jd):
+    from app.schemas import TailorResult
+
+    result = asyncio.run(run_tailor(router, db, profile=profile, profile_id=None, jd=jd, model_id="demo-concise"))
+    assert [s.company_index for s in result.career_plan] == [0, 1, 2]
+    assert [s.scope for s in result.career_plan] == ["owned", "designed", "built"]
+    old = result.model_dump()
+    del old["career_plan"]
+    assert TailorResult.model_validate(old).career_plan == []
+
+
+def test_tools_that_did_not_exist_yet_are_flagged():
+    resume = _with_titles(["Backend Engineer", "Software Engineer II", "Software Engineer", "Software Engineer",
+                           "Junior Software Engineer"])
+    # five_jobs: Lindy (current), Acquire.com (ends Feb 2025), Orbital (ends Jun 2024), Q2 (ends May 2021), Earlier Co (ends Apr 2020)
+    resume.experience[0].bullets = ["Use agentic development and OpenTofu for every release of the platform"]
+    resume.experience[2].bullets = ["Moved the infrastructure to OpenTofu and Helm charts on Amazon EKS"]
+    resume.experience[3].bullets = ["Managed AWS with OpenTofu and took the helm of the release process"]
+    resume.experience[4].bullets = ["Explored agentic development and GitHub Actions for the mobile team"]
+    problems = validate.era_problems(resume)
+    assert problems == [
+        "Q2 Holdings (May 2020 - May 2021) mentions OpenTofu, which first appeared in 2023.",
+        "Earlier Co (Jun 2018 - Apr 2020) mentions agentic, which first appeared in 2023.",
+    ]  # current job, a job ending 2024, 'took the helm' and GitHub Actions (2019) by 2020 are all fine
+
+
+class Anachronism(LLMClient):
+    """Puts OpenTofu in the oldest job on the first draft only."""
+
+    def __init__(self, inner):
+        self.inner, self.prompts = inner, []
+
+    async def generate_structured(self, **kwargs):
+        self.prompts.append(kwargs["user"])
+        result = await self.inner.generate_structured(**kwargs)
+        if RETRY_MARKER not in kwargs["user"]:
+            result.data["sections"]["experience"][-1]["bullets"][0] = (
+                "Managed every environment with OpenTofu modules and reviewed changes with the team before each release")
+        return result
+
+
+def test_a_tool_from_the_future_is_rewritten_in_the_one_rewrite_pass(router, db, registry, profile, jd):
+    client = Anachronism(FakeClient(registry.get("demo-concise")))
+    router.overrides["demo-concise"] = client
+    result = asyncio.run(run_tailor(router, db, profile=profile, profile_id=None, jd=jd, model_id="demo-concise"))
+    assert result.status == "ok" and result.retries == 1 and len(client.prompts) == 2
+    assert "did not exist yet during that job" in client.prompts[1] and "OpenTofu" in client.prompts[1]
+    assert validate.era_problems(result.resume) == []
+
+
+def test_prompt_states_the_career_flow_rules():
+    text = tailor_system("estimate")
+    assert "CAREER FLOW" in text and "career_plan" in text and "stepping stones" in text
+    assert "Only what really existed" in text and "never decreases toward the present" in text

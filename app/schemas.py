@@ -76,8 +76,18 @@ class TailoredSections(BaseModel):
     experience: list[ExperienceOut]
 
 
+class CareerStep(BaseModel):
+    """What one job will show, planned before the bullets are written (see CAREER FLOW in the prompt)."""
+    company_index: int
+    focus: list[str] = Field(description="3-6 of the job description's skills or responsibilities this job shows, in its words")
+    scope: str = Field(description="implemented, built, designed, owned or led")
+
+
 class TailorOutput(BaseModel):
     jd_analysis: JDAnalysis
+    # Written before `sections`, so the bullets follow the plan. Required in the model's schema; the default only
+    # serves code that builds an output by hand.
+    career_plan: list[CareerStep] = Field(default_factory=list)
     sections: TailoredSections
 
 
@@ -160,4 +170,5 @@ class TailorResult(BaseModel):
     facts: str = ""  # facts computed from the profile (years of experience) that were given to the model
     company_name: str = ""  # company the user typed on the tailor form (wins over the one read from the JD)
     jd: str = ""  # the job description this run was made for (a cover letter can be written later from it)
+    career_plan: list[CareerStep] = Field(default_factory=list)  # how the model spread the JD across the jobs
     created_at: str = ""

@@ -97,6 +97,7 @@ def run_checks(result: TailorResult, jd_text: str) -> None:
     assert result.resume is not None and result.analysis is not None
     result.coverage = validate.keyword_coverage(result.resume, result.analysis)
     result.ats_warnings = validate.ats_lint(result.resume)
+    result.ats_warnings += validate.era_problems(result.resume)
     absent, listed_only = validate.unshown_must_haves(result.resume, result.analysis)
     if absent or listed_only:
         result.ats_warnings.append(
@@ -206,6 +207,13 @@ async def run_tailor(
             coverage = coverage_feedback(value[1], value[0].jd_analysis)
             if coverage:
                 feedback.append(coverage)
+            era = validate.era_problems(value[1])
+            if era:
+                feedback.append(
+                    "Some bullets mention tools that did not exist yet during that job: " + " ".join(era)
+                    + " Move each one to a later job where it was possible, or replace it with a tool of that time; "
+                    "keep the same number of bullets per employer."
+                )
             titles = validate.title_growth_problems(value[1])
             if titles:
                 feedback.append(
@@ -267,6 +275,7 @@ async def run_tailor(
         notes += title_notes
         result.resume = resume
         result.analysis = output.jd_analysis
+        result.career_plan = output.career_plan
         result.style, result.pages, result.fits = style, pages, fits
         result.served_model = outcome.served_model
         result.status = "ok"
