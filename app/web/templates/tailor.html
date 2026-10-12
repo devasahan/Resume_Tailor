@@ -103,10 +103,10 @@ function fillCard(body, m, r) {
   const id = r.run_id;
   parts.push(el('div', { class: 'row', style: 'margin-top:10px' },
     el('a', { class: 'btn primary small', href: `/run/${id}`, text: 'Review and edit' }),
-    el('a', { class: 'btn small', href: `/api/runs/${id}/resume.pdf`, target: '_blank', text: 'PDF' }),
-    el('a', { class: 'btn small', href: `/api/runs/${id}/resume.docx`, text: 'DOCX' }),
-    r.cover_letter ? el('a', { class: 'btn small', href: `/api/runs/${id}/cover.pdf`, target: '_blank', text: 'Cover PDF' }) : null,
-    r.cover_letter ? el('a', { class: 'btn small', href: `/api/runs/${id}/cover.docx`, text: 'Cover DOCX' }) : null));
+    el('a', { class: 'btn small', href: `/api/runs/${id}/resume.pdf?download=1`, text: 'Download PDF' }),
+    el('a', { class: 'btn small', href: `/api/runs/${id}/resume.docx`, text: 'Download DOCX' }),
+    r.cover_letter ? el('a', { class: 'btn small', href: `/api/runs/${id}/cover.pdf?download=1`, text: 'Cover letter PDF' }) : null,
+    r.cover_letter ? el('a', { class: 'btn small', href: `/api/runs/${id}/cover.docx`, text: 'Cover letter DOCX' }) : null));
   body.replaceChildren(...parts);
 }
 
