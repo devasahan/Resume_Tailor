@@ -54,6 +54,9 @@ Choose **A** first. If PythonAnywhere says it is not available on your account, 
 1. **Account** > **API token** > **Create a new API token**.
 2. Open a **new** Bash console, so it knows the token.
 3. If you already have a website on the **Web** tab, delete it first: a free account has one website slot.
+   If that website runs another app you want to keep, do not delete it: make a second free account (another
+   username and email) for Resume Tailor and do steps 2-5 there. The address is then that username's
+   `.pythonanywhere.com`.
 4. Run the line the setup script printed. It looks like this, all on one line:
 ```
 ~/.virtualenvs/resume_tailor/bin/pa website create --domain USERNAME.pythonanywhere.com --command '/home/USERNAME/.virtualenvs/resume_tailor/bin/uvicorn --app-dir /home/USERNAME/Resume_Tailor --uds ${DOMAIN_SOCKET} --proxy-headers --forwarded-allow-ips=* app.asgi:app'
