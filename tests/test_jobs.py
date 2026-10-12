@@ -131,3 +131,16 @@ def test_slow_work_goes_on_behind_the_web_tab_bridge_too(tmp_path, monkeypatch):
             assert run.status_code == 200 and run.json()["status"] == "ok"
     finally:
         server.shutdown()
+
+
+def test_pages_ask_for_the_current_script_so_an_update_never_mixes_old_and_new(client, tmp_path):
+    """A browser that cached the old app.js broke the new Tailor page ("finished is not defined")."""
+    version = main.asset_version(main.WEB / "static")
+    page = client.get("/tailor").text
+    assert f'/static/app.js?v={version}"' in page and f'/static/style.css?v={version}"' in page
+    assert client.get(f"/static/app.js?v={version}").status_code == 200
+    (tmp_path / "app.js").write_text("one")
+    (tmp_path / "style.css").write_text("css")
+    first = main.asset_version(tmp_path)
+    (tmp_path / "app.js").write_text("two")
+    assert main.asset_version(tmp_path) != first

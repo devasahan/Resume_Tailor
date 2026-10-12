@@ -7,6 +7,7 @@ sign-ups) and Settings. New sign-ups wait until the admin approves them.
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import logging
 import re
 import secrets
@@ -37,6 +38,17 @@ from .schemas import ExperienceOut, Profile, SkillGroup, TailoredSections, Tailo
 from .storage.db import Database
 
 WEB = Path(__file__).parent / "web"
+
+
+def asset_version(folder: Path) -> str:
+    """A fingerprint of the script and style files. Pages ask for /static/app.js?v=<it>, so after an update every
+    browser loads the new files instead of an old cached copy (an old app.js with a new page breaks the buttons)."""
+    digest = hashlib.sha256()
+    for name in ("app.js", "style.css"):
+        digest.update((folder / name).read_bytes())
+    return digest.hexdigest()[:12]
+
+
 KNOWN_REGIONS = ["US", "EU", "SG", "CN", "UNKNOWN", "DEMO"]
 DOCX = "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
 
@@ -388,6 +400,7 @@ def create_app(db: Database | None = None, registry: Registry | None = None, rou
 
     app.mount("/static", StaticFiles(directory=WEB / "static"), name="static")
     templates = Jinja2Templates(directory=WEB / "templates")
+    templates.env.globals["asset_version"] = asset_version(WEB / "static")
 
     def page(request: Request, name: str, active: str, **ctx):
         user = getattr(request.state, "user", None)
