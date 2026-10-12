@@ -24,27 +24,27 @@ The first start takes a minute or two (it creates a private `.venv` folder and i
 If something does not start, run **`python -m app.doctor`**. It checks Python, the libraries, PDF and DOCX export, the data folder, API keys and the port, and says how to fix each problem.
 
 ### Try the demo (about two minutes)
-1. **Profile** > choose `evals/sample_base_resume.docx` (or `.pdf` / `.txt`) > **Read file** > check the fields > **Save profile**.
-2. **Tailor** > paste a job description (for example `evals/jds/01_data_engineer.txt`) > tick **Compare several** > tick the three *Demo* models > **Tailor resume**.
-3. Click **Download PDF** on a result card, or open **Review and edit** to change text with a live PDF preview first.
-   Files are named company, your name, role: `Acme_Corp_Jordan_Rivera_Senior_Data_Engineer.pdf`. The company is the one you type in
-   **Company applying to**, or the one the job description names; it is left out if neither has one.
+1. **Profile** > drop `evals/sample_base_resume.docx` (or `.pdf` / `.txt`) on the page, or **Choose files**. It is read and saved at once and appears in the list.
+2. **Tailor** > pick the base resume > paste a job description (for example `evals/jds/01_data_engineer.txt`) > **Tailor resume**.
+3. **Download resume PDF**, then **Make cover letter** > **Download cover letter PDF**. (**Make cover letter** on its own also tailors the resume first.)
+   Files are named company, name, role: `Acme_Corp_Jordan_Rivera_Senior_Data_Engineer.pdf`; the company is read from the job description and left out if it names none.
+   **Review and edit** opens the editor with a live PDF preview and the list of things to confirm.
 
-The demo models write generic template text. They exist to show the flow (compare, fit to one page, flags for invented numbers, retries); they say nothing about what real models write.
+The demo models write generic template text. They exist to show the flow (fit to one page, flags for invented numbers, retries); they say nothing about what real models write.
 
 ### Then add real models
 1. Copy `.env.example` to `.env` (the start script does this for you) and open `.env` in any text editor.
 2. Paste the API key for the provider you have, for example `ANTHROPIC_API_KEY=...`. Use **paid** keys: free tiers may let the provider train on your data.
 3. Stop and start the app again. In **Settings**, press **Run check** to confirm each key and model name works (one tiny call per model, a fraction of a cent).
-4. In **Tailor**, pick the model, or compare several. Costs are shown per run.
+4. In **Settings**, choose the **Resume model** and **Cover letter model** the Tailor page uses (Automatic picks the first available). Costs are shown per run. To compare models side by side, use the bake-off below.
 
 Nothing leaves your computer except the calls to the model providers you pick. See [Privacy and security](#privacy-and-security).
 
 ## Using it
-1. **Profile**: upload your base resume (PDF, DOCX, TXT) or type the facts in. Check the fields, then save. By default the file is read by rules on your machine; you can choose a model to read it instead (then the resume text is sent to that provider).
-2. **Tailor**: paste a job description. Optionally add *real facts about you* (years, tools you actually used, real numbers); the AI treats these as true and invents nothing beyond them. Pick **One model**, or **Compare several**.
-3. **Review and edit**: change any AI-written text. A live PDF preview shows whether it still fits on one page. Items to confirm are listed.
-4. **Export** PDF or DOCX for the resume and the cover letter.
+1. **Profile**: upload one or more base resumes (PDF, DOCX, TXT). Each is read and saved right away and listed with its employers, education and anything to double-check (for example "Phone not found"). The reader is set in Settings > Base-resume reader: Automatic uses the cheapest available model (the resume text is sent to that provider), **Rules only** reads it on your machine for free. If a read is wrong, delete it and upload again. Uploaded resumes stay until you delete them.
+2. **Tailor**: pick a base resume, paste the job description, **Tailor resume**. The resume model comes from Settings.
+3. **Make cover letter** writes the letter for that resume (one more call, added to the same run's cost).
+4. **Download resume PDF** / **Download cover letter PDF**. **Review and edit** lets you change any AI-written text with a live preview, and also exports DOCX.
 
 ## Models
 
@@ -72,7 +72,7 @@ Costs shown in the app are estimates: `tokens reported by the provider x the pri
 - fallback models, tried in order when the chosen one fails (not used in Compare, where each result must show one model alone)
 - a **soft daily cost cap** (new runs stop once today's recorded spend reaches it; runs already in flight finish)
 - allowed data regions (models hosted in `CN` or `UNKNOWN` regions stay off until you allow them)
-- retention (stored profile and runs are deleted after N days), paper size (Letter / A4)
+- retention (tailored runs are deleted after N days; uploaded resumes stay until you delete them), paper size (Letter / A4)
 - numbers in bullets: realistic estimates flagged for you to confirm (default), or only the numbers you give
 
 ## Choosing a model: the bake-off
@@ -85,23 +85,23 @@ python -m app.cli bakeoff --jds evals/jds --profile evals/my_profile.json \
     --models claude-sonnet-5-5,gemini-3.8-flash,mistral-large --out out/bakeoff
 ```
 
-It prints a cost estimate and asks before spending anything, then writes `results.csv`, `summary.md` and one PDF per job and model. Compare the PDFs blind. The summary reports one-page rate, keyword match, how many unverified numbers each model invented, cost and speed. It does not score writing quality. The same comparison is available in the browser under Tailor > Compare several.
+It prints a cost estimate and asks before spending anything, then writes `results.csv`, `summary.md` and one PDF per job and model. Compare the PDFs blind. The summary reports one-page rate, keyword match, how many unverified numbers each model invented, cost and speed. It does not score writing quality. The `/api/tailor` endpoint also takes `model` and `compare` for scripted comparisons.
 
 ## How the guarantees work
 - **Fixed facts cannot change.** The model returns only the editable sections as JSON. Code merges them into your saved profile and asserts the profile is unchanged. The edit endpoint never reads profile fields from the request.
 - **Years of experience are calculated, not guessed.** The app computes them from your locked employment dates (overlapping jobs counted once, rounded down, e.g. "7+ years") and gives that figure to the model, which must use it exactly in the summary.
-- **Metrics are estimates until you confirm them.** By default (Settings > Numbers in bullets) the model adds realistic, specific-looking metrics to about 2 in 5 bullets (at most 2 per employer), using your real numbers from "Real facts about you" first. Every figure you did not give is flagged "to verify" in the review panel so you can replace or remove it. Switch the setting to "Only the numbers I give" to forbid estimates.
+- **Metrics are estimates until you confirm them.** By default (Settings > Numbers in bullets) the model adds realistic, specific-looking metrics to about 2 in 5 bullets (at most 2 per employer), using real numbers passed as `hints` (API and CLI only) first. Every figure you did not give is flagged "to verify" in the review panel so you can replace or remove it. Switch the setting to "No figures" to forbid estimates.
 - **Related skills are marked.** The skills list starts with the job description's skills, then adds closely related skills that support them; each added one is flagged so you keep only what you really have.
 - **One page without thin text.** Before the model writes anything, the app works out how many full-length bullets fit on one page for your employers (recent and longer roles get more, e.g. 5/3/3/3 for four jobs) and tells the model exactly that number per employer, so the first draft fits and nothing has to be squeezed. If a draft still runs over, the renderer shrinks font and margins (floor 9.5 pt / 0.5 in), then asks the model once more with one bullet fewer for two roles, then drops the last bullets of the roles with the most bullets (keeping two each), and reports what it did.
 - **Strong bullets and summary.** Every bullet must say what was done (specifically), how, and what changed, in 18-28 words; the summary is 3-4 flowing sentences of 60-85 words. If a draft comes back thin (short summary, short bullets, "Responsible for"-style openers), the model is asked once to rewrite it, and the Format notes point out anything still thin.
-- **Every required skill is covered, in the posting's own words.** An ATS matches words, not meaning, so the model must show each must-have skill from the job description word for word ("schema design", not "schema changes") in the summary or a bullet, at the most plausible employer, without you supplying facts. A skill that is only listed under Skills does not count. If the first draft misses any, the same single rewrite pass adds them (the model sees its draft and changes only what is needed). Every sentence that carries a required skill you did not mention in "Real facts about you" is flagged on the review page ("Added to match the posting: confirm you can speak to it in an interview") so you can keep or delete it.
+- **Every required skill is covered, in the posting's own words.** An ATS matches words, not meaning, so the model must show each must-have skill from the job description word for word ("schema design", not "schema changes") in the summary or a bullet, at the most plausible employer, without you supplying facts. A skill that is only listed under Skills does not count. If the first draft misses any, the same single rewrite pass adds them (the model sees its draft and changes only what is needed). Every sentence that carries a required skill is flagged on the review page ("Added to match the posting: confirm you can speak to it in an interview") so you can keep or delete it.
 - **A career path that shows growth.** The model is told how long each stay was and how much experience came before it, so a stay of 2+ years shows a step up (for example "Software Engineer II") and the same title never repeats three times in a row; the Format notes warn when it does. Long stays also get more bullets than short ones (a 3-year role before an 8-month one).
 - **ATS-friendly layout.** Single column, real text with an embedded standard-metrics font (Carlito, compatible with Calibri), standard section headings, no tables, columns, images or icons, contact details in the body. No tool can guarantee how every ATS parses a file; this follows the common advice.
 - **Bad model output is handled.** Invalid or incomplete JSON is sent back once with the error; if it still fails the next fallback model is used; failures show up in History instead of crashing.
 
 ## Privacy and security
 - Your resume text and job description go **only to the model you pick**, over HTTPS, with your own API key. Check each provider's retention terms; use paid keys (free tiers may let the provider train on your data).
-- Stored locally in SQLite (`data/`, file mode 600): your profile, generated resumes and cover letters, and the "real facts" text you typed for each run (kept so the number checks still work after you edit). Job descriptions are **not stored** (only a hash). Everything is deleted after the retention period, or immediately via Settings > Delete all stored data.
+- Stored locally in SQLite (`data/`, file mode 600): your uploaded base resumes (the facts read from them, not the files), and each run's generated resume, cover letter and the job description it was made for (kept so a cover letter can be written later). Runs are deleted after the retention period; uploaded resumes stay until you delete them; Settings > Delete all stored data removes everything at once.
 - API keys come from environment variables or your local `.env` only and are never returned by the API or stored in the database. `.env` is excluded from git.
 - This is a **single-user app with no accounts** and it listens on `127.0.0.1` (your computer only) by default. If you host it anywhere else, put real authentication in front of it. Set `ADMIN_TOKEN` to protect settings changes and data deletion.
 - Uploads are limited to 5 MB, 10 PDF pages and a bounded DOCX unpack size; the browser UI inserts all text with `textContent`, and pages are served with a content security policy.

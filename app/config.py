@@ -89,6 +89,8 @@ DEFAULT_PRIORITY = [
     "demo-concise",
 ]
 # Cheap models preferred for the (simple) base-resume parsing task.
+RULES_READER = "rules"  # parser_model value: read uploads with the built-in rules (free, nothing is sent)
+
 PARSER_PRIORITY = [
     "gemini-3.5-flash-lite",
     "mistral-large",

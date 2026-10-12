@@ -18,10 +18,10 @@ from . import config
 from .llm.base import LLMError
 from .llm.registry import ModelSpec, Registry
 from .llm.router import Router
-from .parsing.resume_parser import MAX_BYTES, extract_text, parse_resume, profile_warnings
+from .parsing.resume_parser import MAX_BYTES, extract_text, parse_resume, profile_warnings, read_resume
 from .pipeline import validate
 from .prompts import METRICS_MODES
-from .pipeline.tailor import analysis_terms, fit_report, run_checks, run_tailor
+from .pipeline.tailor import analysis_terms, fit_report, run_checks, run_tailor, write_cover_letter
 from .render.docx import cover_docx, resume_docx
 from .render.pdf import render_cover_pdf, render_resume_pdf
 from .schemas import ExperienceOut, Profile, SkillGroup, TailoredSections, TailorOutput, TailorResult
@@ -35,8 +35,9 @@ DOCX = "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
 # ------------------------------------------------------------------ request bodies
 class TailorRequest(BaseModel):
     jd: str = Field(min_length=40, max_length=20000)
+    profile_id: int | None = None  # which uploaded resume; None = the newest one
     hints: str = Field(default="", max_length=4000)
-    model: str
+    model: str | None = None  # None = the resume model chosen in Settings
     compare: bool = False  # True: no fallback, no per-task cover-letter model (each model stands on its own)
     cover_letter: bool = False
     company_name: str = Field(default="", max_length=120)
@@ -53,8 +54,41 @@ class EditRequest(BaseModel):
     cover_closing: str | None = None
 
 
+class CoverRequest(BaseModel):
+    # Only needed for runs saved before job descriptions were kept with the run.
+    jd: str = Field(default="", max_length=20000)
+
+
 class CheckRequest(BaseModel):
     models: list[str]
+
+
+def profile_problem(profile: Profile) -> str | None:
+    """Why a profile cannot be used for tailoring, or None."""
+    if not profile.name.strip():
+        return "your name"
+    if not profile.companies or any(not c.name.strip() for c in profile.companies):
+        return "any employer"
+    return None
+
+
+def resume_entry(entry: dict, registry: Registry) -> dict:
+    """An uploaded resume as the Profile and Tailor pages show it."""
+    method = entry["method"]
+    if method.startswith("model:"):
+        model_id = method.split(":", 1)[1]
+        try:
+            read_with = registry.get(model_id).label
+        except KeyError:
+            read_with = model_id
+    else:
+        read_with = {"rules": "built-in rules", "form": "typed in"}.get(method, "earlier version")
+    profile: Profile = entry["profile"]
+    return {
+        "id": entry["id"], "created_at": entry["created_at"], "filename": entry["filename"], "method": method,
+        "read_with": read_with, "profile": profile.model_dump(),
+        "warnings": entry["notes"] + profile_warnings(profile),
+    }
 
 
 def require_admin(x_admin_token: str | None = Header(default=None)) -> None:
@@ -105,6 +139,8 @@ def validate_settings(registry: Registry, values: dict) -> dict:
             if key in ("resume_model", "cover_letter_model", "parser_model"):
                 if value in (None, ""):
                     out[key] = None
+                elif key == "parser_model" and value == config.RULES_READER:
+                    out[key] = value
                 else:
                     registry.get(value)
                     out[key] = value
@@ -273,19 +309,61 @@ def create_app(db: Database | None = None, registry: Registry | None = None, rou
             raise HTTPException(422, "Add at least one employer.")
         if any(not c.name.strip() for c in profile.companies):
             raise HTTPException(422, "Every employer needs a name.")
-        profile_id = db.save_profile(profile)
+        profile_id = db.save_profile(profile, method="form")
         db.purge(db.get_settings()["retention_days"])
         return {"id": profile_id, "warnings": profile_warnings(profile)}
+
+    # ------------------------------------------------------------------ uploaded resumes
+    @app.post("/api/resumes")
+    async def api_upload_resume(file: UploadFile = File(...)):
+        """Read an uploaded base resume with the Settings reader and save it. Nothing to check or confirm."""
+        data = await file.read(MAX_BYTES + 1)  # never buffer more than the limit
+        filename = Path(file.filename or "resume").name[:120]
+        try:
+            text = extract_text(data, filename)
+        except ValueError as exc:
+            raise HTTPException(422, str(exc)) from exc
+        profile, method, notes = await read_resume(router, db, text, router.default_model("parser"))
+        profile.name = profile.name.strip()
+        missing = profile_problem(profile)
+        if missing:
+            tip = (" Try a PDF or DOCX with selectable text, or a different Base-resume reader in Settings."
+                   if method == "rules" else " Try a PDF or DOCX with selectable text.")
+            raise HTTPException(422, f"Could not find {missing} in {filename}, so it was not saved.{tip}")
+        profile_id = db.save_profile(profile, filename=filename, method=method, notes=notes)
+        db.purge(db.get_settings()["retention_days"])
+        entry = db.profile_entry(profile_id)
+        assert entry is not None
+        return {"resume": resume_entry(entry, registry)}
+
+    @app.get("/api/resumes")
+    def api_list_resumes():
+        return {"resumes": [resume_entry(e, registry) for e in db.list_profiles()]}
+
+    @app.delete("/api/resumes/{profile_id}", dependencies=[Depends(require_admin)])
+    def api_delete_resume(profile_id: int):
+        if not db.delete_profile(profile_id):
+            raise HTTPException(404, "Resume not found.")
+        return {"deleted": True}
 
     # ------------------------------------------------------------------ tailor
     @app.post("/api/tailor")
     async def api_tailor(body: TailorRequest):
-        found = db.latest_profile()
-        if not found:
-            raise HTTPException(400, "Save your profile first (Profile page).")
-        profile_id, profile = found
+        if body.profile_id is not None:
+            chosen_profile = db.get_profile(body.profile_id)
+            if chosen_profile is None:
+                raise HTTPException(404, "That resume was not found (it may have been deleted). Pick another one.")
+            profile_id, profile = body.profile_id, chosen_profile
+        else:
+            found = db.latest_profile()
+            if not found:
+                raise HTTPException(400, "Upload a resume first (Profile page).")
+            profile_id, profile = found
+        model_id = body.model or router.default_model("resume")
+        if not model_id:
+            raise HTTPException(422, "No model is available. Add an API key, or choose a model in Settings.")
         try:
-            router.usable_spec(body.model)
+            router.usable_spec(model_id)
         except LLMError as exc:
             raise HTTPException(422, str(exc)) from exc
         cover_model = None
@@ -298,7 +376,7 @@ def create_app(db: Database | None = None, registry: Registry | None = None, rou
                 except LLMError:
                     cover_model = None
         result = await run_tailor(
-            router, db, profile=profile, profile_id=profile_id, jd=body.jd, hints=body.hints, model_id=body.model,
+            router, db, profile=profile, profile_id=profile_id, jd=body.jd, hints=body.hints, model_id=model_id,
             allow_fallback=not body.compare, cover_letter=body.cover_letter, cover_model_id=cover_model,
             company_name=body.company_name.strip(), hiring_manager=body.hiring_manager.strip(),
         )
@@ -343,9 +421,33 @@ def create_app(db: Database | None = None, registry: Registry | None = None, rou
         style, pages, fits, notes = await fit_report(merged, db.get_settings()["paper_size"])
         result.style, result.pages, result.fits = style, pages, fits
         result.notes = [n for n in result.notes if not n.startswith(("Font reduced", "Still"))] + notes
-        run_checks(result, analysis_terms(result.analysis))
+        run_checks(result, result.jd or analysis_terms(result.analysis))
         db.update_run(result)
         return result.model_dump()
+
+    @app.post("/api/runs/{run_id}/cover-letter")
+    async def api_make_cover_letter(run_id: int, body: CoverRequest):
+        """Write (or rewrite) the cover letter for a tailored resume. The JSON body is required on purpose:
+        a cross-site form cannot send one, so another website cannot spend money through this endpoint."""
+        result = load_run(run_id)
+        if result.status != "ok" or result.resume is None or result.analysis is None:
+            raise HTTPException(409, "This run has no resume to write a cover letter from.")
+        jd = result.jd or body.jd.strip()
+        if len(jd) < 40:
+            raise HTTPException(
+                409, "This run was made before job descriptions were kept. Tailor the resume again, then make "
+                     "the cover letter.")
+        model_id = router.default_model("cover_letter")
+        if not model_id:
+            raise HTTPException(422, "No model is available for cover letters. Choose one in Settings.")
+        try:
+            router.usable_spec(model_id)
+        except LLMError as exc:
+            raise HTTPException(422, str(exc)) from exc
+        fresh, error = await write_cover_letter(router, db, run_id, jd=jd, model_id=model_id)
+        if error:
+            raise HTTPException(502, error)
+        return fresh.model_dump()
 
     def _resume_pdf(result):
         pdf, _pages = render_resume_pdf(result.resume, result.style)

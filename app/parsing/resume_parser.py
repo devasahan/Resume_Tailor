@@ -1,8 +1,9 @@
 """Uploaded base resume (PDF / DOCX / TXT) -> text -> Profile.
 
 A model does the extraction when one is chosen (the resume text IS sent to that provider). If none is
-chosen, or the model fails, the rule-based parser runs instead. The user always reviews and corrects
-the result on the Profile page before it is saved and locked.
+chosen, or the model fails or the daily cost cap is reached, the rule-based parser runs instead. An
+upload is saved as read; the Profile page lists it with warnings, and a bad read is fixed by deleting
+it and uploading again (or choosing another reader in Settings).
 """
 from __future__ import annotations
 
@@ -12,6 +13,7 @@ import zipfile
 import pdfplumber
 from docx import Document
 
+from ..llm.base import CostCapError
 from ..llm.router import Router
 from ..llm.schema import strict_json_schema
 from ..pipeline.generate import GenerationFailed, Outcome, generate_validated
@@ -81,10 +83,10 @@ def profile_warnings(profile: Profile) -> list[str]:
     return warnings
 
 
-async def parse_resume(
+async def read_resume(
     router: Router, db: Database, text: str, model_id: str | None
 ) -> tuple[Profile, str, list[str]]:
-    """Return (profile, method, warnings). `method` is 'model:<id>' or 'rules'."""
+    """Return (profile, method, notes). `method` is 'model:<id>' or 'rules'; notes say why a model was not used."""
     method = "rules"
     notes: list[str] = []
     profile: Profile | None = None
@@ -100,9 +102,19 @@ async def parse_resume(
         except GenerationFailed as exc:
             outcome = exc.outcome
             notes.append(f"The model could not parse the resume ({str(exc)[:160]}). Used the rule-based parser instead.")
+        except CostCapError as exc:
+            notes.append(f"{str(exc)[:200]} Used the rule-based parser instead.")
         _record_cost(db, model_id, outcome)
     if profile is None:
         profile = parse_resume_text(text)
+    return profile, method, notes
+
+
+async def parse_resume(
+    router: Router, db: Database, text: str, model_id: str | None
+) -> tuple[Profile, str, list[str]]:
+    """Return (profile, method, warnings): read_resume's notes plus profile_warnings."""
+    profile, method, notes = await read_resume(router, db, text, model_id)
     return profile, method, notes + profile_warnings(profile)
 
 

@@ -156,7 +156,8 @@ async def run_tailor(
     today = date.today()  # one date for the facts, the bullet budget and the stay lengths in the prompt
     facts = candidate_facts(profile, today)
     result = TailorResult(
-        requested_model=model_id, prompt_version=PROMPT_VERSION, hints=hints, facts=facts, company_name=company_name
+        requested_model=model_id, prompt_version=PROMPT_VERSION, hints=hints, facts=facts, company_name=company_name,
+        jd=jd,
     )
     outcome: Outcome = Outcome()
     notes: list[str] = []
@@ -264,9 +265,9 @@ async def run_tailor(
         # --- optional cover letter, from the final resume text
         if cover_letter:
             await _cover_letter(
-                router, result, outcome, notes, jd=jd, hints=hints, company_name=company_name,
-                hiring_manager=hiring_manager, model_id=cover_model_id or outcome.final_model_id,
-                allow_fallback=allow_fallback,
+                router, result, outcome, notes, jd=jd, hints=hints,
+                company_name=company_name or output.jd_analysis.company, hiring_manager=hiring_manager,
+                model_id=cover_model_id or outcome.final_model_id, allow_fallback=allow_fallback,
             )
         run_checks(result, jd)
     except GenerationFailed as exc:
@@ -295,7 +296,9 @@ async def run_tailor(
 async def _cover_letter(
     router: Router, result: TailorResult, outcome: Outcome, notes: list[str], *, jd: str, hints: str,
     company_name: str, hiring_manager: str, model_id: str, allow_fallback: bool,
-) -> None:
+) -> str | None:
+    """Write result.cover_letter from the final resume. Returns None, or the reason no letter was written (also
+    added to notes). A cost-cap stop here leaves the resume intact instead of failing the whole run."""
     assert result.resume is not None and result.analysis is not None
     resume = result.resume
 
@@ -321,6 +324,47 @@ async def _cover_letter(
         )
         _absorb(outcome, second)
         result.cover_letter = second.value
+        return None
     except GenerationFailed as exc:
         _absorb(outcome, exc.outcome)
-        notes.append(f"Cover letter failed: {str(exc)[:200]}")
+        message = f"Cover letter failed: {str(exc)[:200]}"
+    except CostCapError as exc:
+        _absorb(outcome, second)
+        message = f"Cover letter not written: {str(exc)[:200]}"
+    notes.append(message)
+    return message
+
+
+async def write_cover_letter(
+    router: Router, db: Database, run_id: int, *, jd: str, model_id: str
+) -> tuple[TailorResult, str | None]:
+    """Write (or rewrite) the cover letter of a saved run and add its cost to that run.
+
+    Returns (updated run, error). The caller has checked that the run exists and has a resume and analysis.
+    The run is read again before saving so that edits made on the Review page in the meantime are kept.
+    """
+    base = db.get_run(run_id)
+    assert base is not None and base.resume is not None and base.analysis is not None
+    base.cover_letter = None
+    outcome, notes, started = Outcome(), [], time.perf_counter()
+    error = await _cover_letter(
+        router, base, outcome, notes, jd=jd, hints=base.hints,
+        company_name=base.company_name or base.analysis.company, hiring_manager="",
+        model_id=model_id, allow_fallback=True,
+    )
+    fresh = db.get_run(run_id) or base
+    if base.cover_letter is not None:
+        fresh.cover_letter = base.cover_letter  # replaces any earlier letter
+    fresh.input_tokens += outcome.input_tokens
+    fresh.output_tokens += outcome.output_tokens
+    fresh.cost_usd = round(fresh.cost_usd + outcome.cost_usd, 6)
+    fresh.attempts += outcome.attempts
+    fresh.retries += outcome.retries
+    fresh.latency_ms += int((time.perf_counter() - started) * 1000)
+    fresh.notes = [n for n in fresh.notes if not n.startswith(("Cover letter failed", "Cover letter not written"))]
+    fresh.notes += notes
+    if not fresh.jd:
+        fresh.jd = jd
+    run_checks(fresh, jd)  # recomputes all flags, so cover-letter flags are never duplicated
+    db.update_run(fresh)
+    return fresh, error

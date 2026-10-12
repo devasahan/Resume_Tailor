@@ -11,7 +11,11 @@ def test_only_demo_models_without_keys(registry, router, monkeypatch):
     available = {s.id for s in registry.available(["US", "EU", "SG", "DEMO"])}
     assert available == {"demo-concise", "demo-detailed", "demo-flaky"}
     assert router.default_model("resume") == "demo-concise"
-    assert router.default_model("parser") == "demo-concise"
+    assert router.default_model("parser") is None  # Automatic with only demo models: read with the rules
+    router.db.set_settings({"parser_model": "demo-concise"})
+    assert router.default_model("parser") == "demo-concise"  # an explicit choice is honoured
+    router.db.set_settings({"parser_model": "rules"})
+    assert router.default_model("parser") is None
 
 
 def test_key_and_region_gating(registry, router, monkeypatch):

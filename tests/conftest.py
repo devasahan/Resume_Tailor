@@ -3,9 +3,11 @@ import os
 os.environ.setdefault("FAKE_DELAY", "0")  # demo models answer instantly in tests
 
 import pytest
+from fastapi.testclient import TestClient
 
 from app.llm.registry import Registry
 from app.llm.router import Router
+from app.main import create_app
 from app.schemas import Company, Contact, Education, Profile
 from app.storage.db import Database
 
@@ -61,3 +63,12 @@ def registry() -> Registry:
 @pytest.fixture
 def router(registry, db) -> Router:
     return Router(registry, db)
+
+
+@pytest.fixture
+def client(tmp_path, monkeypatch):
+    """The web app on a fresh database. Uploads are read with the rules, so a developer's .env keys are never used."""
+    monkeypatch.delenv("ADMIN_TOKEN", raising=False)
+    db = Database(tmp_path / "api.db")
+    db.set_settings({"parser_model": "rules"})
+    return TestClient(create_app(db=db))

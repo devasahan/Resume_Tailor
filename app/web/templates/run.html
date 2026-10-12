@@ -70,7 +70,8 @@ function showMeta() {
     el('a', { class: 'btn small primary', href: `/api/runs/${RUN_ID}/resume.pdf?download=1`, text: 'Download PDF' }),
     el('a', { class: 'btn small', href: `/api/runs/${RUN_ID}/resume.docx`, text: 'Download DOCX' }),
     r.cover_letter ? el('a', { class: 'btn small', href: `/api/runs/${RUN_ID}/cover.pdf?download=1`, text: 'Cover letter PDF' }) : null,
-    r.cover_letter ? el('a', { class: 'btn small', href: `/api/runs/${RUN_ID}/cover.docx`, text: 'Cover letter DOCX' }) : null);
+    r.cover_letter ? el('a', { class: 'btn small', href: `/api/runs/${RUN_ID}/cover.docx`, text: 'Cover letter DOCX' }) : null,
+    r.cover_letter ? null : el('button', { class: 'small', type: 'button', onclick: makeCover, text: 'Make cover letter' }));
   $('#status').replaceChildren(
     el('div', { class: 'metrics' }, chip(r.fits ? 'Fits on 1 page' : `${r.pages} pages`, r.fits ? 'ok' : 'bad'),
       chip(`${pct}% of job keywords used`, pct >= 80 ? 'ok' : pct >= 50 ? 'warn' : 'bad'), chip(`font ${r.style.font_pt} pt`), chip(r.style.paper)),
@@ -83,6 +84,18 @@ function showMeta() {
     verify.length ? el('p', { class: 'small' }, 'Estimated numbers you did not provide. Replace each with your real figure, or remove it:') : el('p', { class: 'small muted' }, 'No estimated numbers.'),
     ...verify.map(row), info.length ? el('h3', {}, 'Suggestions to confirm') : null, ...info.map(row));
   $('#pdf').src = `/api/runs/${RUN_ID}/resume.pdf?t=${Date.now()}#toolbar=0&navpanes=0&view=FitH`;
+}
+
+async function makeCover(event) {
+  const button = event.currentTarget;
+  button.disabled = true; button.textContent = 'Writing the cover letter...';
+  try {
+    run = await api(`/api/runs/${RUN_ID}/cover-letter`, { method: 'POST', body: {} });
+    buildEditor(); buildCover(); showMeta();
+  } catch (err) {
+    button.disabled = false; button.textContent = 'Make cover letter';
+    $('#status').prepend(notice('bad', err.message));
+  }
 }
 
 async function load() {

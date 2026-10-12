@@ -12,12 +12,6 @@ from app.storage.db import Database
 from .conftest import SAMPLE_JD, SAMPLE_RESUME_TEXT
 
 
-@pytest.fixture
-def client(tmp_path, monkeypatch):
-    monkeypatch.delenv("ADMIN_TOKEN", raising=False)
-    return TestClient(create_app(db=Database(tmp_path / "api.db")))
-
-
 def docx_bytes(text=SAMPLE_RESUME_TEXT) -> bytes:
     doc = Document()
     for line in text.splitlines():
@@ -36,10 +30,11 @@ def pdf_bytes(text=SAMPLE_RESUME_TEXT) -> bytes:
     return bytes(pdf.output())
 
 
-def save_profile(client):
-    parsed = client.post("/api/profile/parse", files={"file": ("base.docx", docx_bytes())}, data={"model": "rules"}).json()
-    assert client.post("/api/profile", json=parsed["profile"]).status_code == 200
-    return parsed
+def save_profile(client, name="base.docx", text=SAMPLE_RESUME_TEXT):
+    """Upload a base resume the way the Profile page does; returns the saved list entry."""
+    response = client.post("/api/resumes", files={"file": (name, docx_bytes(text))})
+    assert response.status_code == 200, response.text
+    return response.json()["resume"]
 
 
 def tailor(client, **overrides):

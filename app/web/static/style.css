@@ -63,3 +63,11 @@ iframe.pdf { width: 100%; height: 820px; border: 1px solid var(--line); border-r
 .flag { font-size: 13px; padding: 6px 8px; border-left: 3px solid var(--line); margin: 4px 0; background: var(--bg); border-radius: 4px; }
 .flag.verify { border-color: var(--warn); } .flag q { color: var(--muted); }
 .hidden { display: none !important; }
+.drop { border: 2px dashed var(--line); border-radius: 12px; padding: 28px 16px; text-align: center; background: var(--bg); display: flex; flex-direction: column; gap: 8px; align-items: center; }
+.drop.over { border-color: var(--accent); background: var(--chip); }
+.drop-title { font-weight: 700; font-size: 16px; }
+.upload { margin: 6px 0; font-size: 14px; } .upload .notice { margin: 0; }
+#list { display: grid; grid-template-columns: repeat(auto-fill, minmax(380px, 1fr)); gap: 14px; align-items: start; }
+.card.resume .resume-head { display: flex; justify-content: space-between; gap: 10px; align-items: flex-start; margin-bottom: 6px; flex-wrap: wrap; }
+.resume-name { font-weight: 700; font-size: 16px; }
+table.jobs { margin: 8px 0; font-size: 13px; } table.jobs td { padding: 4px 6px 4px 0; }

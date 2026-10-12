@@ -16,7 +16,7 @@
 
 <div class="panel"><h2>Defaults</h2>
   <div class="grid2">
-    <div><label for="resume_model">Resume model</label><select id="resume_model"></select></div>
+    <div><label for="resume_model">Resume model <span class="opt">(used by the Tailor page)</span></label><select id="resume_model"></select></div>
     <div><label for="cover_letter_model">Cover letter model</label><select id="cover_letter_model"></select></div>
     <div><label for="parser_model">Base-resume reader</label><select id="parser_model"></select></div>
   </div>
@@ -27,11 +27,11 @@
 <div class="panel"><h2>Limits and privacy</h2>
   <div class="grid2">
     <div><label for="daily_cost_cap_usd">Daily cost cap, USD <span class="opt">(0 = none; soft cap)</span></label><input type="number" id="daily_cost_cap_usd" min="0" step="0.5"></div>
-    <div><label for="retention_days">Delete stored data after, days <span class="opt">(0 = keep)</span></label><input type="number" id="retention_days" min="0" max="3650"></div>
+    <div><label for="retention_days">Delete tailored runs after, days <span class="opt">(0 = keep; uploaded resumes stay until you delete them)</span></label><input type="number" id="retention_days" min="0" max="3650"></div>
     <div><label for="paper_size">Paper size</label><select id="paper_size"><option>Letter</option><option>A4</option></select></div>
     <div><label for="metrics_mode">Numbers in bullets</label><select id="metrics_mode">
       <option value="estimate">Add realistic estimates (each one flagged for you to confirm)</option>
-      <option value="hints_only">Only the numbers I give in "Real facts about you"</option>
+      <option value="hints_only">No figures (nothing to verify)</option>
     </select></div>
   </div>
   <label>Allowed data regions <span class="opt">(models hosted elsewhere stay off until you tick them)</span></label>
@@ -48,7 +48,7 @@
 </div>
 
 <div class="panel"><h2>Your data</h2>
-  <p class="small muted">Deletes the saved profile and every stored run (resumes, cover letters, history).</p>
+  <p class="small muted">Deletes every uploaded resume and every stored run (tailored resumes, cover letters, history).</p>
   <button class="danger" id="wipe">Delete all stored data</button> <span id="wipe-status" class="small"></span>
 </div>
 {% endblock %}
@@ -57,10 +57,12 @@
 let models = [], regions = [], cfg = null;
 const field = id => $('#' + id);
 
-function modelOptions(select, current, blankLabel) {
+function modelOptions(select, current, blankLabel, extra = []) {
   select.replaceChildren(el('option', { value: '', text: blankLabel }),
+    ...extra.map(o => el('option', { value: o.value, selected: o.value === current, text: o.text })),
     ...models.filter(m => m.available).map(m => el('option', { value: m.id, selected: m.id === current, text: m.label })));
 }
+const labelOf = id => (models.find(m => m.id === id) || {}).label || id;
 
 async function init() {
   const [m, s] = await Promise.all([api('/api/models'), api('/api/settings')]);
@@ -76,9 +78,11 @@ async function init() {
     el('td', { text: x.demo ? 'free' : `${x.price_in} / ${x.price_out}` }), el('td', { text: x.data_region }),
     el('td', {}, x.available ? chip('ready', 'ok') : chip('off', 'warn'), x.verified ? null : chip('unverified'), x.available ? null : el('div', { class: 'small muted', text: x.reason }), x.key_hint ? el('div', { class: 'small muted', text: 'key ' + x.key_hint }) : null))));
   const st = s.settings;
-  modelOptions(field('resume_model'), st.resume_model, `Automatic (${s.resolved.resume || 'none available'})`);
+  modelOptions(field('resume_model'), st.resume_model, `Automatic (${labelOf(s.resolved.resume) || 'none available'})`);
   modelOptions(field('cover_letter_model'), st.cover_letter_model, 'Same as the resume model');
-  modelOptions(field('parser_model'), st.parser_model, `Automatic (${s.resolved.parser || 'none available'})`);
+  modelOptions(field('parser_model'), st.parser_model,
+    `Automatic (${st.parser_model === 'rules' || !s.resolved.parser ? 'built-in rules' : labelOf(s.resolved.parser)})`,
+    [{ value: 'rules', text: 'Rules only (free, nothing is sent)' }]);
   field('fallbacks').replaceChildren(...models.filter(x => x.available).map(x => el('label', {}, el('input', { type: 'checkbox', value: x.id, checked: st.fallback_models.includes(x.id) }), x.label)));
   field('daily_cost_cap_usd').value = st.daily_cost_cap_usd; field('retention_days').value = st.retention_days; field('paper_size').value = st.paper_size; field('metrics_mode').value = st.metrics_mode;
   field('regions').replaceChildren(...regions.map(r => el('label', {}, el('input', { type: 'checkbox', value: r, checked: st.allowed_regions.includes(r) }), r)));
@@ -114,7 +118,7 @@ field('check').addEventListener('click', async () => {
 });
 
 field('wipe').addEventListener('click', async () => {
-  if (!confirm('Delete the saved profile and all stored runs? This cannot be undone.')) return;
+  if (!confirm('Delete all uploaded resumes and all stored runs? This cannot be undone.')) return;
   try { await api('/api/data', { method: 'DELETE', admin: true }); field('wipe-status').textContent = 'Deleted.'; }
   catch (err) { field('wipe-status').textContent = err.message; }
 });

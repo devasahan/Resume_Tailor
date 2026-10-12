@@ -158,4 +158,5 @@ class TailorResult(BaseModel):
     hints: str = ""  # the user's own facts, kept so claim checks can be re-run after manual edits
     facts: str = ""  # facts computed from the profile (years of experience) that were given to the model
     company_name: str = ""  # company the user typed on the tailor form (wins over the one read from the JD)
+    jd: str = ""  # the job description this run was made for (a cover letter can be written later from it)
     created_at: str = ""
