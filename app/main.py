@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import re
 import secrets
+import unicodedata
 import time
 from pathlib import Path
 
@@ -63,7 +64,9 @@ def require_admin(x_admin_token: str | None = Header(default=None)) -> None:
 
 
 def safe_filename(name: str, suffix: str) -> str:
-    base = re.sub(r"[^A-Za-z0-9]+", "_", name).strip("_") or "Resume"
+    """'José Álvarez' -> 'Jose_Alvarez_Resume.pdf' (accents become plain letters, the rest becomes _)."""
+    ascii_name = unicodedata.normalize("NFKD", name).encode("ascii", "ignore").decode("ascii")
+    base = re.sub(r"[^A-Za-z0-9]+", "_", ascii_name).strip("_") or "Resume"
     return f"{base}_{suffix}"
 
 

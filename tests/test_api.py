@@ -196,3 +196,29 @@ def test_cross_site_style_requests_cannot_use_a_non_json_content_type(client):
     save_profile(client)
     r = client.post("/api/tailor", content='{"jd": "x", "model": "demo-concise"}', headers={"content-type": "text/plain"})
     assert r.status_code == 422
+
+
+@pytest.mark.parametrize("name,expected", [
+    ("JUAN DANIEL RAMIREZ", "JUAN_DANIEL_RAMIREZ_Resume.pdf"),
+    ("José Álvarez-Łukasz", "Jose_Alvarez_ukasz_Resume.pdf"),
+    ("王小明", "Resume_Resume.pdf"),
+    ("O'Brien, Ann", "O_Brien_Ann_Resume.pdf"),
+])
+def test_download_file_names(name, expected):
+    from app.main import safe_filename
+
+    assert safe_filename(name, "Resume.pdf") == expected
+
+
+def test_download_headers(client):
+    save_profile(client)
+    run_id = tailor(client, cover_letter=True).json()["run_id"]
+    pdf = client.get(f"/api/runs/{run_id}/resume.pdf?download=1")
+    assert pdf.headers["content-disposition"] == 'attachment; filename="Jordan_Rivera_Resume.pdf"'
+    assert client.get(f"/api/runs/{run_id}/resume.pdf").headers["content-disposition"].startswith("inline;")
+    docx = client.get(f"/api/runs/{run_id}/resume.docx")
+    assert docx.headers["content-type"].startswith("application/vnd.openxmlformats-officedocument.wordprocessingml.document")
+    assert docx.headers["content-disposition"] == 'attachment; filename="Jordan_Rivera_Resume.docx"'
+    assert client.get(f"/api/runs/{run_id}/cover.docx").headers["content-disposition"] == 'attachment; filename="Jordan_Rivera_Cover_Letter.docx"'
+    no_cover = tailor(client).json()["run_id"]
+    assert client.get(f"/api/runs/{no_cover}/cover.pdf").status_code == 404

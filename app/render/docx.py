@@ -51,14 +51,16 @@ def _heading(doc: Document, text: str, font_pt: float) -> None:
     _bottom_border(p)
 
 
-def _row(doc: Document, left_bold: str, left_rest: str, right: str, text_width) -> None:
+def _row(doc: Document, left_bold: str, left_rest: str, right: str, text_width, space_before: float = 0):
     p = doc.add_paragraph()
+    p.paragraph_format.space_before = Pt(space_before)
     p.paragraph_format.tab_stops.add_tab_stop(text_width, WD_TAB_ALIGNMENT.RIGHT)
     p.add_run(left_bold).bold = True
     if left_rest:
         p.add_run(left_rest)
     if right:
         p.add_run("\t" + right)
+    return p
 
 
 def resume_docx(resume: Resume, style: FitStyle) -> bytes:
@@ -93,14 +95,14 @@ def resume_docx(resume: Resume, style: FitStyle) -> bytes:
         para.add_run(", ".join(group.skills))
 
     _heading(doc, "EXPERIENCE", style.font_pt)
-    for exp in resume.experience:
+    for index, exp in enumerate(resume.experience):
         company = p.companies[exp.company_index]
         rest = f" | {company.name}"
         if company.location:
             rest += f" | {company.location}"
         if company.mode:
             rest += f" | {company.mode}"
-        _row(doc, exp.job_title, rest, fmt_dates(company.start, company.end), text_width)
+        _row(doc, exp.job_title, rest, fmt_dates(company.start, company.end), text_width, space_before=4 if index else 0)
         for bullet in exp.bullets:
             para = doc.add_paragraph(bullet, style="List Bullet")
             para.paragraph_format.space_after = Pt(1)
