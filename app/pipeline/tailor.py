@@ -179,7 +179,8 @@ async def run_tailor(
 
         def refine(value) -> str | None:
             """Ask once to fix the draft if it uses too many figures, round guesses, thin text, leaves must-have
-            JD terms out of the summary and bullets, or has job titles that do not read as a career path. The draft itself is attached: the rewrite prompt
+            JD terms out of the summary and bullets, copies the posting's voice, repeats its phrases, lists qualities
+            as skills, or has job titles that do not read as a career path. The draft itself is attached: the rewrite prompt
             is the original prompt plus this feedback, so without it the model could not keep what was good."""
             feedback = []
             density = validate.metric_density_problems(value[1])
@@ -207,6 +208,27 @@ async def run_tailor(
             coverage = coverage_feedback(value[1], value[0].jd_analysis)
             if coverage:
                 feedback.append(coverage)
+            voice = validate.posting_voice_problems(value[1])
+            if voice:
+                feedback.append(
+                    "These sentences copy the posting's own voice (you, your, we, our): "
+                    + "; ".join(f"'{text}'" for text in voice[:3]) + ". Rewrite each one as something the candidate "
+                    "did at that employer, in resume voice, keeping the skill it shows."
+                )
+            repeated = validate.repeated_phrase_problems(value[1], value[0].jd_analysis)
+            if repeated:
+                feedback.append(
+                    "These posting phrases are repeated so often that they read as keyword stuffing: "
+                    + ", ".join(repeated[:6]) + ". Keep each one at most twice in the summary and bullets, in the "
+                    "places where it fits best, and say the same thing in your own words everywhere else."
+                )
+            qualities = validate.quality_skill_problems(value[1])
+            if qualities:
+                feedback.append(
+                    "The skills list contains qualities, not skills: " + ", ".join(f"'{s}'" for s in qualities[:6])
+                    + ". Replace them with real tools, platforms or methods related to the JD, and show those "
+                    "qualities in the bullets instead."
+                )
             era = validate.era_problems(value[1])
             if era:
                 feedback.append(

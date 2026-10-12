@@ -84,7 +84,6 @@ class Sheet:
         pdf.add_font(FAMILY, "B", str(FONT_DIR / "Carlito-Bold.ttf"))
         pdf.set_title(title)
         pdf.set_author(author)
-        pdf.set_creator("Resume Tailor")
         try:
             pdf.set_lang("en-US")
         except Exception:  # older fpdf2 without set_lang
@@ -205,7 +204,11 @@ class Sheet:
         self.y += after
 
     def row(self, left: list[Run], right: str) -> None:
-        """Bold-led text on the left, dates right-aligned on the first line."""
+        """Bold-led text on the left, dates right-aligned on the first line.
+
+        The gap before the dates is filled with real spaces. They are invisible, but without them PDF
+        readers that group text by position (pdfminer, and ATS built like it) see the dates as a separate
+        block and put them inside the first bullet."""
         height = self.size * self.line
         right_w = self.measure(right, False, self.size) if right else 0.0
         lines = self.wrap(left, self.width - (right_w + ROW_GAP if right else 0.0), self.size)
@@ -213,6 +216,11 @@ class Sheet:
             self._ensure(height)
             self._draw(line, self.margin, self.y, self.size, height)
             if index == 0 and right:
+                used = sum(piece.width for piece in line)
+                space_w = self.measure(" ", False, self.size)
+                count = int((self.width - right_w - used) // space_w)
+                if count > 0:
+                    self._draw([Piece(" " * count, False, count * space_w)], self.margin + used, self.y, self.size, height)
                 self._draw([Piece(right, False, right_w)], self.margin + self.width - right_w, self.y, self.size, height)
             self.y += height
 

@@ -137,17 +137,27 @@ def _word_pattern(word: str, last: bool) -> str:
     return re.escape(word) + "(?:s|es)?"
 
 
+def _term_regex(term: str, case_sensitive: bool | None = None) -> re.Pattern | None:
+    words = [w for w in re.split(r"[\s-]+", term.strip()) if w]
+    if not words:
+        return None
+    body = r"[\s-]+".join(_word_pattern(w, i == len(words) - 1) for i, w in enumerate(words))
+    if case_sensitive is None:
+        case_sensitive = len(term.strip()) <= 3
+    return re.compile(rf"(?<![A-Za-z0-9]){body}(?![A-Za-z0-9+#])", 0 if case_sensitive else re.IGNORECASE)
+
+
 def mentions(text: str, term: str, case_sensitive: bool | None = None) -> bool:
     """contains_term, tolerant of the forms an ATS also matches: hyphen or space between words
     ('event-driven' ~ 'event driven') and a plural or singular last word ('REST APIs' ~ 'REST API')."""
-    words = [w for w in re.split(r"[\s-]+", term.strip()) if w]
-    if not words:
-        return False
-    body = r"[\s-]+".join(_word_pattern(w, i == len(words) - 1) for i, w in enumerate(words))
-    pattern = rf"(?<![A-Za-z0-9]){body}(?![A-Za-z0-9+#])"
-    if case_sensitive is None:
-        case_sensitive = len(term.strip()) <= 3
-    return re.search(pattern, text, 0 if case_sensitive else re.IGNORECASE) is not None
+    pattern = _term_regex(term, case_sensitive)
+    return pattern is not None and pattern.search(text) is not None
+
+
+def mention_count(text: str, term: str) -> int:
+    """How many times `mentions` would find the term."""
+    pattern = _term_regex(term)
+    return len(pattern.findall(text)) if pattern else 0
 
 
 def _unique(terms: list[str]) -> list[str]:
@@ -213,6 +223,43 @@ def thin_text_problems(resume: Resume) -> list[str]:
     if weak:
         problems.append("these bullets open like a duty list: " + "; ".join(f"'{b}'" for b in weak[:3]))
     return problems
+
+
+_POSTING_VOICE = re.compile(r"\b(you|your|yours|yourself|we|our|ours)\b", re.IGNORECASE)
+
+
+def posting_voice_problems(resume: Resume) -> list[str]:
+    """Summary sentences and bullets that talk like the posting ("Refine your craft by..."): a resume never
+    says you, your, we or our, so these were copied from the JD."""
+    texts = [resume.summary, *(b for exp in resume.experience for b in exp.bullets)]
+    return [text for text in texts if _POSTING_VOICE.search(text)]
+
+
+MAX_PHRASE_REPEATS = 2
+MIN_PHRASE_WORDS = 3  # 'modern software development', not tool names such as 'Spring Boot' that recur wherever used
+
+
+def repeated_phrase_problems(resume: Resume, analysis: JDAnalysis) -> list[str]:
+    """JD phrases of three or more words used more than twice in the summary and bullets: keyword stuffing.
+    Hyphenated words count once ('low-maintenance software solutions' is three words)."""
+    evidence = evidence_text(resume)
+    terms = [t for t in _unique([*analysis.must_have_skills, *analysis.nice_to_have_skills, *analysis.keywords])
+             if len(t.split()) >= MIN_PHRASE_WORDS]
+    problems = []
+    for term in terms:
+        count = mention_count(evidence, term)
+        if count > MAX_PHRASE_REPEATS:
+            problems.append(f"'{term}' ({count} times)")
+    return problems
+
+
+_QUALITY_WORDS = re.compile(r"\b(scalable|maintainable|low-maintenance|high-quality|robust|reliable)\b", re.IGNORECASE)
+
+
+def quality_skill_problems(resume: Resume) -> list[str]:
+    """Skills-list items that are qualities or outcomes ('High-Quality Code', 'Scalable and Maintainable
+    Applications') rather than something a person uses or does."""
+    return [skill for group in resume.skills for skill in group.skills if _QUALITY_WORDS.search(skill)]
 
 
 _LEVEL_WORDS = {

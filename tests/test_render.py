@@ -35,10 +35,26 @@ def test_one_page_with_text_in_reading_order(resume):
     assert "Mar 2022 - Present" in text and "Remote" in text and "B.S., Computer Science" in text
 
 
+def test_dates_stay_on_the_job_line_for_layout_readers(resume):
+    """pdfminer groups text by position, like many ATS: right-aligned dates must not land inside a bullet."""
+    pdfminer = pytest.importorskip("pdfminer.high_level")
+    sentence = "Designed and operated data pipelines with Python and SQL for several product teams, documenting each decision."
+    for exp in resume.experience:
+        exp.bullets = [sentence, sentence]
+    pdf, _ = render_resume_pdf(resume, FitStyle())
+    lines = [" ".join(line.split()) for line in pdfminer.extract_text(io.BytesIO(pdf)).splitlines()]
+    for name, dates in (("Northwind Labs", "Mar 2022 - Present"), ("Contoso Systems", "Jun 2019 - Feb 2022"),
+                        ("Fabrikam", "Jul 2016 - May 2019"), ("University of Texas at Austin", "2016")):
+        line = next(line for line in lines if name in line)
+        assert line.endswith(dates), line
+    assert text_of(pdf).count("Mar 2022 - Present") == 1  # the plain reader sees the dates once too
+
+
 def test_metadata_and_embedded_font(resume):
     pdf, _ = render_resume_pdf(resume, FitStyle())
     reader = PdfReader(io.BytesIO(pdf))
     assert reader.metadata.title == "Jordan Rivera - Resume" and reader.metadata.author == "Jordan Rivera"
+    assert reader.metadata.creator is None  # the file does not name the tool that made it
     fonts = reader.pages[0]["/Resources"]["/Font"]
     embedded = []
     for ref in fonts.values():
