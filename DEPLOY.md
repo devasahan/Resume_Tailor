@@ -44,7 +44,8 @@ ADMIN_EMAIL=your email
 ADMIN_PASSWORD=your admin password (at least 10 characters)
 GEMINI_API_KEY=your Gemini key
 ```
-`COOKIE_SECURE=1` and `FORCE_HTTPS=1` are already set. Save with **Ctrl+O**, **Enter**, then close with
+`COOKIE_SECURE=1` and `FORCE_HTTPS=1` are already set. On a free account the script also adds
+`HTTPS_PROXY=` and `HTTP_PROXY=` lines: the website reaches Gemini through PythonAnywhere's proxy. Save with **Ctrl+O**, **Enter**, then close with
 **Ctrl+X**. (Or edit the file in the **Files** tab: `Resume_Tailor` > `.env`.)
 
 ## 5. Start the website
@@ -112,6 +113,7 @@ Changing `.env` also needs this restart. A new `ADMIN_PASSWORD` replaces the old
 | Log in says the admin account is not set up | `ADMIN_EMAIL` or `ADMIN_PASSWORD` is empty in `.env`; fill it in and restart the website |
 | Log in keeps returning to the login page | You are on the http:// address and the site did not switch to https://. Use only https://, change `ADMIN_PASSWORD` in `.env`, restart the website, and tell Claude |
 | "Cross-site request refused" | Tell Claude: the hosting proxy changes a header the app checks |
+| Check models says "network error (ConnectError)" | The website does not know PythonAnywhere's proxy. In a PythonAnywhere Bash console run `echo $https_proxy`, add `HTTPS_PROXY=` and `HTTP_PROXY=` lines with that address (usually `http://proxy.server:3128`) to `.env`, and restart the website |
 | Gemini check fails with "403" or "Tunnel connection failed" | The free account cannot reach that address; a paid account has full internet access |
 | Gemini says "quota" or "429" | The Gemini free tier allows few requests per minute; wait a minute, or turn on billing in Google AI Studio |
 | The site stopped after a month | Free accounts must be renewed: on the Web tab (B) press **Run until 1 month from today**; for A, log in to PythonAnywhere and follow its renewal notice |

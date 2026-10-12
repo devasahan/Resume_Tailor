@@ -50,6 +50,15 @@ else
   set_value FORCE_HTTPS 1    # http:// visitors are sent to https://
   echo "== Created $ENV_FILE"
 fi
+# Free accounts reach the internet only through PythonAnywhere's proxy. Consoles know it; the website started by
+# `pa website create` does not, so the app reads it from .env (only these two keys are ever added to an existing .env).
+PROXY="${https_proxy:-${HTTPS_PROXY:-${http_proxy:-${HTTP_PROXY:-}}}}"
+if [ -n "$PROXY" ]; then
+  for key in HTTPS_PROXY HTTP_PROXY; do
+    if ! grep -q "^$key=." "$ENV_FILE"; then set_value "$key" "$PROXY"; fi
+  done
+  echo "== Internet proxy for the website: $PROXY"
+fi
 chmod 600 "$ENV_FILE"
 mkdir -p "$APP_DIR/data"
 

@@ -134,7 +134,8 @@ def test_setup_script_makes_env_once_and_prints_the_commands(tmp_path):
     (project / "deploy").mkdir(parents=True)
     shutil.copy(ROOT / ".env.example", project / ".env.example")
     shutil.copy(ROOT / "deploy" / "pythonanywhere_setup.sh", project / "deploy" / "pythonanywhere_setup.sh")
-    env = {**os.environ, "HOME": str(tmp_path), "USER": "jdoe", "RESUME_TAILOR_SKIP_INSTALL": "1"}
+    env = {k: v for k, v in os.environ.items() if k.lower() not in ("https_proxy", "http_proxy")}
+    env.update(HOME=str(tmp_path), USER="jdoe", RESUME_TAILOR_SKIP_INSTALL="1")
     script = str(project / "deploy" / "pythonanywhere_setup.sh")
     assert subprocess.run(["bash", "-n", script], check=False).returncode == 0
     first = subprocess.run(["bash", script], env=env, capture_output=True, text=True, check=True).stdout
@@ -149,3 +150,29 @@ def test_setup_script_makes_env_once_and_prints_the_commands(tmp_path):
     (project / ".env").write_text("ADMIN_EMAIL=kept@example.com\n")
     again = subprocess.run(["bash", script], env=env, capture_output=True, text=True, check=True).stdout
     assert "left as it is" in again and (project / ".env").read_text() == "ADMIN_EMAIL=kept@example.com\n"
+
+
+@pytest.mark.skipif(shutil.which("bash") is None, reason="needs bash")
+def test_setup_script_gives_the_website_the_consoles_internet_proxy(tmp_path):
+    """Free accounts: the website must use PythonAnywhere's proxy too, so the script copies it into .env."""
+    project = tmp_path / "Resume_Tailor"
+    (project / "deploy").mkdir(parents=True)
+    shutil.copy(ROOT / ".env.example", project / ".env.example")
+    shutil.copy(ROOT / "deploy" / "pythonanywhere_setup.sh", project / "deploy" / "pythonanywhere_setup.sh")
+    script = str(project / "deploy" / "pythonanywhere_setup.sh")
+    base = {k: v for k, v in os.environ.items() if k.lower() not in ("https_proxy", "http_proxy")}
+    base.update(HOME=str(tmp_path), USER="jdoe", RESUME_TAILOR_SKIP_INSTALL="1")
+    proxied = {**base, "https_proxy": "http://proxy.server:3128"}
+
+    def run(env):
+        return subprocess.run(["bash", script], env=env, capture_output=True, text=True, check=True).stdout
+
+    (project / ".env").write_text("ADMIN_EMAIL=kept@example.com\nGEMINI_API_KEY=k\n")  # an existing .env
+    assert "Internet proxy for the website: http://proxy.server:3128" in run(proxied)
+    run(proxied)  # a second run adds nothing more
+    assert (project / ".env").read_text() == ("ADMIN_EMAIL=kept@example.com\nGEMINI_API_KEY=k\n"
+                                              "HTTPS_PROXY=http://proxy.server:3128\nHTTP_PROXY=http://proxy.server:3128\n")
+    (project / ".env").unlink()
+    run(base)  # no proxy (a paid account or a PC): nothing is added
+    assert "PROXY" not in "".join(line for line in (project / ".env").read_text().splitlines(True)
+                                  if not line.startswith("#"))
