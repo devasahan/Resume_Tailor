@@ -134,6 +134,32 @@ def keyword_coverage(resume: Resume, analysis: JDAnalysis) -> Coverage:
     return Coverage(score=round(len(found) / len(terms), 3) if terms else 0.0, found=found, missing=missing)
 
 
+MIN_SUMMARY_WORDS = 55
+MIN_BULLET_WORDS = 15
+WEAK_OPENERS = (
+    "responsible for", "worked on", "helped", "assisted", "participated in", "involved in", "utilized",
+    "build and maintain", "built and maintained",
+)
+
+
+def thin_text_problems(resume: Resume) -> list[str]:
+    """Signs of a weak draft: a short summary, two or more thin bullets, bullets that open like a duty list."""
+    problems: list[str] = []
+    words = word_count(resume.summary)
+    if words < MIN_SUMMARY_WORDS:
+        problems.append(f"the summary has only {words} words")
+    bullets = [b for exp in resume.experience for b in exp.bullets]
+    thin = [b for b in bullets if word_count(b) < MIN_BULLET_WORDS]
+    if len(thin) >= 2:
+        problems.append(
+            f"{len(thin)} bullets are under {MIN_BULLET_WORDS} words (" + "; ".join(f"'{b}'" for b in thin[:3]) + ")"
+        )
+    weak = [b for b in bullets if b.lower().startswith(WEAK_OPENERS)]
+    if weak:
+        problems.append("these bullets open like a duty list: " + "; ".join(f"'{b}'" for b in weak[:3]))
+    return problems
+
+
 def ats_lint(resume: Resume) -> list[str]:
     warnings: list[str] = []
     if word_count(resume.headline) > 14:
@@ -141,7 +167,7 @@ def ats_lint(resume: Resume) -> list[str]:
     words = word_count(resume.summary)
     if words > 95:
         warnings.append(f"Summary is long ({words} words; aim for 60-85).")
-    elif words < 40:
+    elif words < MIN_SUMMARY_WORDS:
         warnings.append(f"Summary is short ({words} words; aim for 60-85).")
     if _FIRST_PERSON.search(resume.summary):
         warnings.append("Summary uses first-person pronouns.")
@@ -161,6 +187,11 @@ def ats_lint(resume: Resume) -> list[str]:
         for bullet in exp.bullets:
             if word_count(bullet) > 32:
                 warnings.append(f"{company}: a bullet is {word_count(bullet)} words long.")
+                break
+            if word_count(bullet) < MIN_BULLET_WORDS:
+                warnings.append(
+                    f"{company}: a bullet has only {word_count(bullet)} words; say how it was done and what changed."
+                )
                 break
             if _FIRST_PERSON.search(bullet):
                 warnings.append(f"{company}: a bullet uses first-person pronouns.")

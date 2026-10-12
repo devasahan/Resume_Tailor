@@ -29,7 +29,7 @@ from ..schemas import (
 from ..storage.db import Database
 from . import validate
 from .facts import candidate_facts
-from .fit import render_smallest, trim_to_fit, try_styles
+from .fit import bullet_budget, render_smallest, smaller_budget, trim_to_fit, try_styles
 from .generate import GenerationFailed, Outcome, generate_validated
 
 log = logging.getLogger(__name__)
@@ -118,7 +118,8 @@ async def run_tailor(
     try:
         chain = router.chain(model_id, allow_fallback)
         schema = strict_json_schema(TailorOutput)
-        context = {"profile": profile.model_dump(), "jd": jd, "hints": hints}
+        budget = await asyncio.to_thread(bullet_budget, profile, paper)  # bullets per employer that fit one page
+        context = {"profile": profile.model_dump(), "jd": jd, "hints": hints, "bullets": budget}
 
         def parse(data: dict):
             out = TailorOutput.model_validate(data)
@@ -127,7 +128,7 @@ async def run_tailor(
         allowed_figures = f"{hints}\n{facts}"
 
         def refine(value) -> str | None:
-            """Ask once to fix the figures if the draft uses too many, or round guesses."""
+            """Ask once to fix the draft if it uses too many figures, round guesses, or thin text."""
             feedback = []
             density = validate.metric_density_problems(value[1])
             if density:
@@ -144,27 +145,36 @@ async def run_tailor(
                     "17.8%, 1.7TB, 38 analysts): no numbers ending in 0 or 5, no '~', no 'approximately'. Keep any "
                     "figure the candidate gave exactly as it is."
                 )
+            thin = validate.thin_text_problems(value[1])
+            if thin:
+                feedback.append(
+                    "The draft is too thin: " + "; ".join(thin) + ". Rewrite the summary as 3-4 flowing sentences "
+                    "of 60-85 words, and every weak bullet as 18-28 words that say specifically what was done, how, "
+                    "and what changed, following the SUMMARY and BULLETS rules."
+                )
             if not feedback:
                 return None
             return " ".join(feedback) + " Keep everything else unchanged."
 
         await generate_validated(
-            router, chain, system=tailor_system(metrics_mode), user=tailor_user(jd, profile.companies, hints, facts),
+            router, chain, system=tailor_system(metrics_mode),
+            user=tailor_user(jd, profile.companies, hints, facts, bullets=budget),
             schema=schema, schema_name="tailor_output", parse=parse, context=context, outcome=outcome,
             refine=refine,
         )
         output, resume = outcome.value  # type: ignore[misc]
 
-        # --- fit to one page: shrink style -> ask the model for shorter bullets once -> trim bullets
+        # --- fit to one page: shrink style -> ask once more with a smaller bullet budget -> trim bullets
         fit = await asyncio.to_thread(try_styles, resume, paper)
         if fit is None:
             second = Outcome()
+            smaller = smaller_budget(budget)
             try:
                 await generate_validated(
                     router, [outcome.final_model_id], system=tailor_system(metrics_mode),
-                    user=tailor_user(jd, profile.companies, hints, facts, shorten=True), schema=schema,
-                    schema_name="tailor_output", parse=parse, context={**context, "shorten": True}, outcome=second,
-                    refine=refine,
+                    user=tailor_user(jd, profile.companies, hints, facts, shorten=True, bullets=smaller),
+                    schema=schema, schema_name="tailor_output", parse=parse,
+                    context={**context, "shorten": True, "bullets": smaller}, outcome=second, refine=refine,
                 )
                 _absorb(outcome, second)
                 short_output, short_resume = second.value  # type: ignore[misc]

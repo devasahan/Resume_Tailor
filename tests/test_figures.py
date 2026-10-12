@@ -55,7 +55,10 @@ class Rounder(LLMClient):
         experience = result.data["sections"]["experience"]
         figures = ("23.4%", "38") if retry else self.round_figures
         for exp, figure in zip(experience, figures, strict=False):  # 3 jobs, 2 figures: only the first two change
-            exp["bullets"][0] = f"Improved pipeline throughput by {figure} using Spark"
+            exp["bullets"][0] = (
+                f"Improved pipeline throughput by {figure} by moving the nightly batch jobs to Spark and partitioning "
+                "the largest tables by date"
+            )
         return result
 
 

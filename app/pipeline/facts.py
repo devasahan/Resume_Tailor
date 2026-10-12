@@ -45,6 +45,27 @@ def _index(point: tuple[int, int]) -> int:
     return point[0] * 12 + (point[1] - 1)
 
 
+def stay_months(company: Company, today: date | None = None) -> int | None:
+    """Months at one employer (end month included), or None when the dates cannot be read."""
+    start = parse_point(company.start, is_end=False, today=today)
+    end = parse_point(company.end, is_end=True, today=today)
+    if not start or not end or _index(end) < _index(start):
+        return None
+    return _index(end) - _index(start) + 1
+
+
+def bullet_caps(companies: list[Company], today: date | None = None) -> list[int]:
+    """Most bullets each employer deserves: 5 / 4 / 3 by recency, 3 for a stay under a year, 2 under 6 months."""
+    caps = []
+    for index, company in enumerate(companies):
+        cap = 5 if index == 0 else 4 if index == 1 else 3
+        months = stay_months(company, today)
+        if months is not None:
+            cap = min(cap, 2 if months < 6 else 3 if months < 12 else cap)
+        caps.append(cap)
+    return caps
+
+
 def experience_months(companies: list[Company], today: date | None = None) -> int | None:
     """Total months worked, counting overlaps once. None when no dates can be read."""
     spans: list[tuple[int, int]] = []

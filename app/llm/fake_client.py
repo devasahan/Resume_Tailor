@@ -48,18 +48,18 @@ COMPANY_RE = re.compile(
 )
 
 CONCISE = [
-    ("Delivered {k1} solutions for cross-functional teams, improving reliability and turnaround.",
-     "Deliver {k1} solutions for cross-functional teams, improving reliability and turnaround."),
-    ("Built and maintained {k2} workflows that supported day-to-day operations.",
-     "Build and maintain {k2} workflows that support day-to-day operations."),
-    ("Partnered with stakeholders to translate requirements into {k3} deliverables.",
-     "Partner with stakeholders to translate requirements into {k3} deliverables."),
-    ("Documented {k1} practices and coached teammates on {k2}.",
-     "Document {k1} practices and coach teammates on {k2}."),
-    ("Reviewed and improved {k3} processes to reduce rework.",
-     "Review and improve {k3} processes to reduce rework."),
-    ("Monitored {k2} performance and resolved issues before they reached customers.",
-     "Monitor {k2} performance and resolve issues before they reach customers."),
+    ("Designed {k1} components for the core customer workflow, choosing simple, testable interfaces so cross-functional teams could ship changes with fewer regressions.",
+     "Design {k1} components for the core customer workflow, choosing simple, testable interfaces so cross-functional teams can ship changes with fewer regressions."),
+    ("Built {k2} automation for recurring operational work, replacing manual hand-offs and giving the team reliable, repeatable runs it no longer had to babysit.",
+     "Build {k2} automation for recurring operational work, replacing manual hand-offs and giving the team reliable, repeatable runs it no longer has to babysit."),
+    ("Partnered with product and business stakeholders to turn loosely defined requests into scoped {k3} deliverables with clear acceptance criteria and fewer late changes.",
+     "Partner with product and business stakeholders to turn loosely defined requests into scoped {k3} deliverables with clear acceptance criteria and fewer late changes."),
+    ("Documented {k1} and {k2} conventions and coached teammates through reviews and pairing, making onboarding faster and work across the team more consistent.",
+     "Document {k1} and {k2} conventions and coach teammates through reviews and pairing, making onboarding faster and work across the team more consistent."),
+    ("Reworked {k3} processes that caused repeated rework, tracing failure points with the owning teams and rolling out fixes that kept issues from coming back.",
+     "Rework {k3} processes that cause repeated rework, tracing failure points with the owning teams and rolling out fixes that keep issues from coming back."),
+    ("Introduced {k2} monitoring and alerting for customer-facing services, catching problems before users reported them and feeding post-incident lessons into planning.",
+     "Introduce {k2} monitoring and alerting for customer-facing services, catching problems before users report them and feeding post-incident lessons into planning."),
 ]
 DETAILED = [
     ("Increased delivery speed by 23.4% by redesigning {k1} workflows across several teams, aligning technical decisions with business goals, documenting trade-offs for stakeholders, and keeping every release predictable and well tested.",
@@ -166,9 +166,10 @@ class FakeClient(LLMClient):
         k = (keywords + GENERIC)[:12]
         titles = _title_ladder(prefix, base, len(companies))
         bank = DETAILED if self.style == "detailed" else CONCISE
-        counts = [6, 5, 4] if self.style == "detailed" else [4, 3, 3]
-        if ctx.get("shorten"):
-            counts = [max(2, c - 2) for c in counts]
+        if self.style == "detailed":  # deliberately too long, to exercise the fit-to-one-page steps
+            counts = [6, 5, 4] if not ctx.get("shorten") else [4, 3, 2]
+        else:  # follows the bullet budget in the prompt, like a real model
+            counts = ctx.get("bullets") or [4, 3, 3]
 
         experience = []
         for index, company in enumerate(companies):
@@ -200,8 +201,12 @@ class FakeClient(LLMClient):
             "sections": {
                 "headline": f"{target} | {k[0]} | {k[1]} | {k[2]}",
                 "summary": (
-                    f"{target} with hands-on experience in {k[0]}, {k[1]} and {k[2]}. "
-                    "Known for turning requirements into dependable results and working closely with stakeholders to deliver on schedule."
+                    f"{target} with hands-on experience delivering {k[0]}, {k[1]} and {k[2]} work for product and "
+                    f"operations teams in fast-moving organizations. Strong in {k[3]} and {k[4]}, with a habit of "
+                    "turning loosely defined requirements into simple, well-tested deliverables that others can build "
+                    "on. Has made day-to-day operations more reliable by automating repetitive steps and adding "
+                    "monitoring where problems used to go unnoticed. Brings ownership from planning to hand-off and "
+                    "close collaboration with stakeholders and customer-facing teams."
                 ),
                 "skills": groups,
                 "experience": experience,

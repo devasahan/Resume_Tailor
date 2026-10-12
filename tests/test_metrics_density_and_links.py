@@ -75,11 +75,15 @@ class Dense(LLMClient):
     async def generate_structured(self, **kwargs):
         self.calls += 1
         result = await self.inner.generate_structured(**kwargs)
-        figures = iter(["23.4%", "17.8%", "38", "21%", "1.7TB", "12.6%", "47", "8.3%", "19%", "26.1%"])
+        figures = iter(["23.4%", "17.8%", "38", "21%", "1.7TB", "12.6%", "47", "8.3%", "19%", "26.1%", "13.7%",
+                        "29", "6.4%", "31.2%", "44", "16.9%"])
         for exp in result.data["sections"]["experience"]:
             for i in range(len(exp["bullets"])):
                 if RETRY_MARKER not in kwargs["user"] or i == 0:
-                    exp["bullets"][i] = f"Improved delivery of item {'abcdefgh'[i]} by {next(figures)}"
+                    exp["bullets"][i] = (
+                        f"Improved delivery of reporting stream {'abcdefgh'[i]} by {next(figures)} by reworking its "
+                        "batch schedule and adding checks to every load"
+                    )
         return result
 
 

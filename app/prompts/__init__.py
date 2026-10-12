@@ -7,17 +7,19 @@ from __future__ import annotations
 import re
 from pathlib import Path
 
+from ..pipeline.facts import bullet_caps
 from ..schemas import Company, Resume
 
-PROMPT_VERSION = "v6"
+PROMPT_VERSION = "v7"
 RETRY_MARKER = "Your previous answer was rejected"
 
 _DIR = Path(__file__).parent
 _TOKEN = re.compile(r"\{\{(\w+)\}\}")
 
 SHORTEN_NOTE = (
-    " The previous draft did not fit on one page. Make every bullet shorter (at most 18 words), use at most "
-    "4 bullets for the most recent employer and 3 for the others, and keep the summary under 60 words."
+    " The previous draft did not fit on one page, so some employers above now get one bullet fewer. Keep every "
+    "bullet at most 24 words and the summary at 60-75 words, but keep the same quality: each bullet still says "
+    "what was done, how, and what changed."
 )
 
 
@@ -34,13 +36,16 @@ def is_current(company: Company) -> bool:
     return company.end.strip().lower() in ("", "present", "current", "now", "today")
 
 
-def describe_companies(companies: list[Company]) -> str:
+def describe_companies(companies: list[Company], bullets: list[int] | None = None) -> str:
+    """One line per employer; `bullets` (computed so the page fits) is how many bullets to write for each."""
+    bullets = bullets or bullet_caps(companies)
     lines = []
     for index, c in enumerate(companies):
         end = "Present (current role)" if is_current(c) else c.end
         parts = [c.name, f"{c.start or '?'} - {end}", c.mode or "work mode not stated"]
         if c.location:
             parts.append(c.location)
+        parts.append(f"write exactly {bullets[index]} bullets")
         lines.append(f"{index}: " + " | ".join(parts))
     return "\n".join(lines) or "(none)"
 
@@ -54,12 +59,15 @@ def tailor_system(metrics_mode: str = "estimate") -> str:
     return _fill(_read("system.md"), metrics_rule=_read(f"metrics_{metrics_mode}.md").strip())
 
 
-def tailor_user(jd: str, companies: list[Company], hints: str, facts: str = "", shorten: bool = False) -> str:
+def tailor_user(
+    jd: str, companies: list[Company], hints: str, facts: str = "", shorten: bool = False,
+    bullets: list[int] | None = None,
+) -> str:
     return _fill(
         _read("tailor.md"),
         jd=jd.strip(),
         count=str(len(companies)),
-        companies=describe_companies(companies),
+        companies=describe_companies(companies, bullets),
         facts=facts.strip() or "Total professional experience: unknown (do not state a number of years).",
         hints=hints.strip() or "(none given)",
         extra=SHORTEN_NOTE if shorten else "",
