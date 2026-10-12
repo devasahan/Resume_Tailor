@@ -124,3 +124,20 @@ def test_metrics_setting_is_validated(tmp_path):
     assert client.put("/api/settings", json={"metrics_mode": "always"}).status_code == 422
     assert client.put("/api/settings", json={"metrics_mode": "hints_only"}).json()["settings"]["metrics_mode"] == "hints_only"
     assert 'id="metrics_mode"' in client.get("/settings").text
+
+
+
+def test_summary_rule_is_richer_but_bounded():
+    text = tailor_system("estimate")
+    assert "SUMMARY: 3-4 sentences, 60-85 words" in text
+    assert "core technical strengths" in text and "what the candidate brings to this particular role" in text
+
+
+def test_summary_length_warnings(profile):
+    out = make_output()
+    out.sections.summary = "Short summary."
+    assert any("Summary is short" in w for w in validate.ats_lint(validate.build_resume(profile, out)))
+    out.sections.summary = " ".join(["word"] * 70)
+    assert not any("Summary is" in w for w in validate.ats_lint(validate.build_resume(profile, out)))
+    out.sections.summary = " ".join(["word"] * 100)
+    assert any("Summary is long" in w for w in validate.ats_lint(validate.build_resume(profile, out)))

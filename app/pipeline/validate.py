@@ -138,8 +138,11 @@ def ats_lint(resume: Resume) -> list[str]:
     warnings: list[str] = []
     if word_count(resume.headline) > 14:
         warnings.append(f"Headline is long ({word_count(resume.headline)} words).")
-    if word_count(resume.summary) > 70:
-        warnings.append(f"Summary is long ({word_count(resume.summary)} words).")
+    words = word_count(resume.summary)
+    if words > 95:
+        warnings.append(f"Summary is long ({words} words; aim for 60-85).")
+    elif words < 40:
+        warnings.append(f"Summary is short ({words} words; aim for 60-85).")
     if _FIRST_PERSON.search(resume.summary):
         warnings.append("Summary uses first-person pronouns.")
     total_skills = sum(len(g.skills) for g in resume.skills)

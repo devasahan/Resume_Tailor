@@ -9,7 +9,7 @@ from pathlib import Path
 
 from ..schemas import Company, Resume
 
-PROMPT_VERSION = "v4"
+PROMPT_VERSION = "v5"
 RETRY_MARKER = "Your previous answer was rejected"
 
 _DIR = Path(__file__).parent
@@ -17,7 +17,7 @@ _TOKEN = re.compile(r"\{\{(\w+)\}\}")
 
 SHORTEN_NOTE = (
     " The previous draft did not fit on one page. Make every bullet shorter (at most 18 words), use at most "
-    "4 bullets for the most recent employer and 3 for the others, and keep the summary under 45 words."
+    "4 bullets for the most recent employer and 3 for the others, and keep the summary under 60 words."
 )
 
 
