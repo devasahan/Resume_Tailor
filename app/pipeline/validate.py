@@ -5,6 +5,8 @@
   keyword_coverage        how many JD keywords appear in the resume
   ats_lint                format / length warnings
   claim_flags             numbers and skills the user never supplied, for the review step
+  unshown_must_haves      required JD terms missing, or only listed, instead of shown in the summary or a bullet
+  posting_match_flags     sentences added to match the JD that the user's hints do not back up
 """
 from __future__ import annotations
 
@@ -22,6 +24,7 @@ from ..schemas import (
     SkillGroup,
     TailorOutput,
 )
+from .facts import months_phrase, stay_months
 
 _PUNCT_MAP = str.maketrans(
     {"’": "'", "‘": "'", "“": '"', "”": '"', "–": "-", "—": "-", "…": "...", " ": " ", "\t": " "}
@@ -121,17 +124,68 @@ def contains_term(text: str, term: str) -> bool:
     return re.search(pattern, text, flags) is not None
 
 
+def _word_pattern(word: str, last: bool) -> str:
+    """One word of a term; the last one also matches its plural or singular ('API' ~ 'APIs', 'pipelines')."""
+    if not last or not word.isalpha():  # 'Node.js', 'CI/CD' stay literal
+        return re.escape(word)
+    if word.isupper() or len(word) <= 3:  # acronyms: 'API' ~ 'APIs'
+        return re.escape(word) + "s?"
+    if word.lower().endswith("ss"):
+        return re.escape(word) + "(?:es)?"
+    if word.lower().endswith("s"):
+        return re.escape(word[:-1]) + "(?:s|es)?"
+    return re.escape(word) + "(?:s|es)?"
+
+
+def mentions(text: str, term: str) -> bool:
+    """contains_term, tolerant of the forms an ATS also matches: hyphen or space between words
+    ('event-driven' ~ 'event driven') and a plural or singular last word ('REST APIs' ~ 'REST API')."""
+    words = [w for w in re.split(r"[\s-]+", term.strip()) if w]
+    if not words:
+        return False
+    body = r"[\s-]+".join(_word_pattern(w, i == len(words) - 1) for i, w in enumerate(words))
+    pattern = rf"(?<![A-Za-z0-9]){body}(?![A-Za-z0-9+#])"
+    flags = 0 if len(term.strip()) <= 3 else re.IGNORECASE
+    return re.search(pattern, text, flags) is not None
+
+
+def _unique(terms: list[str]) -> list[str]:
+    out: list[str] = []
+    for term in terms:
+        term = term.strip()
+        if term and term.lower() not in {t.lower() for t in out}:
+            out.append(term)
+    return out
+
+
+def evidence_text(resume: Resume) -> str:
+    """Where a skill counts as shown, not just listed: the summary and the bullets."""
+    return "\n".join([resume.summary, *(b for exp in resume.experience for b in exp.bullets)])
+
+
+def unshown_must_haves(resume: Resume, analysis: JDAnalysis) -> tuple[list[str], list[str]]:
+    """(absent, listed_only): must-have terms found nowhere in the resume, and ones that appear only in the
+    skills list, headline or titles but in no summary sentence or bullet."""
+    evidence, everything = evidence_text(resume), resume_text(resume)
+    absent, listed_only = [], []
+    for term in _unique(analysis.must_have_skills):
+        if mentions(evidence, term):
+            continue
+        (listed_only if mentions(everything, term) else absent).append(term)
+    return absent, listed_only
+
+
 # ------------------------------------------------------------------ checks
 def keyword_coverage(resume: Resume, analysis: JDAnalysis) -> Coverage:
-    terms: list[str] = []
-    for term in [*analysis.must_have_skills, *analysis.keywords]:
-        term = term.strip()
-        if term and term.lower() not in {t.lower() for t in terms}:
-            terms.append(term)
+    terms = _unique([*analysis.must_have_skills, *analysis.keywords])
     text = resume_text(resume)
-    found = [t for t in terms if contains_term(text, t)]
+    found = [t for t in terms if mentions(text, t)]
     missing = [t for t in terms if t not in found]
-    return Coverage(score=round(len(found) / len(terms), 3) if terms else 0.0, found=found, missing=missing)
+    _absent, listed_only = unshown_must_haves(resume, analysis)
+    return Coverage(
+        score=round(len(found) / len(terms), 3) if terms else 0.0, found=found, missing=missing,
+        skills_only=listed_only,
+    )
 
 
 MIN_SUMMARY_WORDS = 55
@@ -160,6 +214,31 @@ def thin_text_problems(resume: Resume) -> list[str]:
     return problems
 
 
+def title_growth_problems(resume: Resume) -> list[str]:
+    """At most one warning about a flat career path: the same title everywhere, the same title at 3+ employers
+    in a row, or else each stay of 2+ years with the same title as the job before it."""
+    exps = resume.experience  # most recent first
+    titles = [e.job_title.strip().lower() for e in exps]
+    if len(titles) > 1 and len(set(titles)) == 1:
+        return ["The same job title is used at every employer, so there is no visible career progression."]
+    for i in range(2, len(titles)):
+        if titles[i] == titles[i - 1] == titles[i - 2]:
+            return [(f"The title '{exps[i].job_title}' is used at 3 employers in a row, so there is no visible "
+                     "career progression.")]
+    problems = []
+    for i in range(len(exps) - 1):  # the oldest job has nothing before it to grow from
+        if titles[i] != titles[i + 1]:
+            continue
+        company = resume.profile.companies[exps[i].company_index]
+        months = stay_months(company)
+        if months is not None and months >= 24:
+            problems.append(
+                f"{company.name}: {months_phrase(months)} with the same title as the job before it. Show growth, "
+                "for example a level step ('Software Engineer II') or the specialty title."
+            )
+    return problems[:1]
+
+
 def ats_lint(resume: Resume) -> list[str]:
     warnings: list[str] = []
     if word_count(resume.headline) > 14:
@@ -174,9 +253,7 @@ def ats_lint(resume: Resume) -> list[str]:
     total_skills = sum(len(g.skills) for g in resume.skills)
     if not 12 <= total_skills <= 35:
         warnings.append(f"{total_skills} skills listed (aim for roughly 15-28).")
-    titles = [e.job_title.lower() for e in resume.experience]
-    if len(titles) > 1 and len(set(titles)) == 1:
-        warnings.append("The same job title is used at every employer, so there is no visible career progression.")
+    warnings += title_growth_problems(resume)
     for exp in resume.experience:
         company = resume.profile.companies[exp.company_index].name
         if not 2 <= len(exp.bullets) <= 7:
@@ -297,6 +374,34 @@ def claim_flags(resume: Resume, jd: str, hints: str) -> list[Flag]:
                          reason="Related skill added (not in the job description). Keep it only if you have it.")
                 )
     return flags
+
+
+MAX_POSTING_FLAGS = 10
+
+
+def posting_match_flags(resume: Resume, analysis: JDAnalysis, hints: str) -> list[Flag]:
+    """One 'info' flag per bullet or summary sentence that carries must-have terms the user's hints do not back
+    up: the app writes those in to match the posting, so the user should confirm them. The first place each term
+    appears is flagged, most recent employer first, then the summary."""
+    places: list[tuple[str, str]] = [
+        (f"experience:{exp.company_index}", bullet) for exp in resume.experience for bullet in exp.bullets
+    ]
+    places += [("summary", s) for s in re.split(r"(?<=[.!?])\s+", resume.summary) if s.strip()]
+    grouped: dict[tuple[str, str], list[str]] = {}
+    for term in _unique(analysis.must_have_skills):
+        if mentions(hints, term):
+            continue
+        for place in places:
+            if mentions(place[1], term):
+                grouped.setdefault(place, []).append(term)
+                break
+    flags = [
+        Flag(section=section, text=text, level="info",
+             reason="Added to match the posting (" + ", ".join(terms) + "). Confirm you can speak to it in an "
+                    "interview, or remove it.")
+        for (section, text), terms in grouped.items()
+    ]
+    return flags[:MAX_POSTING_FLAGS]
 
 
 def cover_flags(letter: CoverLetter, hints: str) -> list[Flag]:

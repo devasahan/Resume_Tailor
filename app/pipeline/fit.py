@@ -13,7 +13,7 @@ from functools import lru_cache
 
 from ..render.pdf import render_resume_pdf
 from ..schemas import FitStyle, Profile, Resume, ResumeExperience, SkillGroup
-from .facts import bullet_caps
+from .facts import bullet_caps, stay_months
 
 LADDER = [(10.5, 0.65), (10.25, 0.6), (10.0, 0.55), (9.75, 0.5), (9.5, 0.5)]
 
@@ -59,8 +59,8 @@ def bullet_budget(profile: Profile, paper: str = "Letter", today: date | None = 
     """Bullets per employer (most recent first) that fit on one page when every bullet is full length.
 
     Every employer starts with 2. Extra bullets are then handed out one at a time (up to each employer's cap
-    from bullet_caps) while the placeholder resume still fits; recent roles go first but older ones are not
-    starved: the newest role's 4th bullet comes after the second role's 3rd, its 5th after the third role's 3rd.
+    from bullet_caps) while the placeholder resume still fits. Recent roles are favoured and so are long stays:
+    a role held for 2-3 years gets its 3rd bullet before a role held for 8 months, even when that one is newer.
     Cached per profile, paper and day, because compare mode asks once per model for the same profile.
     """
     return list(_budget(profile.model_dump_json(), paper, today or date.today()))
@@ -78,8 +78,11 @@ def _budget(profile_json: str, paper: str, today: date) -> tuple[int, ...]:
 
     if not counts or not fits():
         return tuple(counts)
+    years = [min((stay_months(c, today) or 12) / 12, 3) for c in profile.companies]  # unreadable dates: 1 year
     extras = sorted(
-        (level + 0.75 * index, index, level) for index, cap in enumerate(caps) for level in range(3, cap + 1)
+        (level + 0.75 * index - 0.5 * years[index], index, level)
+        for index, cap in enumerate(caps)
+        for level in range(3, cap + 1)
     )
     for _score, index, level in extras:
         counts[index] = level

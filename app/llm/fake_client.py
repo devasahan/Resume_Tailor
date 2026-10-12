@@ -202,7 +202,7 @@ class FakeClient(LLMClient):
                 "headline": f"{target} | {k[0]} | {k[1]} | {k[2]}",
                 "summary": (
                     f"{target} with hands-on experience delivering {k[0]}, {k[1]} and {k[2]} work for product and "
-                    f"operations teams in fast-moving organizations. Strong in {k[3]} and {k[4]}, with a habit of "
+                    f"operations teams in fast-moving organizations. Strong in {k[3]}, {k[4]} and {k[5]}, with a habit of "
                     "turning loosely defined requirements into simple, well-tested deliverables that others can build "
                     "on. Has made day-to-day operations more reliable by automating repetitive steps and adding "
                     "monitoring where problems used to go unnoticed. Brings ownership from planning to hand-off and "

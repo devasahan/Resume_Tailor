@@ -122,6 +122,7 @@ class Coverage(BaseModel):
     score: float = 0.0  # share of JD keywords found in the resume, 0..1
     found: list[str] = Field(default_factory=list)
     missing: list[str] = Field(default_factory=list)
+    skills_only: list[str] = Field(default_factory=list)  # must-haves listed but not shown in summary or a bullet
 
 
 class FitStyle(BaseModel):

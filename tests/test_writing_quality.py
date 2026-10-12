@@ -85,9 +85,10 @@ def test_smaller_budget_takes_from_two_different_employers():
 # ------------------------------------------------------------------ prompts
 def test_prompt_states_the_bullet_count_per_employer():
     profile = five_jobs(3)
-    text = tailor_user("A job description", profile.companies, "", bullets=[5, 3, 2])
-    assert "0: Lindy | Feb 2025 - Present (current role) | Remote | write exactly 5 bullets" in text
-    assert "2: Orbital Education" in text and "write exactly 2 bullets" in text
+    text = tailor_user("A job description", profile.companies, "", bullets=[5, 3, 2], today=TODAY)
+    assert ("0: Lindy | Feb 2025 - Present (current role) | Remote | 1 yr 9 mo stay, 3 yrs 8 mo of experience "
+            "before it | write exactly 5 bullets") in text
+    assert "2: Orbital Education | Jun 2021 - Jun 2024 | Remote | 3 yrs 1 mo stay, first job | write exactly 2 bullets" in text
 
 
 def test_rules_ask_for_specific_bullets_and_a_full_summary():

@@ -5,6 +5,7 @@ import asyncio
 import hashlib
 import logging
 import time
+from datetime import date
 
 from ..llm.base import CostCapError, LLMError
 from ..llm.router import Router
@@ -34,6 +35,10 @@ from .generate import GenerationFailed, Outcome, generate_validated
 
 log = logging.getLogger(__name__)
 
+# Must-have JD terms missing from the summary and bullets (absent, or only listed) that justify the one rewrite
+# pass. 1 means every required term is covered automatically; 2 roughly halves how often the rewrite runs.
+MIN_UNCOVERED_FOR_RETRY = 1
+
 
 def jd_hash(jd: str) -> str:
     return hashlib.sha256(jd.strip().encode("utf-8")).hexdigest()[:16]
@@ -45,6 +50,38 @@ def _absorb(total: Outcome, other: Outcome) -> None:
     total.cost_usd += other.cost_usd
     total.attempts += other.attempts
     total.retries += other.retries
+
+
+def draft_text(resume: Resume) -> str:
+    """The editable sections of a draft as plain text, so a rewrite request can show the model what to revise."""
+    lines = [f"Headline: {resume.headline}", f"Summary: {resume.summary}", "Skills:"]
+    lines += [f"- {g.category}: {', '.join(g.skills)}" for g in resume.skills]
+    for exp in resume.experience:
+        company = resume.profile.companies[exp.company_index].name
+        lines.append(f"company_index {exp.company_index} ({company}): {exp.job_title}")
+        lines += [f"- {b}" for b in exp.bullets]
+    return "\n".join(lines)
+
+
+def coverage_feedback(resume: Resume, analysis: JDAnalysis) -> str | None:
+    """Rewrite instructions when must-have JD terms are not shown in the summary or a bullet, else None."""
+    absent, listed_only = validate.unshown_must_haves(resume, analysis)
+    if len(absent) + len(listed_only) < MIN_UNCOVERED_FOR_RETRY:
+        return None
+    parts = []
+    if absent:
+        parts.append("These must-have phrases from the job description are not in the summary or any bullet yet: "
+                     + ", ".join(f'"{t}"' for t in absent) + ".")
+    if listed_only:
+        parts.append("These are only listed (in the skills, headline or titles) but not shown in the summary or a "
+                     "bullet: " + ", ".join(f'"{t}"' for t in listed_only) + ".")
+    return " ".join(parts) + (
+        " Put each one in word for word, in the summary or in one existing bullet of the employer where it fits "
+        "best (usually the most recent role), replacing weaker words so each bullet stays 18-28 words and the "
+        "summary 60-85 words. Do not add or remove bullets: each employer keeps exactly the number given in "
+        "<employers>. Use at most two of these phrases per bullet, never as a list, and keep them in "
+        "jd_analysis.must_have_skills."
+    )
 
 
 def analysis_terms(analysis: JDAnalysis) -> str:
@@ -60,8 +97,16 @@ def run_checks(result: TailorResult, jd_text: str) -> None:
     assert result.resume is not None and result.analysis is not None
     result.coverage = validate.keyword_coverage(result.resume, result.analysis)
     result.ats_warnings = validate.ats_lint(result.resume)
+    absent, listed_only = validate.unshown_must_haves(result.resume, result.analysis)
+    if absent or listed_only:
+        result.ats_warnings.append(
+            "Required by the posting but not shown in the summary or a bullet: " + ", ".join(absent + listed_only)
+            + ". An ATS and a recruiter look for these in your experience, not only in the skills list."
+        )
     allowed = f"{result.hints}\n{result.facts}"
-    result.flags = validate.claim_flags(result.resume, jd_text, allowed)
+    flags = validate.claim_flags(result.resume, jd_text, allowed)
+    posting = validate.posting_match_flags(result.resume, result.analysis, result.hints)
+    result.flags = [f for f in flags if f.level == "verify"] + posting + [f for f in flags if f.level != "verify"]
     dense = validate.metric_density_problems(result.resume)
     if dense:
         result.ats_warnings.append(
@@ -108,7 +153,8 @@ async def run_tailor(
     settings = router.settings()
     paper = settings["paper_size"]
     metrics_mode = settings.get("metrics_mode", "estimate")
-    facts = candidate_facts(profile)
+    today = date.today()  # one date for the facts, the bullet budget and the stay lengths in the prompt
+    facts = candidate_facts(profile, today)
     result = TailorResult(
         requested_model=model_id, prompt_version=PROMPT_VERSION, hints=hints, facts=facts, company_name=company_name
     )
@@ -118,7 +164,7 @@ async def run_tailor(
     try:
         chain = router.chain(model_id, allow_fallback)
         schema = strict_json_schema(TailorOutput)
-        budget = await asyncio.to_thread(bullet_budget, profile, paper)  # bullets per employer that fit one page
+        budget = await asyncio.to_thread(bullet_budget, profile, paper, today)  # bullets per employer that fit
         context = {"profile": profile.model_dump(), "jd": jd, "hints": hints, "bullets": budget}
 
         def parse(data: dict):
@@ -128,7 +174,9 @@ async def run_tailor(
         allowed_figures = f"{hints}\n{facts}"
 
         def refine(value) -> str | None:
-            """Ask once to fix the draft if it uses too many figures, round guesses, or thin text."""
+            """Ask once to fix the draft if it uses too many figures, round guesses, thin text, or leaves
+            must-have JD terms out of the summary and bullets. The draft itself is attached: the rewrite prompt
+            is the original prompt plus this feedback, so without it the model could not keep what was good."""
             feedback = []
             density = validate.metric_density_problems(value[1])
             if density:
@@ -152,13 +200,19 @@ async def run_tailor(
                     "of 60-85 words, and every weak bullet as 18-28 words that say specifically what was done, how, "
                     "and what changed, following the SUMMARY and BULLETS rules."
                 )
+            coverage = coverage_feedback(value[1], value[0].jd_analysis)
+            if coverage:
+                feedback.append(coverage)
             if not feedback:
                 return None
-            return " ".join(feedback) + " Keep everything else unchanged."
+            return (
+                " ".join(feedback) + " Revise the previous draft below to fix only this, and keep everything else "
+                "as it is.\n<previous_draft>\n" + draft_text(value[1]) + "\n</previous_draft>"
+            )
 
         await generate_validated(
             router, chain, system=tailor_system(metrics_mode),
-            user=tailor_user(jd, profile.companies, hints, facts, bullets=budget),
+            user=tailor_user(jd, profile.companies, hints, facts, bullets=budget, today=today),
             schema=schema, schema_name="tailor_output", parse=parse, context=context, outcome=outcome,
             refine=refine,
         )
@@ -172,9 +226,10 @@ async def run_tailor(
             try:
                 await generate_validated(
                     router, [outcome.final_model_id], system=tailor_system(metrics_mode),
-                    user=tailor_user(jd, profile.companies, hints, facts, shorten=True, bullets=smaller),
+                    user=tailor_user(jd, profile.companies, hints, facts, shorten=True, bullets=smaller, today=today),
                     schema=schema, schema_name="tailor_output", parse=parse,
-                    context={**context, "shorten": True, "bullets": smaller}, outcome=second, refine=refine,
+                    context={**context, "shorten": True, "bullets": smaller}, outcome=second,
+                    refine=None,  # the shorten call is already the extra call; never let it ask a third time
                 )
                 _absorb(outcome, second)
                 short_output, short_resume = second.value  # type: ignore[misc]

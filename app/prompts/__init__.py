@@ -5,12 +5,13 @@ Bump PROMPT_VERSION whenever the wording changes; every run records the version 
 from __future__ import annotations
 
 import re
+from datetime import date
 from pathlib import Path
 
-from ..pipeline.facts import bullet_caps
+from ..pipeline.facts import bullet_caps, experience_before, months_phrase, stay_months
 from ..schemas import Company, Resume
 
-PROMPT_VERSION = "v7"
+PROMPT_VERSION = "v8"
 RETRY_MARKER = "Your previous answer was rejected"
 
 _DIR = Path(__file__).parent
@@ -19,7 +20,8 @@ _TOKEN = re.compile(r"\{\{(\w+)\}\}")
 SHORTEN_NOTE = (
     " The previous draft did not fit on one page, so some employers above now get one bullet fewer. Keep every "
     "bullet at most 24 words and the summary at 60-75 words, but keep the same quality: each bullet still says "
-    "what was done, how, and what changed."
+    "what was done, how, and what changed, and every must-have phrase from the job description still appears word "
+    "for word in the summary or a bullet."
 )
 
 
@@ -36,15 +38,24 @@ def is_current(company: Company) -> bool:
     return company.end.strip().lower() in ("", "present", "current", "now", "today")
 
 
-def describe_companies(companies: list[Company], bullets: list[int] | None = None) -> str:
-    """One line per employer; `bullets` (computed so the page fits) is how many bullets to write for each."""
-    bullets = bullets or bullet_caps(companies)
+def describe_companies(
+    companies: list[Company], bullets: list[int] | None = None, today: date | None = None
+) -> str:
+    """One line per employer: dates, work mode, how long the stay was and how much experience came before it
+    (computed, so the model never does date arithmetic when choosing titles), and how many bullets to write
+    (computed so the page fits)."""
+    bullets = bullets or bullet_caps(companies, today)
     lines = []
     for index, c in enumerate(companies):
         end = "Present (current role)" if is_current(c) else c.end
         parts = [c.name, f"{c.start or '?'} - {end}", c.mode or "work mode not stated"]
         if c.location:
             parts.append(c.location)
+        stay = months_phrase(stay_months(c, today))
+        before = experience_before(companies, index, today)
+        if stay:
+            history = "first job" if before == 0 else f"{months_phrase(before)} of experience before it"
+            parts.append(f"{stay} stay, {history}")
         parts.append(f"write exactly {bullets[index]} bullets")
         lines.append(f"{index}: " + " | ".join(parts))
     return "\n".join(lines) or "(none)"
@@ -61,13 +72,13 @@ def tailor_system(metrics_mode: str = "estimate") -> str:
 
 def tailor_user(
     jd: str, companies: list[Company], hints: str, facts: str = "", shorten: bool = False,
-    bullets: list[int] | None = None,
+    bullets: list[int] | None = None, today: date | None = None,
 ) -> str:
     return _fill(
         _read("tailor.md"),
         jd=jd.strip(),
         count=str(len(companies)),
-        companies=describe_companies(companies, bullets),
+        companies=describe_companies(companies, bullets, today),
         facts=facts.strip() or "Total professional experience: unknown (do not state a number of years).",
         hints=hints.strip() or "(none given)",
         extra=SHORTEN_NOTE if shorten else "",

@@ -66,17 +66,20 @@ def bullet_caps(companies: list[Company], today: date | None = None) -> list[int
     return caps
 
 
-def experience_months(companies: list[Company], today: date | None = None) -> int | None:
-    """Total months worked, counting overlaps once. None when no dates can be read."""
-    spans: list[tuple[int, int]] = []
-    for company in companies:
-        start = parse_point(company.start, is_end=False, today=today)
-        end = parse_point(company.end, is_end=True, today=today)
-        if start and end and _index(end) >= _index(start):
-            spans.append((_index(start), _index(end) + 1))  # end month counts as worked
+def _span(company: Company, today: date | None = None) -> tuple[int, int] | None:
+    """(first month, month after the last) worked at one employer, or None when the dates cannot be read."""
+    start = parse_point(company.start, is_end=False, today=today)
+    end = parse_point(company.end, is_end=True, today=today)
+    if start and end and _index(end) >= _index(start):
+        return _index(start), _index(end) + 1  # end month counts as worked
+    return None
+
+
+def _merged_months(spans: list[tuple[int, int]]) -> int | None:
+    """Months covered by the spans, overlaps counted once. None for no spans."""
     if not spans:
         return None
-    spans.sort()
+    spans = sorted(spans)
     total, current_start, current_end = 0, *spans[0]
     for start, end in spans[1:]:
         if start <= current_end:
@@ -85,6 +88,40 @@ def experience_months(companies: list[Company], today: date | None = None) -> in
             total += current_end - current_start
             current_start, current_end = start, end
     return total + (current_end - current_start)
+
+
+def experience_months(companies: list[Company], today: date | None = None) -> int | None:
+    """Total months worked, counting overlaps once. None when no dates can be read."""
+    return _merged_months([s for s in (_span(c, today) for c in companies) if s])
+
+
+def experience_before(companies: list[Company], index: int, today: date | None = None) -> int | None:
+    """Months worked, at any employer, before the job at `index` started (overlaps counted once).
+
+    None when that job's start date is unreadable; 0 when nothing came before it.
+    """
+    own = _span(companies[index], today)
+    if own is None:
+        return None
+    clipped = []
+    for other, company in enumerate(companies):
+        span = _span(company, today) if other != index else None
+        if span and span[0] < own[0]:
+            clipped.append((span[0], min(span[1], own[0])))
+    return _merged_months(clipped) or 0
+
+
+def months_phrase(months: int | None) -> str:
+    """'2 yrs 3 mo', '1 yr', '7 mo'; '' when unknown."""
+    if months is None:
+        return ""
+    years, rest = divmod(months, 12)
+    parts = []
+    if years:
+        parts.append(f"{years} yr" + ("s" if years > 1 else ""))
+    if rest or not years:
+        parts.append(f"{rest} mo")
+    return " ".join(parts)
 
 
 def years_phrase(months: int | None) -> str:
