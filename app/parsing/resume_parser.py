@@ -84,7 +84,7 @@ def profile_warnings(profile: Profile) -> list[str]:
 
 
 async def read_resume(
-    router: Router, db: Database, text: str, model_id: str | None
+    router: Router, db: Database, text: str, model_id: str | None, *, user_id: int | None = None
 ) -> tuple[Profile, str, list[str]]:
     """Return (profile, method, notes). `method` is 'model:<id>' or 'rules'; notes say why a model was not used."""
     method = "rules"
@@ -104,21 +104,21 @@ async def read_resume(
             notes.append(f"The model could not parse the resume ({str(exc)[:160]}). Used the rule-based parser instead.")
         except CostCapError as exc:
             notes.append(f"{str(exc)[:200]} Used the rule-based parser instead.")
-        _record_cost(db, model_id, outcome)
+        _record_cost(db, model_id, outcome, user_id)
     if profile is None:
         profile = parse_resume_text(text)
     return profile, method, notes
 
 
 async def parse_resume(
-    router: Router, db: Database, text: str, model_id: str | None
+    router: Router, db: Database, text: str, model_id: str | None, *, user_id: int | None = None
 ) -> tuple[Profile, str, list[str]]:
     """Return (profile, method, warnings): read_resume's notes plus profile_warnings."""
-    profile, method, notes = await read_resume(router, db, text, model_id)
+    profile, method, notes = await read_resume(router, db, text, model_id, user_id=user_id)
     return profile, method, notes + profile_warnings(profile)
 
 
-def _record_cost(db: Database, model_id: str, outcome: Outcome) -> None:
+def _record_cost(db: Database, model_id: str, outcome: Outcome, user_id: int | None = None) -> None:
     if not outcome.input_tokens and not outcome.output_tokens:
         return
     record = TailorResult(
@@ -126,4 +126,4 @@ def _record_cost(db: Database, model_id: str, outcome: Outcome) -> None:
         input_tokens=outcome.input_tokens, output_tokens=outcome.output_tokens,
         cost_usd=round(outcome.cost_usd, 6), attempts=outcome.attempts, fallback_chain=outcome.chain,
     )
-    db.save_run(record, None, "", task="parse")
+    db.save_run(record, None, "", task="parse", user_id=user_id)

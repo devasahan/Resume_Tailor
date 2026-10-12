@@ -102,6 +102,22 @@ def check_models() -> list[Check]:
     return checks
 
 
+def check_admin() -> Check:
+    from . import auth, config  # config reads .env
+
+    email, password = config.admin_credentials()
+    fix = "Open .env (Windows: notepad .env), add ADMIN_EMAIL=your email and ADMIN_PASSWORD=your password, save, start again."
+    if not auth.normalize_email(email):
+        return Check("Admin account", False, "ADMIN_EMAIL is not set (or not an email), so nobody can log in as admin",
+                     fix, fatal=False)
+    if not password:
+        return Check("Admin account", True, f"{email} (ADMIN_PASSWORD is empty: the password saved earlier stays)")
+    if len(password) < auth.MIN_PASSWORD:
+        return Check("Admin account", False, f"ADMIN_PASSWORD is shorter than {auth.MIN_PASSWORD} characters",
+                     "Choose a longer password in .env, then start again.", fatal=False)
+    return Check("Admin account", True, email)
+
+
 def port_problem(host: str, port: int) -> str | None:
     """None if the port can be used, otherwise a message that says what to do."""
     probe = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
@@ -133,6 +149,7 @@ def run_checks(host: str = "127.0.0.1", port: int = 8000) -> list[Check]:
         checks.append(check_pdf_and_docx())
         checks.append(check_data_dir())
         checks.extend(check_models())
+        checks.append(check_admin())
     checks.append(check_port(host, port))
     return checks
 

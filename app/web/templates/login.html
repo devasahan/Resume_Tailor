@@ -1,0 +1,38 @@
+{% extends "base.html" %}
+{% block title %}Log in - Resume Tailor{% endblock %}
+{% block content %}
+<div class="auth">
+  <h1>Log in</h1>
+  <p class="sub">Tailor your resume to a job and download it as PDF, with a cover letter.</p>
+  {% if not admin_ready %}
+  <div class="notice warn">The admin account is not set up yet. Put ADMIN_EMAIL and ADMIN_PASSWORD in the .env file and restart the app.</div>
+  {% endif %}
+  <form class="panel" id="form" novalidate>
+    <label for="email" style="margin-top:0">Email</label>
+    <input type="email" id="email" autocomplete="username" required>
+    <label for="password">Password</label>
+    <input type="password" id="password" autocomplete="current-password" required>
+    <button class="primary" id="submit" type="submit">Log in</button>
+    <div id="message"></div>
+  </form>
+  <p class="small muted">No account yet? <a href="/signup">Sign up</a>. The admin approves new accounts.</p>
+</div>
+{% endblock %}
+{% block scripts %}
+<script>
+const next = {{ next | tojson }};
+$('#form').addEventListener('submit', async event => {
+  event.preventDefault();
+  $('#submit').disabled = true;
+  $('#message').replaceChildren();
+  try {
+    const data = await api('/api/login', { method: 'POST', body: { email: $('#email').value, password: $('#password').value, next } });
+    location.href = data.next || '/tailor';
+  } catch (err) {
+    $('#message').replaceChildren(notice('bad', err.message));
+    $('#submit').disabled = false;
+  }
+});
+$('#email').focus();
+</script>
+{% endblock %}

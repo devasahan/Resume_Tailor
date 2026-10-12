@@ -33,15 +33,15 @@ function resumeCard(r) {
   const p = r.profile, c = p.contact || {};
   const contact = [c.email, c.phone, c.linkedin, c.location].filter(Boolean).join(' | ');
   const remove = async () => {
-    if (!confirm(`Delete ${p.name} (${r.filename || 'saved profile'})? Resumes already tailored from it stay in History.`)) return;
-    try { await api(`/api/resumes/${r.id}`, { method: 'DELETE', admin: true }); await load(); }
+    if (!confirm(`Delete ${p.name} (${r.filename || 'saved profile'})? Resumes already tailored from it can still be downloaded.`)) return;
+    try { await api(`/api/resumes/${r.id}`, { method: 'DELETE' }); await load(); }
     catch (err) { alert(err.message); }
   };
   return el('div', { class: 'card resume' },
     el('div', { class: 'resume-head' },
       el('div', {},
         el('div', { class: 'resume-name', text: p.name }),
-        el('div', { class: 'small muted', text: [r.filename || 'Saved profile', 'uploaded ' + when(r.created_at), 'read with ' + r.read_with].join(' · ') })),
+        el('div', { class: 'small muted', text: [r.filename || 'Saved profile', 'uploaded ' + when(r.created_at), r.read_with ? 'read with ' + r.read_with : ''].filter(Boolean).join(' · ') })),
       el('div', { class: 'row' },
         el('a', { class: 'btn small primary', href: `/tailor?resume=${r.id}`, text: 'Tailor with this' }),
         el('button', { class: 'small danger', type: 'button', onclick: remove, text: 'Delete' }))),
@@ -64,6 +64,10 @@ async function load() {
 }
 
 async function readerNote() {
+  if (!ME.admin) {
+    $('#reader-note').textContent = 'Your resumes are private: only you can see them here. They are read automatically when you upload them.';
+    return;
+  }
   const [s, m] = await Promise.all([api('/api/settings'), api('/api/models')]);
   const id = s.resolved.parser, info = m.models.find(x => x.id === id);
   $('#reader-note').replaceChildren(info

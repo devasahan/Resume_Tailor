@@ -5,6 +5,7 @@ os.environ.setdefault("FAKE_DELAY", "0")  # demo models answer instantly in test
 import pytest
 from fastapi.testclient import TestClient
 
+from app import auth
 from app.llm.registry import Registry
 from app.llm.router import Router
 from app.main import create_app
@@ -65,10 +66,45 @@ def router(registry, db) -> Router:
     return Router(registry, db)
 
 
+ADMIN_EMAIL = "admin@example.com"
+ADMIN_PASSWORD = "admin-test-password"
+USER_PASSWORD = "user-test-password"
+
+
+@pytest.fixture(autouse=True)
+def test_accounts(monkeypatch):
+    """Test credentials for the admin account, never the developer's real .env values; a cheap scrypt setting
+    so hashing does not slow the suite down."""
+    monkeypatch.setenv("ADMIN_EMAIL", ADMIN_EMAIL)
+    monkeypatch.setenv("ADMIN_PASSWORD", ADMIN_PASSWORD)
+    monkeypatch.delenv("COOKIE_SECURE", raising=False)
+    monkeypatch.setattr(auth, "SCRYPT_N", 2**4)
+
+
+def log_in(client: TestClient, email: str, password: str) -> TestClient:
+    response = client.post("/api/login", json={"email": email, "password": password})
+    assert response.status_code == 200, response.text
+    return client
+
+
+def add_user(client: TestClient, email: str = "user@example.com", status: str = "active") -> int:
+    """An account made directly in the database (as if signed up and approved)."""
+    user_id = client.app.state.db.create_user(email, auth.hash_password(USER_PASSWORD), role="user", status=status)
+    assert user_id is not None
+    return user_id
+
+
 @pytest.fixture
-def client(tmp_path, monkeypatch):
-    """The web app on a fresh database. Uploads are read with the rules, so a developer's .env keys are never used."""
-    monkeypatch.delenv("ADMIN_TOKEN", raising=False)
+def client(tmp_path):
+    """The web app on a fresh database, logged in as the admin. Uploads are read with the rules, so a developer's
+    .env keys are never used."""
     db = Database(tmp_path / "api.db")
     db.set_settings({"parser_model": "rules"})
-    return TestClient(create_app(db=db))
+    return log_in(TestClient(create_app(db=db)), ADMIN_EMAIL, ADMIN_PASSWORD)
+
+
+@pytest.fixture
+def user_client(client):
+    """A second browser on the same app, logged in as an approved user."""
+    add_user(client)
+    return log_in(TestClient(client.app), "user@example.com", USER_PASSWORD)

@@ -1,0 +1,79 @@
+{% extends "base.html" %}
+{% block title %}Users - Resume Tailor{% endblock %}
+{% block content %}
+<h1>Users</h1>
+<p class="sub">New sign-ups wait here until you approve them. A user can upload resumes, tailor them and download the PDFs; they never see History, Users or Settings.</p>
+<div id="message"></div>
+<div class="panel">
+  <table>
+    <thead><tr><th>Email</th><th>Status</th><th>Signed up</th><th>Last login</th><th>Resumes</th><th>Downloads</th><th></th></tr></thead>
+    <tbody id="rows"></tbody>
+  </table>
+</div>
+{% endblock %}
+{% block scripts %}
+<script>
+function when(iso) {
+  if (!iso) return '-';
+  const date = new Date(iso);
+  return isNaN(date) ? iso : date.toLocaleString([], { dateStyle: 'medium', timeStyle: 'short' });
+}
+
+const STATUS = { pending: ['waiting for approval', 'warn'], active: ['active', 'ok'], disabled: ['disabled', 'bad'] };
+
+async function act(path, method, done) {
+  try { const data = await api(path, { method }); if (done) done(data); await load(); }
+  catch (err) { $('#message').replaceChildren(notice('bad', err.message)); }
+}
+
+function actions(u) {
+  if (u.role === 'admin') return el('span', { class: 'small muted', text: 'admin (from .env)' });
+  const id = u.id, buttons = [];
+  if (u.status === 'pending') {
+    buttons.push(el('button', { class: 'small primary', type: 'button', text: 'Approve',
+      onclick: () => act(`/api/users/${id}/approve`, 'POST', () => $('#message').replaceChildren(notice('ok', `${u.email} can log in now.`))) }));
+    buttons.push(el('button', { class: 'small danger', type: 'button', text: 'Reject',
+      onclick: () => confirm(`Reject the sign-up of ${u.email}?`) && act(`/api/users/${id}`, 'DELETE') }));
+  } else {
+    buttons.push(u.status === 'active'
+      ? el('button', { class: 'small', type: 'button', text: 'Disable', onclick: () => act(`/api/users/${id}/disable`, 'POST') })
+      : el('button', { class: 'small', type: 'button', text: 'Enable', onclick: () => act(`/api/users/${id}/enable`, 'POST') }));
+    buttons.push(el('button', { class: 'small', type: 'button', text: 'Reset password', onclick: () => {
+      if (!confirm(`Give ${u.email} a new temporary password? Their current password stops working.`)) return;
+      act(`/api/users/${id}/reset-password`, 'POST', data => $('#message').replaceChildren(notice('ok',
+        `Temporary password for ${u.email} (shown only now; pass it on privately, they can change it on their Account page): `),
+        el('span', { class: 'secret', text: data.password })));
+    } }));
+    buttons.push(el('button', { class: 'small danger', type: 'button', text: 'Delete', onclick: () =>
+      confirm(`Delete ${u.email} with their uploaded resumes and tailored runs? Their download history stays.`)
+        && act(`/api/users/${id}`, 'DELETE') }));
+  }
+  return el('div', { class: 'row' }, buttons);
+}
+
+function updateBadge(count) {  // the red number next to Users in the menu
+  const link = $('header nav a[href="/users"]');
+  const badge = link && link.querySelector('.badge');
+  if (!link) return;
+  if (!count) { if (badge) badge.remove(); return; }
+  if (badge) badge.textContent = String(count);
+  else link.append(' ', el('span', { class: 'badge', title: 'Waiting for approval', text: String(count) }));
+}
+
+async function load() {
+  const data = await api('/api/users');
+  updateBadge(data.pending);
+  $('#rows').replaceChildren(...(data.users.length ? data.users.map(u => {
+    const [label, kind] = STATUS[u.status] || [u.status, ''];
+    const locked = u.locked_until && new Date(u.locked_until) > new Date();
+    return el('tr', {},
+      el('td', { text: u.email }),
+      el('td', {}, chip(label, kind), locked ? chip('locked after failed logins', 'warn') : null),
+      el('td', { text: when(u.created_at) }), el('td', { text: when(u.last_login_at) }),
+      el('td', { text: String(u.resumes) }), el('td', { text: String(u.downloads) }),
+      el('td', {}, actions(u)));
+  }) : [el('tr', {}, el('td', { colspan: 7, class: 'muted', text: 'No accounts yet.' }))]));
+}
+load().catch(err => $('#message').replaceChildren(notice('bad', err.message)));
+</script>
+{% endblock %}

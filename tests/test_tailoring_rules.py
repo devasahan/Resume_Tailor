@@ -5,12 +5,10 @@ from datetime import date
 
 import pytest
 from docx import Document
-from fastapi.testclient import TestClient
 from pypdf import PdfReader
 
 from app.llm.base import LLMClient
 from app.llm.fake_client import FakeClient
-from app.main import create_app
 from app.pipeline import validate
 from app.pipeline.facts import candidate_facts, experience_months, parse_point, years_phrase
 from app.pipeline.tailor import run_tailor
@@ -18,7 +16,6 @@ from app.prompts import tailor_system, tailor_user
 from app.render.docx import resume_docx
 from app.render.pdf import render_resume_pdf
 from app.schemas import Company, FitStyle, Profile
-from app.storage.db import Database
 
 from .test_validate import make_output
 
@@ -118,8 +115,7 @@ def test_run_sends_facts_and_the_chosen_metrics_rule(router, db, registry, profi
     assert "do NOT invent numbers" in capture.calls[0]["system"]
 
 
-def test_metrics_setting_is_validated(tmp_path):
-    client = TestClient(create_app(db=Database(tmp_path / "s.db")))
+def test_metrics_setting_is_validated(client):
     assert client.get("/api/settings").json()["settings"]["metrics_mode"] == "estimate"
     assert client.put("/api/settings", json={"metrics_mode": "always"}).status_code == 422
     assert client.put("/api/settings", json={"metrics_mode": "hints_only"}).json()["settings"]["metrics_mode"] == "hints_only"

@@ -1,0 +1,50 @@
+{% extends "base.html" %}
+{% block title %}Account - Resume Tailor{% endblock %}
+{% block content %}
+<div class="auth" style="margin-top:10px">
+  <h1>Account</h1>
+  <p class="sub">{{ user.email }}{% if user.is_admin %} (admin){% endif %}</p>
+  {% if user.is_admin %}
+  <div class="panel">
+    <h2>Password</h2>
+    <p class="small muted">The admin password comes from the .env file. To change it, edit ADMIN_PASSWORD there and restart the app (on PythonAnywhere: Reload). Every open session then ends.</p>
+  </div>
+  {% else %}
+  <form class="panel" id="form" novalidate>
+    <h2>Change password</h2>
+    <label for="current">Current password</label>
+    <input type="password" id="current" autocomplete="current-password" required>
+    <label for="new">New password <span class="opt">(at least 10 characters)</span></label>
+    <input type="password" id="new" autocomplete="new-password" required>
+    <label for="confirm">New password again</label>
+    <input type="password" id="confirm" autocomplete="new-password" required>
+    <button class="primary" id="submit" type="submit">Change password</button>
+    <div id="message"></div>
+  </form>
+  {% endif %}
+</div>
+{% endblock %}
+{% block scripts %}
+{% if not user.is_admin %}
+<script>
+$('#form').addEventListener('submit', async event => {
+  event.preventDefault();
+  $('#message').replaceChildren();
+  if ($('#new').value !== $('#confirm').value) {
+    $('#message').replaceChildren(notice('bad', 'The two new passwords do not match.'));
+    return;
+  }
+  $('#submit').disabled = true;
+  try {
+    await api('/api/account/password', { method: 'POST', body: { current: $('#current').value, new: $('#new').value } });
+    ['current', 'new', 'confirm'].forEach(id => { $('#' + id).value = ''; });
+    $('#message').replaceChildren(notice('ok', 'Password changed. You were logged out everywhere else.'));
+  } catch (err) {
+    $('#message').replaceChildren(notice('bad', err.message));
+  } finally {
+    $('#submit').disabled = false;
+  }
+});
+</script>
+{% endif %}
+{% endblock %}

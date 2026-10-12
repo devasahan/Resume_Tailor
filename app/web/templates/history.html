@@ -2,28 +2,47 @@
 {% block title %}History - Resume Tailor{% endblock %}
 {% block content %}
 <h1>History</h1>
-<p class="sub" id="sub"></p>
-<div class="panel"><table><thead><tr>
-  <th>When (UTC)</th><th>Task</th><th>Resume of</th><th>Model asked</th><th>Model that answered</th><th>Role</th><th>Result</th><th>Cost</th><th>Tokens</th><th>Time</th><th></th>
-</tr></thead><tbody id="rows"></tbody></table></div>
+<p class="sub" id="sub">Every click on a Download button, by every account. Previews are not counted.</p>
+<div class="panel">
+  <div class="row" style="margin-bottom:10px">
+    <label for="account" style="margin:0">Account</label>
+    <select id="account" style="width:auto"><option value="">All accounts</option></select>
+    <span class="small muted" id="spent"></span>
+  </div>
+  <table><thead><tr>
+    <th>When (UTC)</th><th>Account</th><th>Resume of</th><th>Company</th><th>Role</th><th>File</th><th>Model</th><th>Cost</th><th></th>
+  </tr></thead><tbody id="rows"></tbody></table>
+</div>
 {% endblock %}
 {% block scripts %}
 <script>
-async function init() {
-  const data = await api('/api/runs');
-  $('#sub').textContent = `Spent today: ${money(data.cost_today)}. Stored runs are deleted after the retention period set in Settings.`;
-  $('#rows').replaceChildren(...(data.runs.length ? data.runs.map(r => {
-    const result = r.status === 'error' ? chip('failed', 'bad') : r.task === 'parse' ? chip('resume read') : r.task === 'cover_letter' ? chip('cover letter') : chip(r.fits ? '1 page' : r.pages + ' pages', r.fits ? 'ok' : 'bad');
-    return el('tr', {}, el('td', { text: r.created_at.replace('T', ' ').replace('Z', '') }), el('td', { text: r.task }),
-      el('td', { text: r.candidate || '-' }),
-      el('td', { text: r.requested_model }), el('td', { text: r.served_model || '-' }), el('td', { text: r.target_role || '-' }),
-      el('td', {}, result, r.cover_letter ? chip('+ cover letter', 'ok') : null, r.error ? el('div', { class: 'small muted', text: r.error.slice(0, 100) }) : null),
-      el('td', { text: money(r.cost_usd) }), el('td', { text: String(r.input_tokens + r.output_tokens) }), el('td', { text: seconds(r.latency_ms) }),
-      el('td', {}, r.status === 'ok' && r.task === 'resume' ? el('div', { class: 'row' },
-        el('a', { href: `/api/runs/${r.id}/resume.pdf?download=1`, text: 'Resume PDF' }),
-        r.cover_letter ? el('a', { href: `/api/runs/${r.id}/cover.pdf?download=1`, text: 'Cover letter PDF' }) : null) : null));
-  }) : [el('tr', {}, el('td', { colspan: 11, class: 'muted', text: 'No runs yet.' }))]));
+const FILES = { resume: 'Resume', cover_letter: 'Cover letter' };
+let accountsShown = false;
+
+async function load() {
+  const chosen = $('#account').value;
+  const data = await api('/api/downloads' + (chosen ? `?user_id=${encodeURIComponent(chosen)}` : ''));
+  $('#spent').textContent = `Spent today (all tailoring, downloaded or not): ${money(data.cost_today)}. History is deleted after the retention period set in Settings.`;
+  if (!accountsShown) {
+    $('#account').append(...data.accounts.map(a => el('option', { value: a.user_id, text: `${a.email} (${a.downloads})` })));
+    accountsShown = true;
+  }
+  $('#rows').replaceChildren(...(data.downloads.length ? data.downloads.map(d => {
+    const file = d.kind === 'cover_letter' ? 'cover.pdf' : 'resume.pdf';
+    return el('tr', {},
+      el('td', { text: d.created_at.replace('T', ' ').replace('Z', '') }),
+      el('td', { text: d.email }), el('td', { text: d.candidate || '-' }), el('td', { text: d.company || '-' }),
+      el('td', { text: d.role || '-' }),
+      el('td', {}, chip(`${FILES[d.kind] || d.kind} ${d.format.toUpperCase()}`, d.kind === 'cover_letter' ? 'ok' : ''),
+        el('div', { class: 'small muted', text: d.filename })),
+      el('td', { text: d.model || '-' }), el('td', { text: money(d.cost_usd) }),
+      el('td', {}, d.run_kept
+        ? el('a', { href: `/api/runs/${d.run_id}/${file}`, target: '_blank', rel: 'noopener', text: 'View' })
+        : el('span', { class: 'small muted', text: 'run deleted' })));
+  }) : [el('tr', {}, el('td', { colspan: 9, class: 'muted', text: 'No downloads yet.' }))]));
 }
-init().catch(err => $('#rows').replaceChildren(el('tr', {}, el('td', { colspan: 11 }, notice('bad', err.message)))));
+$('#account').addEventListener('change', () => load().catch(showError));
+function showError(err) { $('#rows').replaceChildren(el('tr', {}, el('td', { colspan: 9 }, notice('bad', err.message)))); }
+load().catch(showError);
 </script>
 {% endblock %}

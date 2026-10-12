@@ -149,6 +149,7 @@ async def run_tailor(
     company_name: str = "",
     hiring_manager: str = "",
     save: bool = True,
+    user_id: int | None = None,
 ) -> TailorResult:
     started = time.perf_counter()
     settings = router.settings()
@@ -329,7 +330,7 @@ async def run_tailor(
     result.cost_usd = round(outcome.cost_usd, 6)
     result.latency_ms = int((time.perf_counter() - started) * 1000)
     if save:
-        db.save_run(result, profile_id, jd_hash(jd))
+        db.save_run(result, profile_id, jd_hash(jd), user_id=user_id)
     return result
 
 
@@ -376,7 +377,7 @@ async def _cover_letter(
 
 
 async def write_cover_letter(
-    router: Router, db: Database, run_id: int, *, jd: str, model_id: str
+    router: Router, db: Database, run_id: int, *, jd: str, model_id: str, user_id: int | None = None
 ) -> tuple[TailorResult, str | None]:
     """Write (or rewrite) the cover letter of a saved run.
 
@@ -401,7 +402,7 @@ async def write_cover_letter(
             cost_usd=round(outcome.cost_usd, 6), attempts=outcome.attempts, retries=outcome.retries,
             fallback_chain=outcome.chain, latency_ms=int((time.perf_counter() - started) * 1000),
             notes=[f"Cover letter for run {run_id}."],
-        ), None, "", task="cover_letter")
+        ), None, "", task="cover_letter", user_id=user_id)
     fresh = db.get_run(run_id) or base
     if base.cover_letter is not None:
         fresh.cover_letter = base.cover_letter  # replaces any earlier letter

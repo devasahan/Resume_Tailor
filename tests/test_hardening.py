@@ -6,10 +6,8 @@ import zipfile
 
 import anthropic
 import pytest
-from fastapi.testclient import TestClient
 from fpdf import FPDF
 
-from app.main import create_app
 from app.parsing.resume_parser import extract_text
 from app.pipeline import validate
 from app.prompts import cover_system, parse_system, tailor_system
@@ -37,8 +35,7 @@ def test_corrupt_files_give_clear_errors():
         extract_text(b"not a pdf", "x.pdf")
 
 
-def test_oversized_upload_is_refused_without_buffering_it_all(tmp_path):
-    client = TestClient(create_app(db=Database(tmp_path / "t.db")))
+def test_oversized_upload_is_refused_without_buffering_it_all(client):
     r = client.post("/api/profile/parse", files={"file": ("big.txt", b"a" * (5 * 1024 * 1024 + 10))}, data={"model": "rules"})
     assert r.status_code == 422 and "5 MB" in r.json()["detail"]
 

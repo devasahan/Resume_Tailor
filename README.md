@@ -21,6 +21,8 @@ You need **Python 3.11 or newer** and nothing else: no API key, no other softwar
 
 The first start takes a minute or two (it creates a private `.venv` folder and installs the libraries). Your browser then opens at <http://127.0.0.1:8000>. Press **Ctrl+C** (or close the window) to stop it.
 
+**Log in first.** The app has accounts. Open `.env` (`notepad .env` on Windows), add your own `ADMIN_EMAIL=` and `ADMIN_PASSWORD=` lines, save, and start the app again; then log in with them. That is the admin account. See [Accounts](#accounts).
+
 If something does not start, run **`python -m app.doctor`**. It checks Python, the libraries, PDF and DOCX export, the data folder, API keys and the port, and says how to fix each problem.
 
 ### Try the demo (about two minutes)
@@ -38,6 +40,13 @@ The demo models write generic template text. They exist to show the flow (fit to
 4. In **Settings**, choose the **Resume model** and **Cover letter model** the Tailor page uses (Automatic picks the first available, Gemini 3.8 Flash first when `GEMINI_API_KEY` is set). Costs are shown per run. To compare models side by side, use the bake-off below.
 
 Nothing leaves your computer except the calls to the model providers you pick. See [Privacy and security](#privacy-and-security).
+
+## Accounts
+- **Admin**: the one account whose email and password are in `.env` (`ADMIN_EMAIL`, `ADMIN_PASSWORD`). It has every page: Profile, Tailor, **History**, **Users** and **Settings**. The password is never stored in the code or the database (only a one-way hash). To change it, edit `ADMIN_PASSWORD` and restart: the new one replaces the old one and ends every admin session.
+- **Users** sign up on the **Sign up** page. A new account waits until the admin approves it on **Users** (Approve or Reject). A user sees only **Profile** (upload resumes) and **Tailor** (tailor, make a cover letter, download both PDFs): no History, Users or Settings, no model names or costs. Each account sees only its own resumes and results.
+- **Users page**: approve or reject sign-ups, disable or enable an account, give a user a one-time temporary password (they change it on their **Account** page), or delete an account with its resumes and runs.
+- **History** lists every click on a **Download** button, by every account (users and admin), with the account, the resume, company, role, model and cost; filter it by account. Previews are not counted. History is deleted after the retention period.
+- After 5 wrong passwords an account is locked for 15 minutes (restarting the app clears the admin's lock). The daily cost cap is shared by everyone: one busy user can reach it for the whole site.
 
 ## Using it
 1. **Profile**: upload one or more base resumes (PDF, DOCX, TXT). Each is read and saved right away and listed with its employers, education and anything to double-check (for example "Phone not found"). The reader is set in Settings > Base-resume reader: Automatic uses the cheapest available model (the resume text is sent to that provider), **Rules only** reads it on your machine for free. If a read is wrong, delete it and upload again. Uploaded resumes stay until you delete them.
@@ -105,7 +114,8 @@ It prints a cost estimate and asks before spending anything, then writes `result
 - Your resume text and job description go **only to the model you pick**, over HTTPS, with your own API key. Check each provider's retention terms; use paid keys (free tiers may let the provider train on your data).
 - Stored locally in SQLite (`data/`, file mode 600): your uploaded base resumes (the facts read from them, not the files), and each run's generated resume, cover letter and the job description it was made for (kept so a cover letter can be written later). Runs are deleted after the retention period; uploaded resumes stay until you delete them; Settings > Delete all stored data removes everything at once.
 - API keys come from environment variables or your local `.env` only and are never returned by the API or stored in the database. `.env` is excluded from git.
-- This is a **single-user app with no accounts** and it listens on `127.0.0.1` (your computer only) by default. If you host it anywhere else, put real authentication in front of it. Set `ADMIN_TOKEN` to protect settings changes and data deletion.
+- Every page needs a login. Passwords are stored as scrypt hashes; the session cookie is HttpOnly and SameSite, and is sent only over HTTPS when the site uses HTTPS (set `COOKIE_SECURE=1` on a server). Requests from other websites that change data are refused. By default the app listens on `127.0.0.1` (your computer only).
+- **Hosting it (for example on PythonAnywhere)**: put your `.env` on the server with `ADMIN_EMAIL`, `ADMIN_PASSWORD`, `COOKIE_SECURE=1` and your API keys. PythonAnywhere runs FastAPI apps with its ASGI support (beta), and free accounts can only reach allow-listed websites, which may not include every model provider: a paid account has full internet access.
 - Uploads are limited to 5 MB, 10 PDF pages and a bounded DOCX unpack size; the browser UI inserts all text with `textContent`, and pages are served with a content security policy.
 
 ## Troubleshooting

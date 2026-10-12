@@ -25,7 +25,7 @@ h1 { font-size: 22px; margin: 0 0 4px; } h2 { font-size: 17px; margin: 0 0 10px;
 .panel { background: var(--panel); border: 1px solid var(--line); border-radius: 12px; padding: 16px; margin-bottom: 16px; }
 label { display: block; font-weight: 600; font-size: 13px; margin: 10px 0 4px; }
 label .opt { font-weight: 400; color: var(--muted); }
-input[type=text], input[type=number], input[type=password], input[type=file], select, textarea {
+input[type=text], input[type=email], input[type=number], input[type=password], input[type=file], select, textarea {
   width: 100%; padding: 8px 10px; border: 1px solid var(--line); border-radius: 8px; background: var(--bg); color: var(--text); font: inherit; }
 textarea { min-height: 90px; resize: vertical; }
 .grid2 { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 0 14px; }
@@ -71,3 +71,10 @@ iframe.pdf { width: 100%; height: 820px; border: 1px solid var(--line); border-r
 .card.resume .resume-head { display: flex; justify-content: space-between; gap: 10px; align-items: flex-start; margin-bottom: 6px; flex-wrap: wrap; }
 .resume-name { font-weight: 700; font-size: 16px; }
 table.jobs { margin: 8px 0; font-size: 13px; } table.jobs td { padding: 4px 6px 4px 0; }
+.account { margin-left: auto; display: flex; gap: 10px; align-items: center; font-size: 14px; }
+.account a { color: var(--muted); text-decoration: none; } .account a.on, .account a:hover { color: var(--text); }
+.badge { display: inline-block; min-width: 18px; padding: 0 6px; border-radius: 999px; background: var(--bad); color: #fff; font-size: 12px; font-weight: 700; text-align: center; line-height: 18px; }
+.auth { max-width: 420px; margin: 40px auto; }
+.auth h1 { margin-bottom: 4px; }
+.auth button.primary { width: 100%; margin-top: 14px; }
+.secret { font-family: ui-monospace, Consolas, monospace; font-size: 16px; padding: 6px 10px; background: var(--chip); border-radius: 6px; user-select: all; }

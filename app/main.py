@@ -1,21 +1,25 @@
-"""FastAPI app: JSON API + server-rendered pages. Single user, no accounts: put your own auth in front
-of it before exposing it beyond localhost."""
+"""FastAPI app: JSON API + server-rendered pages, behind a login.
+
+Two roles. A user uploads resumes, tailors them and downloads the PDFs; every resume and run is visible only
+to its owner. The admin (the ADMIN_EMAIL account from .env) also has History (every download), Users (approve
+sign-ups) and Settings. New sign-ups wait until the admin approves them.
+"""
 from __future__ import annotations
 
 import re
-import secrets
 import unicodedata
 import time
 from pathlib import Path
-from urllib.parse import urlsplit
+from urllib.parse import quote, urlsplit
 
-from fastapi import Depends, FastAPI, File, Form, Header, HTTPException, Request, UploadFile
+from fastapi import Depends, FastAPI, File, Form, HTTPException, Request, UploadFile
 from fastapi.responses import JSONResponse, RedirectResponse, Response
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from pydantic import BaseModel, Field
+from starlette.exceptions import HTTPException as StarletteHTTPException
 
-from . import config
+from . import auth, config
 from .llm.base import LLMError
 from .llm.registry import ModelSpec, Registry
 from .llm.router import Router
@@ -64,6 +68,60 @@ class CheckRequest(BaseModel):
     models: list[str]
 
 
+class LoginRequest(BaseModel):
+    email: str = Field(max_length=320)
+    password: str = Field(max_length=1000)
+    next: str = Field(default="", max_length=500)
+
+
+class SignupRequest(BaseModel):
+    email: str = Field(max_length=320)
+    password: str = Field(max_length=1000)
+    confirm: str = Field(max_length=1000)
+
+
+class PasswordChange(BaseModel):
+    current: str = Field(max_length=1000)
+    new: str = Field(max_length=1000)
+
+
+PUBLIC_PATHS = {"/login", "/signup", "/api/login", "/api/signup", "/api/logout"}
+LIMIT_MESSAGE = "Today's limit for this site has been reached. Try again tomorrow."
+BUSY_MESSAGE = "The service is busy or unavailable right now. Try again in a few minutes."
+_TECHNICAL = ("api key", "settings", ".env", "model", "provider", "region", "http ", "quota", "rate limit", "token")
+
+
+def public_error(text: str) -> str:
+    """What a user (not the admin) is told: no model names, key hints or Settings advice."""
+    low = text.lower()
+    if "cost cap" in low:
+        return LIMIT_MESSAGE
+    if any(word in low for word in _TECHNICAL):
+        return BUSY_MESSAGE
+    return text
+
+
+def public_run(result: TailorResult) -> dict:
+    """A run as a user sees it: only what the Tailor page needs (no models, costs, notes or attempts)."""
+    return {
+        "run_id": result.run_id, "status": result.status, "error": public_error(result.error) if result.error else "",
+        "pages": result.pages, "fits": result.fits, "coverage": result.coverage.model_dump(),
+        "cover_letter": result.cover_letter.model_dump() if result.cover_letter else None,
+        "created_at": result.created_at,
+    }
+
+
+def safe_next(target: str | None) -> str:
+    """A local path to go to after login, or ''. Never another site ('//evil.example', 'https://...')."""
+    target = (target or "").strip()
+    if not target.startswith("/") or target.startswith(("//", "/\\")) or "\\" in target:
+        return ""
+    parts = urlsplit(target)
+    if parts.scheme or parts.netloc or target.startswith(("/api/", "/static/", "/login", "/signup")):
+        return ""
+    return target
+
+
 def profile_problem(profile: Profile) -> str | None:
     """Why a profile cannot be used for tailoring, or None."""
     if not profile.name.strip():
@@ -73,9 +131,15 @@ def profile_problem(profile: Profile) -> str | None:
     return None
 
 
-def resume_entry(entry: dict, registry: Registry) -> dict:
-    """An uploaded resume as the Profile and Tailor pages show it."""
+def resume_entry(entry: dict, registry: Registry, admin: bool) -> dict:
+    """An uploaded resume as the Profile and Tailor pages show it. Users do not see which model read it."""
     method = entry["method"]
+    profile: Profile = entry["profile"]
+    if not admin:
+        return {
+            "id": entry["id"], "created_at": entry["created_at"], "filename": entry["filename"], "method": "",
+            "read_with": "", "profile": profile.model_dump(), "warnings": profile_warnings(profile),
+        }
     if method.startswith("model:"):
         model_id = method.split(":", 1)[1]
         try:
@@ -84,7 +148,6 @@ def resume_entry(entry: dict, registry: Registry) -> dict:
             read_with = model_id
     else:
         read_with = {"rules": "built-in rules", "form": "typed in"}.get(method, "earlier version")
-    profile: Profile = entry["profile"]
     return {
         "id": entry["id"], "created_at": entry["created_at"], "filename": entry["filename"], "method": method,
         "read_with": read_with, "profile": profile.model_dump(),
@@ -108,10 +171,17 @@ def cross_site(request: Request) -> bool:
     return origin == "null"
 
 
-def require_admin(x_admin_token: str | None = Header(default=None)) -> None:
-    token = config.admin_token()
-    if token and not secrets.compare_digest(x_admin_token or "", token):
-        raise HTTPException(401, "Admin token required (set it on the Settings page).")
+def current_user(request: Request) -> auth.User:
+    user = getattr(request.state, "user", None)
+    if user is None:
+        raise HTTPException(401, "Please log in.")
+    return user
+
+
+def admin_user(user: auth.User = Depends(current_user)) -> auth.User:
+    if not user.is_admin:
+        raise HTTPException(403, "Only the admin can do that.")
+    return user
 
 
 def file_part(text: str, limit: int = 50) -> str:
@@ -194,14 +264,31 @@ def create_app(db: Database | None = None, registry: Registry | None = None, rou
     registry = registry or Registry.load()
     router = router or Router(registry, db)
     db.purge(db.get_settings()["retention_days"])
+    auth.bootstrap_admin(db)
 
-    app = FastAPI(title="Resume Tailor")
+    app = FastAPI(title="Resume Tailor", docs_url=None, redoc_url=None, openapi_url=None)
     app.state.db, app.state.registry, app.state.router = db, registry, router
+
     @app.middleware("http")
     async def security_headers(request: Request, call_next):
         if request.method in UNSAFE_METHODS and cross_site(request):
             return JSONResponse({"detail": "Cross-site request refused."}, status_code=403)
-        response = await call_next(request)
+        path = request.url.path
+        if path.startswith("/static/"):
+            request.state.user = None
+            response = await call_next(request)
+        else:
+            user = auth.session_user(db, request.cookies.get(auth.COOKIE))
+            request.state.user = user
+            if user is None and path not in PUBLIC_PATHS:
+                if path.startswith("/api/"):
+                    response = JSONResponse({"detail": "Please log in."}, status_code=401)
+                else:
+                    target = safe_next(path + (f"?{request.url.query}" if request.url.query else ""))
+                    response = RedirectResponse("/login" + (f"?next={quote(target)}" if target else ""), 303)
+            else:
+                response = await call_next(request)
+            response.headers.setdefault("Cache-Control", "no-store")  # nothing personal stays in a shared browser
         response.headers.setdefault("X-Content-Type-Options", "nosniff")
         response.headers.setdefault("Referrer-Policy", "no-referrer")
         if response.headers.get("content-type", "").startswith("text/html"):
@@ -213,25 +300,72 @@ def create_app(db: Database | None = None, registry: Registry | None = None, rou
             )
         return response
 
+    @app.exception_handler(StarletteHTTPException)
+    async def http_error(request: Request, exc: StarletteHTTPException):
+        """Users get plain messages; the admin keeps the technical detail (model, key hint, Settings advice)."""
+        user = getattr(request.state, "user", None)
+        detail = exc.detail
+        if isinstance(detail, str) and not (user and user.is_admin):
+            detail = public_error(detail)
+        return JSONResponse({"detail": detail}, status_code=exc.status_code, headers=getattr(exc, "headers", None))
+
     app.mount("/static", StaticFiles(directory=WEB / "static"), name="static")
     templates = Jinja2Templates(directory=WEB / "templates")
 
     def page(request: Request, name: str, active: str, **ctx):
-        return templates.TemplateResponse(request, name, {"active": active, **ctx})
+        user = getattr(request.state, "user", None)
+        pending = db.count_users("pending") if user and user.is_admin else 0
+        return templates.TemplateResponse(request, name, {"active": active, "user": user, "pending": pending, **ctx})
 
     def regions() -> list[str]:
         return db.get_settings()["allowed_regions"]
 
-    def load_run(run_id: int):
-        result = db.get_run(run_id)
-        if result is None:
-            raise HTTPException(404, "Run not found (it may have passed the retention period).")
-        return result
+    def load_run(run_id: int, user: auth.User, *, write: bool = False) -> TailorResult:
+        """A run its owner may read and change. The admin may read anyone's (History links) but changes only
+        their own. Runs saved before accounts existed belong to the admin. Anything else is 'not found'."""
+        found = db.get_run_owned(run_id)
+        if found is not None:
+            owner, result = found
+            own = owner == user.id or (owner is None and user.is_admin)
+            if own or (user.is_admin and not write):
+                return result
+        raise HTTPException(404, "Run not found (it may have passed the retention period).")
+
+    def viewed(result: TailorResult, user: auth.User) -> dict:
+        return result.model_dump() if user.is_admin else public_run(result)
+
+    def log_download(user: auth.User, run_id: int, result: TailorResult, kind: str, fmt: str, filename: str) -> None:
+        analysis = result.analysis
+        db.record_download(
+            user_id=user.id, email=user.email, run_id=run_id, kind=kind, format=fmt, filename=filename,
+            candidate=result.resume.profile.name if result.resume else "",
+            company=result.company_name or (analysis.company if analysis else ""),
+            role=analysis.target_role if analysis else "",
+            model=result.served_model or result.requested_model,
+            cost_usd=result.cost_usd + result.cover_cost_usd,
+        )
+
+    def file_response(content: bytes, media_type: str, disposition: str, name: str) -> Response:
+        return Response(content, media_type=media_type, headers={
+            "Content-Disposition": f'{disposition}; filename="{name}"', "Cache-Control": "private, no-store"})
 
     # ------------------------------------------------------------------ pages
     @app.get("/")
     def index():
         return RedirectResponse("/tailor")
+
+    @app.get("/login")
+    def login_page(request: Request, next: str = ""):
+        if request.state.user:
+            return RedirectResponse(safe_next(next) or "/tailor", 303)
+        return page(request, "login.html", "login", next=safe_next(next),
+                    admin_ready=bool(auth.normalize_email(config.admin_credentials()[0])))
+
+    @app.get("/signup")
+    def signup_page(request: Request):
+        if request.state.user:
+            return RedirectResponse("/tailor", 303)
+        return page(request, "signup.html", "signup")
 
     @app.get("/profile")
     def profile_page(request: Request):
@@ -241,43 +375,159 @@ def create_app(db: Database | None = None, registry: Registry | None = None, rou
     def tailor_page(request: Request):
         return page(request, "tailor.html", "tailor")
 
+    @app.get("/account")
+    def account_page(request: Request):
+        return page(request, "account.html", "account")
+
+    def admin_page(request: Request, name: str, active: str):
+        if not request.state.user.is_admin:
+            return RedirectResponse("/tailor", 303)
+        return page(request, name, active)
+
     @app.get("/history")
     def history_page(request: Request):
-        return page(request, "history.html", "history")
+        return admin_page(request, "history.html", "history")
+
+    @app.get("/users")
+    def users_page(request: Request):
+        return admin_page(request, "users.html", "users")
 
     @app.get("/settings")
     def settings_page(request: Request):
-        return page(request, "settings.html", "settings")
+        return admin_page(request, "settings.html", "settings")
 
     @app.get("/run/{run_id}")
     def run_page(run_id: int):
         """The Review and edit page was removed: tailoring is final. Old links go to the Tailor page."""
         return RedirectResponse("/tailor")
 
-    # ------------------------------------------------------------------ models + settings
-    @app.get("/api/models")
+    # ------------------------------------------------------------------ accounts
+    @app.post("/api/signup")
+    def api_signup(body: SignupRequest):
+        """Always the same answer for a new or an existing email, so nobody can test which emails have accounts."""
+        email = auth.normalize_email(body.email)
+        if not email:
+            raise HTTPException(422, "Enter a valid email address.")
+        problem = auth.password_problem(body.password)
+        if problem:
+            raise HTTPException(422, problem)
+        if body.password != body.confirm:
+            raise HTTPException(422, "The two passwords do not match.")
+        if db.count_users("pending") >= auth.MAX_PENDING:
+            raise HTTPException(429, "Too many sign-ups are waiting for approval. Try again later.")
+        hashed = auth.hash_password(body.password)
+        if email != auth.normalize_email(config.admin_credentials()[0]):  # the admin's address is never a sign-up
+            db.create_user(email, hashed, role="user", status="pending")
+        return {"ok": True, "message": "Request received. You can log in as soon as the admin approves your account."}
+
+    @app.post("/api/login")
+    def api_login(body: LoginRequest, request: Request):
+        user, error = auth.login(db, body.email, body.password)
+        if user is None:
+            status = 429 if error == auth.LOCKED else 403 if error in (auth.PENDING, auth.DISABLED) else 401
+            raise HTTPException(status, error)
+        auth.end_session(db, request.cookies.get(auth.COOKIE))  # never keep a session id from before the login
+        response = JSONResponse({"ok": True, "next": safe_next(body.next) or "/tailor"})
+        response.set_cookie(auth.COOKIE, auth.start_session(db, user.id),
+                            **auth.cookie_options(request.headers, request.url.scheme))
+        return response
+
+    @app.post("/api/logout")
+    def api_logout(request: Request):
+        auth.end_session(db, request.cookies.get(auth.COOKIE))
+        response = JSONResponse({"ok": True})
+        response.delete_cookie(auth.COOKIE, path="/")
+        return response
+
+    @app.get("/api/me")
+    def api_me(user: auth.User = Depends(current_user)):
+        return {"id": user.id, "email": user.email, "role": user.role}
+
+    @app.post("/api/account/password")
+    def api_change_password(body: PasswordChange, request: Request, user: auth.User = Depends(current_user)):
+        if user.is_admin:
+            raise HTTPException(409, "The admin password comes from the .env file: change ADMIN_PASSWORD there and restart.")
+        row = db.get_user(user.id)
+        if row is None or not auth.verify_password(body.current, row["password_hash"]):
+            raise HTTPException(403, "The current password is not correct.")
+        problem = auth.password_problem(body.new)
+        if problem:
+            raise HTTPException(422, problem)
+        db.set_password_hash(user.id, auth.hash_password(body.new))  # ends every session, this one too
+        response = JSONResponse({"ok": True})
+        response.set_cookie(auth.COOKIE, auth.start_session(db, user.id),
+                            **auth.cookie_options(request.headers, request.url.scheme))
+        return response
+
+    @app.get("/api/users", dependencies=[Depends(admin_user)])
+    def api_users():
+        return {"users": db.list_users(), "pending": db.count_users("pending")}
+
+    def change_status(user_id: int, status: str, only_from: str) -> dict:
+        if not db.set_user_status(user_id, status, only_from=only_from):
+            raise HTTPException(409, "That account cannot be changed this way (it may have changed already).")
+        return {"ok": True}
+
+    @app.post("/api/users/{user_id}/approve", dependencies=[Depends(admin_user)])
+    def api_approve(user_id: int):
+        return change_status(user_id, "active", "pending")
+
+    @app.post("/api/users/{user_id}/disable", dependencies=[Depends(admin_user)])
+    def api_disable(user_id: int):
+        return change_status(user_id, "disabled", "active")
+
+    @app.post("/api/users/{user_id}/enable", dependencies=[Depends(admin_user)])
+    def api_enable(user_id: int):
+        return change_status(user_id, "active", "disabled")
+
+    @app.post("/api/users/{user_id}/reset-password", dependencies=[Depends(admin_user)])
+    def api_reset_password(user_id: int):
+        """A one-time temporary password for the admin to pass on; the user changes it on the Account page."""
+        row = db.get_user(user_id)
+        if row is None or row["role"] != "user":
+            raise HTTPException(404, "Account not found.")
+        temporary = auth.temporary_password()
+        db.set_password_hash(user_id, auth.hash_password(temporary))
+        return {"ok": True, "password": temporary}
+
+    @app.delete("/api/users/{user_id}", dependencies=[Depends(admin_user)])
+    def api_delete_user(user_id: int):
+        """Reject a sign-up, or remove an account with its resumes and runs (download history stays)."""
+        if not db.delete_user(user_id):
+            raise HTTPException(404, "Account not found.")
+        return {"deleted": True}
+
+    @app.get("/api/downloads", dependencies=[Depends(admin_user)])
+    def api_downloads(user_id: int | None = None, limit: int = 200):
+        return {"downloads": db.list_downloads(user_id=user_id, limit=max(1, min(limit, 1000))),
+                "accounts": db.download_accounts(), "cost_today": round(db.cost_today(), 4)}
+
+    # ------------------------------------------------------------------ models + settings (admin)
+    @app.get("/api/models", dependencies=[Depends(admin_user)])
     def api_models():
         allowed = regions()
         return {"models": [model_info(registry, s, allowed) for s in registry.all()], "regions": KNOWN_REGIONS}
 
-    @app.get("/api/settings")
-    def api_settings():
+    def settings_view() -> dict:
         settings = db.get_settings()
         return {
             "settings": settings,
             "resolved": {t: router.default_model(t) for t in ("resume", "cover_letter", "parser")},
             "automatic": {t: router.default_model(t, automatic=True) for t in ("resume", "cover_letter", "parser")},
             "cost_today": round(db.cost_today(), 4),
-            "admin_token_required": bool(config.admin_token()),
         }
 
-    @app.put("/api/settings", dependencies=[Depends(require_admin)])
+    @app.get("/api/settings", dependencies=[Depends(admin_user)])
+    def api_settings():
+        return settings_view()
+
+    @app.put("/api/settings", dependencies=[Depends(admin_user)])
     def api_set_settings(values: dict):
         updated = db.set_settings(validate_settings(registry, values))
         db.purge(updated["retention_days"])
-        return api_settings()
+        return settings_view()
 
-    @app.post("/api/models/check", dependencies=[Depends(require_admin)])
+    @app.post("/api/models/check", dependencies=[Depends(admin_user)])
     async def api_check(body: CheckRequest):
         """One tiny real call per model: verifies the key, the model name and the JSON mode. Costs cents."""
         schema = {"type": "object", "properties": {"ok": {"type": "boolean"}}, "required": ["ok"], "additionalProperties": False}
@@ -295,9 +545,9 @@ def create_app(db: Database | None = None, registry: Registry | None = None, rou
                 results.append({"id": model_id, "ok": False, "error": str(exc)[:300]})
         return {"results": results}
 
-    # ------------------------------------------------------------------ profile
+    # ------------------------------------------------------------------ profile (older endpoints, admin only)
     @app.post("/api/profile/parse")
-    async def api_parse(file: UploadFile = File(...), model: str = Form("")):
+    async def api_parse(file: UploadFile = File(...), model: str = Form(""), user: auth.User = Depends(admin_user)):
         data = await file.read(MAX_BYTES + 1)  # never buffer more than the limit
         try:
             text = extract_text(data, file.filename or "")
@@ -309,19 +559,19 @@ def create_app(db: Database | None = None, registry: Registry | None = None, rou
                 router.usable_spec(model_id)
             except LLMError as exc:
                 raise HTTPException(422, str(exc)) from exc
-        profile, method, warnings = await parse_resume(router, db, text, model_id)
+        profile, method, warnings = await parse_resume(router, db, text, model_id, user_id=user.id)
         return {"profile": profile.model_dump(), "method": method, "warnings": warnings, "text_chars": len(text)}
 
     @app.get("/api/profile")
-    def api_get_profile():
-        found = db.latest_profile()
+    def api_get_profile(user: auth.User = Depends(admin_user)):
+        found = db.latest_profile(user_id=user.id)
         if not found:
             return {"profile": None, "warnings": []}
         profile_id, profile = found
         return {"id": profile_id, "profile": profile.model_dump(), "warnings": profile_warnings(profile)}
 
     @app.post("/api/profile")
-    def api_save_profile(profile: Profile):
+    def api_save_profile(profile: Profile, user: auth.User = Depends(admin_user)):
         profile.name = profile.name.strip()
         if not profile.name:
             raise HTTPException(422, "Name is required.")
@@ -329,13 +579,13 @@ def create_app(db: Database | None = None, registry: Registry | None = None, rou
             raise HTTPException(422, "Add at least one employer.")
         if any(not c.name.strip() for c in profile.companies):
             raise HTTPException(422, "Every employer needs a name.")
-        profile_id = db.save_profile(profile, method="form")
+        profile_id = db.save_profile(profile, user_id=user.id, method="form")
         db.purge(db.get_settings()["retention_days"])
         return {"id": profile_id, "warnings": profile_warnings(profile)}
 
-    # ------------------------------------------------------------------ uploaded resumes
+    # ------------------------------------------------------------------ uploaded resumes (each user's own)
     @app.post("/api/resumes")
-    async def api_upload_resume(file: UploadFile = File(...)):
+    async def api_upload_resume(file: UploadFile = File(...), user: auth.User = Depends(current_user)):
         """Read an uploaded base resume with the Settings reader and save it. Nothing to check or confirm."""
         data = await file.read(MAX_BYTES + 1)  # never buffer more than the limit
         original = Path(file.filename or "resume").name
@@ -345,43 +595,44 @@ def create_app(db: Database | None = None, registry: Registry | None = None, rou
             text = extract_text(data, original)
         except ValueError as exc:
             raise HTTPException(422, str(exc)) from exc
-        profile, method, notes = await read_resume(router, db, text, router.default_model("parser"))
+        profile, method, notes = await read_resume(router, db, text, router.default_model("parser"), user_id=user.id)
         profile.name = profile.name.strip()
         missing = profile_problem(profile)
         if missing:
             tip = (" Try a PDF or DOCX with selectable text, or a different Base-resume reader in Settings."
-                   if method == "rules" else " Try a PDF or DOCX with selectable text.")
+                   if method == "rules" and user.is_admin else " Try a PDF or DOCX with selectable text.")
             raise HTTPException(422, f"Could not find {missing} in {filename}, so it was not saved.{tip}")
-        profile_id = db.save_profile(profile, filename=filename, method=method, notes=notes)
+        profile_id = db.save_profile(profile, user_id=user.id, filename=filename, method=method, notes=notes)
         db.purge(db.get_settings()["retention_days"])
-        entry = db.profile_entry(profile_id)
+        entry = db.profile_entry(profile_id, user_id=user.id)
         assert entry is not None
-        return {"resume": resume_entry(entry, registry)}
+        return {"resume": resume_entry(entry, registry, user.is_admin)}
 
     @app.get("/api/resumes")
-    def api_list_resumes():
-        return {"resumes": [resume_entry(e, registry) for e in db.list_profiles()]}
+    def api_list_resumes(user: auth.User = Depends(current_user)):
+        return {"resumes": [resume_entry(e, registry, user.is_admin) for e in db.list_profiles(user_id=user.id)]}
 
-    @app.delete("/api/resumes/{profile_id}", dependencies=[Depends(require_admin)])
-    def api_delete_resume(profile_id: int):
-        if not db.delete_profile(profile_id):
+    @app.delete("/api/resumes/{profile_id}")
+    def api_delete_resume(profile_id: int, user: auth.User = Depends(current_user)):
+        if not db.delete_profile(profile_id, user_id=user.id):
             raise HTTPException(404, "Resume not found.")
         return {"deleted": True}
 
     # ------------------------------------------------------------------ tailor
     @app.post("/api/tailor")
-    async def api_tailor(body: TailorRequest):
+    async def api_tailor(body: TailorRequest, user: auth.User = Depends(current_user)):
         if body.profile_id is not None:
-            chosen_profile = db.get_profile(body.profile_id)
+            chosen_profile = db.get_profile(body.profile_id, user_id=user.id)
             if chosen_profile is None:
                 raise HTTPException(404, "That resume was not found (it may have been deleted). Pick another one.")
             profile_id, profile = body.profile_id, chosen_profile
         else:
-            found = db.latest_profile()
+            found = db.latest_profile(user_id=user.id)
             if not found:
                 raise HTTPException(400, "Upload a resume first (Profile page).")
             profile_id, profile = found
-        model_id = body.model or router.default_model("resume")
+        compare = body.compare and user.is_admin  # users never pick a model: the admin's Settings decide
+        model_id = (body.model if user.is_admin else None) or router.default_model("resume")
         if not model_id:
             raise HTTPException(422, "No model is available. Add an API key, or choose a model in Settings.")
         try:
@@ -389,7 +640,7 @@ def create_app(db: Database | None = None, registry: Registry | None = None, rou
         except LLMError as exc:
             raise HTTPException(422, str(exc)) from exc
         cover_model = None
-        if body.cover_letter and not body.compare:
+        if body.cover_letter and not compare:
             chosen = db.get_settings().get("cover_letter_model")
             if chosen:
                 try:
@@ -399,23 +650,23 @@ def create_app(db: Database | None = None, registry: Registry | None = None, rou
                     cover_model = None
         result = await run_tailor(
             router, db, profile=profile, profile_id=profile_id, jd=body.jd, hints=body.hints, model_id=model_id,
-            allow_fallback=not body.compare, cover_letter=body.cover_letter, cover_model_id=cover_model,
-            company_name=body.company_name.strip(), hiring_manager=body.hiring_manager.strip(),
+            allow_fallback=not compare, cover_letter=body.cover_letter, cover_model_id=cover_model,
+            company_name=body.company_name.strip(), hiring_manager=body.hiring_manager.strip(), user_id=user.id,
         )
-        return result.model_dump()
+        return viewed(result, user)
 
     # ------------------------------------------------------------------ runs
-    @app.get("/api/runs")
+    @app.get("/api/runs", dependencies=[Depends(admin_user)])
     def api_runs(limit: int = 100):
         return {"runs": db.list_runs(min(limit, 500)), "cost_today": round(db.cost_today(), 4)}
 
     @app.get("/api/runs/{run_id}")
-    def api_run(run_id: int):
-        return load_run(run_id).model_dump()
+    def api_run(run_id: int, user: auth.User = Depends(current_user)):
+        return viewed(load_run(run_id, user), user)
 
     @app.put("/api/runs/{run_id}/resume")
-    async def api_edit_run(run_id: int, body: EditRequest):
-        result = load_run(run_id)
+    async def api_edit_run(run_id: int, body: EditRequest, user: auth.User = Depends(admin_user)):
+        result = load_run(run_id, user, write=True)
         if result.resume is None or result.analysis is None:
             raise HTTPException(409, "This run has no resume to edit.")
         try:
@@ -451,10 +702,10 @@ def create_app(db: Database | None = None, registry: Registry | None = None, rou
         return result.model_dump()
 
     @app.post("/api/runs/{run_id}/cover-letter")
-    async def api_make_cover_letter(run_id: int, body: CoverRequest):
+    async def api_make_cover_letter(run_id: int, body: CoverRequest, user: auth.User = Depends(current_user)):
         """Write (or rewrite) the cover letter for a tailored resume. The JSON body is required on purpose:
         a cross-site form cannot send one, so another website cannot spend money through this endpoint."""
-        result = load_run(run_id)
+        result = load_run(run_id, user, write=True)
         if result.status != "ok" or result.resume is None or result.analysis is None:
             raise HTTPException(409, "This run has no resume to write a cover letter from.")
         jd = result.jd or body.jd.strip()
@@ -469,57 +720,55 @@ def create_app(db: Database | None = None, registry: Registry | None = None, rou
             router.usable_spec(model_id)
         except LLMError as exc:
             raise HTTPException(422, str(exc)) from exc
-        fresh, error = await write_cover_letter(router, db, run_id, jd=jd, model_id=model_id)
+        fresh, error = await write_cover_letter(router, db, run_id, jd=jd, model_id=model_id, user_id=user.id)
         if error:
             raise HTTPException(502, error)
-        return fresh.model_dump()
+        return viewed(fresh, user)
 
-    def _resume_pdf(result):
-        pdf, _pages = render_resume_pdf(result.resume, result.style)
-        return pdf
-
+    # ------------------------------------------------------------------ files (a Download click is logged)
     @app.get("/api/runs/{run_id}/resume.pdf")
-    def api_resume_pdf(run_id: int, download: int = 0):
-        result = load_run(run_id)
+    def api_resume_pdf(run_id: int, download: int = 0, user: auth.User = Depends(current_user)):
+        result = load_run(run_id, user)
         if result.resume is None:
             raise HTTPException(404, "No resume in this run.")
-        disposition = "attachment" if download else "inline"
+        pdf, _pages = render_resume_pdf(result.resume, result.style)
         name = download_name(result, "pdf")
-        return Response(_resume_pdf(result), media_type="application/pdf",
-                        headers={"Content-Disposition": f'{disposition}; filename="{name}"'})
+        if download:
+            log_download(user, run_id, result, "resume", "pdf", name)
+        return file_response(pdf, "application/pdf", "attachment" if download else "inline", name)
 
     @app.get("/api/runs/{run_id}/resume.docx")
-    def api_resume_docx(run_id: int):
-        result = load_run(run_id)
+    def api_resume_docx(run_id: int, user: auth.User = Depends(current_user)):
+        result = load_run(run_id, user)
         if result.resume is None:
             raise HTTPException(404, "No resume in this run.")
         name = download_name(result, "docx")
-        return Response(resume_docx(result.resume, result.style), media_type=DOCX,
-                        headers={"Content-Disposition": f'attachment; filename="{name}"'})
+        log_download(user, run_id, result, "resume", "docx", name)
+        return file_response(resume_docx(result.resume, result.style), DOCX, "attachment", name)
 
     @app.get("/api/runs/{run_id}/cover.pdf")
-    def api_cover_pdf(run_id: int, download: int = 0):
-        result = load_run(run_id)
+    def api_cover_pdf(run_id: int, download: int = 0, user: auth.User = Depends(current_user)):
+        result = load_run(run_id, user)
         if result.resume is None or result.cover_letter is None:
             raise HTTPException(404, "No cover letter in this run.")
         pdf, _ = render_cover_pdf(result.resume, result.cover_letter, result.style.paper)
-        disposition = "attachment" if download else "inline"
         name = download_name(result, "pdf", cover=True)
-        return Response(pdf, media_type="application/pdf",
-                        headers={"Content-Disposition": f'{disposition}; filename="{name}"'})
+        if download:
+            log_download(user, run_id, result, "cover_letter", "pdf", name)
+        return file_response(pdf, "application/pdf", "attachment" if download else "inline", name)
 
     @app.get("/api/runs/{run_id}/cover.docx")
-    def api_cover_docx(run_id: int):
-        result = load_run(run_id)
+    def api_cover_docx(run_id: int, user: auth.User = Depends(current_user)):
+        result = load_run(run_id, user)
         if result.resume is None or result.cover_letter is None:
             raise HTTPException(404, "No cover letter in this run.")
         name = download_name(result, "docx", cover=True)
-        return Response(cover_docx(result.resume, result.cover_letter, result.style.paper), media_type=DOCX,
-                        headers={"Content-Disposition": f'attachment; filename="{name}"'})
+        log_download(user, run_id, result, "cover_letter", "docx", name)
+        return file_response(cover_docx(result.resume, result.cover_letter, result.style.paper), DOCX, "attachment", name)
 
-    @app.delete("/api/data", dependencies=[Depends(require_admin)])
+    @app.delete("/api/data", dependencies=[Depends(admin_user)])
     def api_delete_all():
-        """Privacy control: remove the stored profile and every run."""
+        """Privacy control: remove every resume, run and download record (accounts and settings stay)."""
         db.purge_all()
         return {"deleted": True}
 

@@ -24,19 +24,29 @@ Element.prototype.replaceChildren = function (...nodes) {
   return _replaceChildren.apply(this, nodes.flat().filter(n => n !== null && n !== undefined && n !== false));
 };
 
-function adminHeaders() {
-  const token = sessionStorage.getItem('adminToken');
-  return token ? { 'X-Admin-Token': token } : {};
+// Who is logged in (set by the page): per-account browser storage, and the admin-only parts of a page.
+const ME = { id: document.body.dataset.userId || '', admin: document.body.dataset.role === 'admin' };
+const STORE_PREFIX = 'resumeTailor.';
+function storeKey(name) { return `${STORE_PREFIX}${name}.${ME.id}`; }
+function recallValue(name) { try { return localStorage.getItem(storeKey(name)); } catch (e) { return null; } }
+function rememberValue(name, value) { try { localStorage.setItem(storeKey(name), String(value)); } catch (e) { /* storage blocked */ } }
+function forgetAll() {
+  try { Object.keys(localStorage).filter(k => k.startsWith(STORE_PREFIX)).forEach(k => localStorage.removeItem(k)); }
+  catch (e) { /* storage blocked */ }
 }
 
-async function api(path, { method = 'GET', body = null, form = null, admin = false } = {}) {
-  const headers = admin ? adminHeaders() : {};
+async function api(path, { method = 'GET', body = null, form = null } = {}) {
+  const headers = {};
   const init = { method, headers };
   if (form) init.body = form;
   else if (body !== null) { headers['Content-Type'] = 'application/json'; init.body = JSON.stringify(body); }
   const response = await fetch(path, init);
   let data = null;
   try { data = await response.json(); } catch (e) { /* not JSON */ }
+  if (response.status === 401 && ME.id) {  // the session ended (logged out elsewhere, disabled, expired)
+    location.href = '/login?next=' + encodeURIComponent(location.pathname + location.search);
+    throw new Error('Please log in again.');
+  }
   if (!response.ok) {
     let message = (data && data.detail) || response.statusText || 'Request failed';
     if (Array.isArray(message)) message = message.map(d => (d.loc ? d.loc.slice(1).join('.') + ': ' : '') + d.msg).join('; ');
@@ -55,3 +65,12 @@ function notice(kind, text, items) {
   return el('div', { class: 'notice ' + kind }, text, items && items.length ? el('ul', {}, items.map(i => el('li', { text: i }))) : null);
 }
 function chip(text, kind = '') { return el('span', { class: 'chip ' + kind, text }); }
+
+const logoutButton = document.getElementById('logout');
+if (logoutButton) {
+  logoutButton.addEventListener('click', async () => {
+    try { await api('/api/logout', { method: 'POST' }); } catch (e) { /* the session is gone either way */ }
+    forgetAll();
+    location.href = '/login';
+  });
+}

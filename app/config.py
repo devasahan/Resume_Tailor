@@ -56,8 +56,19 @@ def models_file() -> Path:
     return Path(os.environ.get("MODELS_FILE", ROOT / "models.yaml"))
 
 
-def admin_token() -> str:
-    return os.environ.get("ADMIN_TOKEN", "")
+def admin_credentials() -> tuple[str, str]:
+    """The admin account's email and password, from .env (never stored in code or in the database)."""
+    return os.environ.get("ADMIN_EMAIL", "").strip(), os.environ.get("ADMIN_PASSWORD", "")
+
+
+def cookie_secure() -> bool | None:
+    """COOKIE_SECURE=1 or 0 forces the session cookie's Secure flag; unset (None) decides per request."""
+    value = os.environ.get("COOKIE_SECURE", "").strip().lower()
+    if value in ("1", "true", "yes"):
+        return True
+    if value in ("0", "false", "no"):
+        return False
+    return None
 
 
 # Defaults for settings the user can change on the Settings page.

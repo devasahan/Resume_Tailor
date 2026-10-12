@@ -7,17 +7,27 @@
   <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='7' fill='%231f5fbf'/%3E%3Cpath d='M9 8h10l4 4v12H9z' fill='none' stroke='%23fff' stroke-width='2'/%3E%3C/svg%3E">
   <link rel="stylesheet" href="/static/style.css">
 </head>
-<body>
+<body{% if user %} data-user-id="{{ user.id }}" data-role="{{ user.role }}"{% endif %}>
   <header class="top">
     <a class="brand" href="/tailor">Resume Tailor</a>
+    {% if user %}
     <nav>
-      {% for href, label, key in [("/profile", "Profile", "profile"), ("/tailor", "Tailor", "tailor"), ("/history", "History", "history"), ("/settings", "Settings", "settings")] %}
-      <a href="{{ href }}" class="{{ 'on' if active == key else '' }}">{{ label }}</a>
+      {% set links = [("/profile", "Profile", "profile"), ("/tailor", "Tailor", "tailor")] %}
+      {% if user.is_admin %}
+        {% set links = links + [("/history", "History", "history"), ("/users", "Users", "users"), ("/settings", "Settings", "settings")] %}
+      {% endif %}
+      {% for href, label, key in links %}
+      <a href="{{ href }}" class="{{ 'on' if active == key else '' }}">{{ label }}{% if key == "users" and pending %} <span class="badge" title="Waiting for approval">{{ pending }}</span>{% endif %}</a>
       {% endfor %}
     </nav>
+    <div class="account">
+      <a href="/account" class="{{ 'on' if active == 'account' else '' }}" title="Account">{{ user.email }}</a>
+      <button class="small" id="logout" type="button">Log out</button>
+    </div>
+    {% endif %}
   </header>
   <main>{% block content %}{% endblock %}</main>
-  <footer>AI-drafted content. Check every title, skill and number before you send a resume. Your resume text is sent only to the model you pick.</footer>
+  <footer>AI-drafted content. Check every title, skill and number before you send a resume.{% if user and user.is_admin %} Resume text is sent only to the models chosen in Settings.{% endif %}</footer>
   <script src="/static/app.js"></script>
   {% block scripts %}{% endblock %}
 </body>

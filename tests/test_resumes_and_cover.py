@@ -14,7 +14,7 @@ from app.pipeline.tailor import run_tailor, write_cover_letter
 from app.schemas import Profile, TailorResult
 from app.storage.db import Database
 
-from .conftest import SAMPLE_JD, SAMPLE_RESUME_TEXT
+from .conftest import ADMIN_EMAIL, ADMIN_PASSWORD, SAMPLE_JD, SAMPLE_RESUME_TEXT, log_in
 from .test_api import docx_bytes, pdf_bytes, save_profile, tailor
 from .test_pipeline import Priced
 
@@ -23,13 +23,12 @@ GLOBEX_JD = "About Globex Corporation\n" + SAMPLE_JD
 
 
 @pytest.fixture
-def app_db(tmp_path, monkeypatch):
-    """A test client plus direct access to its database and router."""
-    monkeypatch.delenv("ADMIN_TOKEN", raising=False)
+def app_db(tmp_path):
+    """A test client logged in as the admin, plus direct access to its database and router."""
     db = Database(tmp_path / "app.db")
     db.set_settings({"parser_model": "rules"})
     router = Router(Registry.load(), db)
-    return TestClient(create_app(db=db, router=router)), db, router
+    return log_in(TestClient(create_app(db=db, router=router)), ADMIN_EMAIL, ADMIN_PASSWORD), db, router
 
 
 # ------------------------------------------------------------------ uploading and listing
@@ -69,15 +68,14 @@ def test_two_resumes_and_choosing_one_to_tailor(client):
     assert {r["candidate"] for r in runs if r["task"] == "resume"} == {"Jordan Rivera", "Casey Morgan"}
 
 
-def test_delete_keeps_old_runs_working(client, monkeypatch):
+def test_delete_keeps_old_runs_working(client, user_client):
     entry = save_profile(client)
     run_id = tailor(client, profile_id=entry["id"]).json()["run_id"]
-    monkeypatch.setenv("ADMIN_TOKEN", "secret")
-    assert client.delete(f"/api/resumes/{entry['id']}").status_code == 401
-    assert client.delete(f"/api/resumes/{entry['id']}", headers={"X-Admin-Token": "secret"}).status_code == 200
+    assert user_client.delete(f"/api/resumes/{entry['id']}").status_code == 404  # only its owner can delete it
+    assert client.delete(f"/api/resumes/{entry['id']}").status_code == 200
     assert client.get("/api/resumes").json()["resumes"] == []
     assert client.get(f"/api/runs/{run_id}/resume.pdf").status_code == 200  # the run keeps its own copy
-    assert client.delete(f"/api/resumes/{entry['id']}", headers={"X-Admin-Token": "secret"}).status_code == 404
+    assert client.delete(f"/api/resumes/{entry['id']}").status_code == 404
     assert tailor(client, profile_id=entry["id"]).status_code == 404
     assert tailor(client).status_code == 400  # nothing left to tailor from
 
@@ -117,9 +115,9 @@ def test_migration_shows_only_the_newest_legacy_profile_and_keeps_all_rows(tmp_p
     conn.commit()
     conn.close()
     db = Database(path)
-    assert [e["profile"].name for e in db.list_profiles()] == ["Newest"]
+    assert [e["profile"].name for e in db.list_profiles(user_id=None)] == ["Newest"]  # no owner yet
     Database(path)  # opening again changes nothing
-    assert [e["profile"].name for e in db.list_profiles()] == ["Newest"]
+    assert [e["profile"].name for e in db.list_profiles(user_id=None)] == ["Newest"]
     with sqlite3.connect(path) as raw:
         assert raw.execute("SELECT COUNT(*) FROM profiles").fetchone()[0] == 3  # hidden, not deleted
 
@@ -130,7 +128,8 @@ def test_retention_keeps_uploaded_resumes(app_db):
     with sqlite3.connect(db.path) as raw:
         raw.execute("UPDATE profiles SET created_at = '2020-01-01T00:00:00Z'")
     db.purge(30)
-    assert [e["id"] for e in db.list_profiles()] == [entry["id"]]
+    admin_id = db.user_by_email(ADMIN_EMAIL)["id"]
+    assert [e["id"] for e in db.list_profiles(user_id=admin_id)] == [entry["id"]]
 
 
 # ------------------------------------------------------------------ tailoring with the Settings model

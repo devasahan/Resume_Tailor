@@ -6,8 +6,6 @@ from fastapi.testclient import TestClient
 from pypdf import PdfReader
 from fpdf import FPDF
 
-from app.main import create_app
-from app.storage.db import Database
 
 from .conftest import SAMPLE_JD, SAMPLE_RESUME_TEXT
 
@@ -150,14 +148,12 @@ def test_cost_cap_returns_failed_run(client):
     assert run["status"] == "error" and "cap" in run["error"].lower()
 
 
-def test_admin_token_protects_changes(tmp_path, monkeypatch):
-    monkeypatch.setenv("ADMIN_TOKEN", "s3cret")
-    client = TestClient(create_app(db=Database(tmp_path / "a.db")))
-    assert client.put("/api/settings", json={"paper_size": "A4"}).status_code == 401
-    assert client.put("/api/settings", json={"paper_size": "A4"}, headers={"X-Admin-Token": "wrong"}).status_code == 401
-    assert client.put("/api/settings", json={"paper_size": "A4"}, headers={"X-Admin-Token": "s3cret"}).status_code == 200
-    assert client.delete("/api/data").status_code == 401
-    assert client.get("/api/settings").json()["admin_token_required"] is True
+def test_only_the_admin_changes_settings_or_wipes_data(client, user_client):
+    anonymous = TestClient(client.app)
+    assert anonymous.put("/api/settings", json={"paper_size": "A4"}).status_code == 401
+    assert user_client.put("/api/settings", json={"paper_size": "A4"}).status_code == 403
+    assert user_client.delete("/api/data").status_code == 403
+    assert client.put("/api/settings", json={"paper_size": "A4"}).status_code == 200
 
 
 def test_model_check_and_data_deletion(client):

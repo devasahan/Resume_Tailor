@@ -37,11 +37,10 @@
 {% endblock %}
 {% block scripts %}
 <script>
-const STORE = 'resumeTailor.resumeId';
 let resumes = [], current = null;  // current = { run, jd, profileId }
 
-function recall() { try { return localStorage.getItem(STORE); } catch (e) { return null; } }
-function remember(id) { try { localStorage.setItem(STORE, String(id)); } catch (e) { /* storage blocked */ } }
+function recall() { return recallValue('resumeId'); }  // per account, cleared at logout
+function remember(id) { rememberValue('resumeId', id); }
 function chosenId() { return Number($('#resume').value) || null; }
 function busy(on, text = '') {
   $('#run').disabled = on || !resumes.length;
@@ -64,7 +63,7 @@ function showResult(run, view = 'resume') {
   $('#chips').replaceChildren(
     chip(run.pages === 1 ? '1 page' : `${run.pages} pages`, run.fits ? 'ok' : 'bad'),
     chip(`${Math.round(run.coverage.score * 100)}% keywords`, run.coverage.score >= 0.8 ? 'ok' : 'warn'),
-    chip(run.served_model || run.requested_model), chip(money(run.cost_usd + (run.cover_cost_usd || 0))));
+    ME.admin ? [chip(run.served_model || run.requested_model), chip(money(run.cost_usd + (run.cover_cost_usd || 0)))] : null);
   $('#downloads').replaceChildren(
     el('a', { class: 'btn primary', href: `/api/runs/${id}/resume.pdf?download=1`, text: 'Download resume PDF' }),
     run.cover_letter ? el('a', { class: 'btn primary', href: `/api/runs/${id}/cover.pdf?download=1`, text: 'Download cover letter PDF' }) : null);
@@ -133,8 +132,20 @@ $('#resume').addEventListener('change', () => { remember(chosenId()); resumeNote
 $('#show-resume').addEventListener('click', () => preview('resume'));
 $('#show-cover').addEventListener('click', () => preview('cover'));
 
+async function modelsNote() {  // admin only: which models will run, and a warning when only the demo is left
+  const [s, m] = await Promise.all([api('/api/settings'), api('/api/models')]);
+  const label = id => (m.models.find(x => x.id === id) || {}).label || id || 'none available';
+  const resumeModel = m.models.find(x => x.id === s.resolved.resume);
+  $('#models-note').replaceChildren(
+    `Resume model: ${label(s.resolved.resume)} · Cover letter model: ${label(s.resolved.cover_letter)} · `,
+    el('a', { href: '/settings', text: 'change in Settings' }));
+  if (!resumeModel || resumeModel.demo) {
+    $('#messages').replaceChildren(notice('warn', 'Only the offline demo model is available, so the text will be a generic template. Add an API key to your .env file (see .env.example) and restart, or pick a model in Settings.'));
+  }
+}
+
 async function init() {
-  const [r, s, m] = await Promise.all([api('/api/resumes'), api('/api/settings'), api('/api/models')]);
+  const r = await api('/api/resumes');
   resumes = r.resumes;
   if (!resumes.length) {
     $('#setup-note').replaceChildren(notice('warn', 'No base resume yet. ', []));
@@ -147,14 +158,7 @@ async function init() {
     text: `${x.profile.name} - ${x.filename || 'saved profile'} (${new Date(x.created_at).toLocaleDateString()})` })));
   if (pick) remember(pick.id);
   resumeNote();
-  const label = id => (m.models.find(x => x.id === id) || {}).label || id || 'none available';
-  const resumeModel = m.models.find(x => x.id === s.resolved.resume);
-  $('#models-note').replaceChildren(
-    `Resume model: ${label(s.resolved.resume)} · Cover letter model: ${label(s.resolved.cover_letter)} · `,
-    el('a', { href: '/settings', text: 'change in Settings' }));
-  if (!resumeModel || resumeModel.demo) {
-    $('#messages').replaceChildren(notice('warn', 'Only the offline demo model is available, so the text will be a generic template. Add an API key to your .env file (see .env.example) and restart, or pick a model in Settings.'));
-  }
+  if (ME.admin) await modelsNote();
   busy(false);
 }
 init().catch(err => $('#messages').replaceChildren(notice('bad', err.message)));
