@@ -181,8 +181,16 @@ def cross_site(request: Request) -> bool:
         return True
     origin = request.headers.get("origin")
     if origin and origin != "null":
-        return urlsplit(origin).netloc.lower() != request.headers.get("host", "").lower()
+        # Behind a proxy (PythonAnywhere) the site's own name may arrive as X-Forwarded-Host. A web page cannot set
+        # that header on a request to another site, so accepting it keeps other websites out.
+        hosts = {request.headers.get("host", "")} | {h.strip() for h in request.headers.get("x-forwarded-host", "").split(",")}
+        return urlsplit(origin).netloc.lower() not in {h.lower() for h in hosts if h}
     return origin == "null"
+
+
+def forwarded_proto(request: Request) -> str:
+    """The scheme the browser used, as the proxy in front of the app reports it ('' when there is no proxy)."""
+    return request.headers.get("x-forwarded-proto", "").split(",")[0].strip().lower()
 
 
 def current_user(request: Request) -> auth.User:
@@ -286,6 +294,10 @@ def create_app(db: Database | None = None, registry: Registry | None = None, rou
 
     @app.middleware("http")
     async def security_headers(request: Request, call_next):
+        if config.force_https() and forwarded_proto(request) == "http":  # FORCE_HTTPS=1 on a server
+            if request.method not in ("GET", "HEAD"):
+                return JSONResponse({"detail": "Use the https:// address of this site."}, status_code=403)
+            return RedirectResponse(str(request.url.replace(scheme="https")), status_code=308)
         if request.method in UNSAFE_METHODS and cross_site(request):
             return JSONResponse({"detail": "Cross-site request refused."}, status_code=403)
         path = request.url.path

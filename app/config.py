@@ -61,6 +61,11 @@ def admin_credentials() -> tuple[str, str]:
     return os.environ.get("ADMIN_EMAIL", "").strip(), os.environ.get("ADMIN_PASSWORD", "")
 
 
+def force_https() -> bool:
+    """FORCE_HTTPS=1 (on a server): send plain http:// visitors to https://, as reported by the proxy."""
+    return os.environ.get("FORCE_HTTPS", "").strip().lower() in ("1", "true", "yes")
+
+
 def cookie_secure() -> bool | None:
     """COOKIE_SECURE=1 or 0 forces the session cookie's Secure flag; unset (None) decides per request."""
     value = os.environ.get("COOKIE_SECURE", "").strip().lower()
