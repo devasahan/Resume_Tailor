@@ -162,9 +162,12 @@ def test_cover_letter_for_an_existing_run(client):
     pdf = client.get(f"/api/runs/{run['run_id']}/cover.pdf?download=1")
     assert pdf.headers["content-disposition"] == (
         'attachment; filename="Globex_Corporation_Jordan_Rivera_Senior_Data_Engineer_Cover_Letter.pdf"')
-    row = next(r for r in client.get("/api/runs").json()["runs"] if r["id"] == run["run_id"])
+    runs = client.get("/api/runs").json()["runs"]
+    row = next(r for r in runs if r["id"] == run["run_id"])
     assert row["cover_letter"] is True
-    assert row["input_tokens"] + row["output_tokens"] > run["input_tokens"] + run["output_tokens"]
+    assert row["input_tokens"] == run["input_tokens"]  # the run's own columns never change...
+    spend = [r for r in runs if r["task"] == "cover_letter"]
+    assert len(spend) == 1 and spend[0]["input_tokens"] > 0  # ...the letter has its own dated row
 
 
 def test_rewriting_the_cover_letter_does_not_duplicate_flags(client):
@@ -192,16 +195,20 @@ def test_cover_letter_errors(app_db):
     assert plain.status_code == 422  # a cross-site form cannot trigger a paid call
 
 
-def test_cover_letter_cost_is_added_to_its_run(router, db, registry, profile, monkeypatch):
+def test_cover_letter_cost_counts_today_even_for_an_older_run(router, db, registry, profile, monkeypatch):
     monkeypatch.setenv("ANTHROPIC_API_KEY", "k")
     router.overrides["claude-sonnet-5-5"] = Priced(FakeClient(registry.get("demo-concise")))
     result = asyncio.run(run_tailor(router, db, profile=profile, profile_id=None, jd=SAMPLE_JD, model_id="demo-concise"))
-    assert result.cost_usd == 0
-    fresh, error = asyncio.run(write_cover_letter(router, db, result.run_id, jd=SAMPLE_JD, model_id="claude-sonnet-5-5"))
-    assert error is None and fresh.cover_letter is not None
-    assert fresh.cost_usd == pytest.approx(0.022)  # 1000 in at $2 + 2000 out at $10 per 1M
-    row = next(r for r in db.list_runs() if r["id"] == result.run_id)
-    assert row["cost_usd"] == pytest.approx(0.022) and db.cost_today() == pytest.approx(0.022)
+    with sqlite3.connect(db.path) as raw:  # the run was made yesterday
+        raw.execute("UPDATE runs SET created_at = '2020-01-01T00:00:00Z' WHERE id = ?", (result.run_id,))
+    for _ in range(2):
+        fresh, error = asyncio.run(write_cover_letter(router, db, result.run_id, jd=SAMPLE_JD, model_id="claude-sonnet-5-5"))
+        assert error is None and fresh.cover_letter is not None
+    assert fresh.cover_cost_usd == pytest.approx(0.044) and fresh.cost_usd == 0  # 2 x (1000 in at $2 + 2000 out at $10 per 1M)
+    assert db.cost_today() == pytest.approx(0.044)  # the daily cap sees it
+    db.set_settings({"daily_cost_cap_usd": 0.04})
+    _fresh, error = asyncio.run(write_cover_letter(router, db, result.run_id, jd=SAMPLE_JD, model_id="claude-sonnet-5-5"))
+    assert error and "cap" in error.lower()
 
 
 def test_cover_letter_stops_at_the_cost_cap(app_db):
@@ -244,3 +251,50 @@ def test_pages_show_only_the_simple_controls(client):
     assert "Make cover letter" in tailor_page and 'id="resume"' in tailor_page
     profile_page = client.get("/profile").text
     assert "Save profile" not in profile_page and "Read file" not in profile_page and "Drop resumes here" in profile_page
+
+
+# ------------------------------------------------------------------ fixes from review
+def test_cross_site_requests_are_refused(client):
+    files = {"file": ("base.docx", docx_bytes())}
+    assert client.post("/api/resumes", files=files, headers={"Origin": "https://evil.example"}).status_code == 403
+    assert client.post("/api/resumes", files=files, headers={"Sec-Fetch-Site": "cross-site"}).status_code == 403
+    assert client.post("/api/resumes", files=files, headers={"Sec-Fetch-Site": "same-site"}).status_code == 403
+    assert client.delete("/api/data", headers={"Origin": "null"}).status_code == 403
+    same = {"Origin": "http://testserver", "Sec-Fetch-Site": "same-origin"}
+    assert client.post("/api/resumes", files=files, headers=same).status_code == 200
+    assert client.get("/api/resumes", headers={"Origin": "https://evil.example"}).status_code == 200  # reads are fine
+
+
+def test_long_file_names_keep_their_type(client):
+    name = "Jordan_Rivera_" + "x" * 140 + ".docx"
+    response = client.post("/api/resumes", files={"file": (name, docx_bytes())})
+    assert response.status_code == 200, response.text
+    stored = response.json()["resume"]["filename"]
+    assert len(stored) <= 120 and stored.endswith(".docx")
+
+
+def test_an_edit_saved_while_the_letter_is_written_keeps_the_letter(client, monkeypatch):
+    import app.main as main
+
+    save_profile(client)
+    run = tailor(client).json()
+    real_fit = main.fit_report
+
+    async def slow_fit(resume, paper):  # the letter lands while the edit is being checked
+        assert client.post(f"/api/runs/{run['run_id']}/cover-letter", json={}).status_code == 200
+        return await real_fit(resume, paper)
+
+    monkeypatch.setattr(main, "fit_report", slow_fit)
+    exp = [{"company_index": e["company_index"], "job_title": e["job_title"], "bullets": e["bullets"]}
+           for e in run["resume"]["experience"]]
+    edited = client.put(f"/api/runs/{run['run_id']}/resume", json={
+        "headline": "Edited", "summary": run["resume"]["summary"], "skills": run["resume"]["skills"], "experience": exp})
+    assert edited.status_code == 200 and edited.json()["cover_letter"] is not None
+    assert client.get(f"/api/runs/{run['run_id']}/cover.pdf").status_code == 200
+
+
+def test_automatic_label_ignores_the_saved_choice(router, db, monkeypatch):
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "k")
+    db.set_settings({"parser_model": "rules"})
+    assert router.default_model("parser") is None
+    assert router.default_model("parser", automatic=True) == "claude-sonnet-5-5"  # what Automatic would send it to

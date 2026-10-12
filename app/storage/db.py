@@ -190,14 +190,13 @@ class Database:
         return run_id
 
     def update_run(self, result: TailorResult) -> None:
-        """Rewrite a run, including the cost columns (a cover letter written later adds to its run's cost)."""
+        """Rewrite a run's stored result (after an edit or a cover letter). Its cost columns never change:
+        a cover letter written later is recorded as its own row, dated the day it was written."""
         assert result.run_id is not None
         with self._conn() as conn:
             conn.execute(
-                "UPDATE runs SET result = ?, status = ?, served_model = ?, cost_usd = ?, input_tokens = ?,"
-                " output_tokens = ?, latency_ms = ? WHERE id = ?",
-                (result.model_dump_json(), result.status, result.served_model, result.cost_usd,
-                 result.input_tokens, result.output_tokens, result.latency_ms, result.run_id),
+                "UPDATE runs SET result = ?, status = ? WHERE id = ?",
+                (result.model_dump_json(), result.status, result.run_id),
             )
 
     def get_run(self, run_id: int) -> TailorResult | None:

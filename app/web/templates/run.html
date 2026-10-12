@@ -65,7 +65,7 @@ function buildCover() {
 
 function showMeta() {
   const r = run, pct = Math.round(r.coverage.score * 100);
-  $('#subtitle').textContent = `${r.analysis.target_role || 'Tailored resume'}  |  made by ${r.requested_model}${r.served_model && r.served_model !== r.requested_model ? ' (answered by ' + r.served_model + ')' : ''}  |  ${money(r.cost_usd)}`;
+  $('#subtitle').textContent = `${r.analysis.target_role || 'Tailored resume'}  |  made by ${r.requested_model}${r.served_model && r.served_model !== r.requested_model ? ' (answered by ' + r.served_model + ')' : ''}  |  ${money(r.cost_usd + (r.cover_cost_usd || 0))}`;
   $('#downloads').replaceChildren(
     el('a', { class: 'btn small primary', href: `/api/runs/${RUN_ID}/resume.pdf?download=1`, text: 'Download PDF' }),
     el('a', { class: 'btn small', href: `/api/runs/${RUN_ID}/resume.docx`, text: 'Download DOCX' }),
@@ -89,13 +89,16 @@ function showMeta() {
 async function makeCover(event) {
   const button = event.currentTarget;
   button.disabled = true; button.textContent = 'Writing the cover letter...';
+  $('#save').disabled = true;  // a save in the middle would race the letter
   try {
-    run = await api(`/api/runs/${RUN_ID}/cover-letter`, { method: 'POST', body: {} });
-    buildEditor(); buildCover(); showMeta();
+    const updated = await api(`/api/runs/${RUN_ID}/cover-letter`, { method: 'POST', body: {} });
+    run.cover_letter = updated.cover_letter; run.flags = updated.flags; run.notes = updated.notes;
+    run.cover_cost_usd = updated.cover_cost_usd;
+    buildCover(); showMeta();  // the resume editor keeps any unsaved changes
   } catch (err) {
     button.disabled = false; button.textContent = 'Make cover letter';
     $('#status').prepend(notice('bad', err.message));
-  }
+  } finally { $('#save').disabled = false; }
 }
 
 async function load() {
@@ -105,12 +108,13 @@ async function load() {
 }
 $('#save').addEventListener('click', async () => {
   $('#save').disabled = true; $('#save-status').textContent = 'Saving...';
+  $$('#downloads button').forEach(b => { b.disabled = true; });
   try {
     run = await api(`/api/runs/${RUN_ID}/resume`, { method: 'PUT', body: buildEditor.collect() });
     buildEditor(); buildCover(); showMeta();
     $('#save-status').textContent = run.fits ? 'Saved. Fits on one page.' : `Saved, but it is ${run.pages} pages. Shorten the text.`;
   } catch (err) { $('#save-status').textContent = ''; $('#status').prepend(notice('bad', err.message)); }
-  finally { $('#save').disabled = false; }
+  finally { $('#save').disabled = false; $$('#downloads button').forEach(b => { b.disabled = false; }); }
 });
 load().catch(err => $('#editor').replaceChildren(notice('bad', err.message)));
 </script>

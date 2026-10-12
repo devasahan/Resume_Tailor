@@ -13,7 +13,7 @@ async function init() {
   const data = await api('/api/runs');
   $('#sub').textContent = `Spent today: ${money(data.cost_today)}. Stored runs are deleted after the retention period set in Settings.`;
   $('#rows').replaceChildren(...(data.runs.length ? data.runs.map(r => {
-    const result = r.status === 'error' ? chip('failed', 'bad') : r.task === 'parse' ? chip('resume read') : chip(r.fits ? '1 page' : r.pages + ' pages', r.fits ? 'ok' : 'bad');
+    const result = r.status === 'error' ? chip('failed', 'bad') : r.task === 'parse' ? chip('resume read') : r.task === 'cover_letter' ? chip('cover letter') : chip(r.fits ? '1 page' : r.pages + ' pages', r.fits ? 'ok' : 'bad');
     return el('tr', {}, el('td', { text: r.created_at.replace('T', ' ').replace('Z', '') }), el('td', { text: r.task }),
       el('td', { text: r.candidate || '-' }),
       el('td', { text: r.requested_model }), el('td', { text: r.served_model || '-' }), el('td', { text: r.target_role || '-' }),

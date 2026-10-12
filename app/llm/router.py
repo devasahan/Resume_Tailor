@@ -22,13 +22,13 @@ class Router:
     def settings(self) -> dict:
         return self.db.get_settings()
 
-    def default_model(self, task: str) -> str | None:
+    def default_model(self, task: str, automatic: bool = False) -> str | None:
         """task: resume | cover_letter | parser. Falls back to the first available model.
 
         For the parser, None means "read with the built-in rules": when the user chose Rules only, or when
         Automatic would only find an offline demo model (whose reading is the same rules anyway)."""
         s = self.settings()
-        chosen = s.get(f"{task}_model")
+        chosen = None if automatic else s.get(f"{task}_model")  # automatic: what Automatic would pick
         if task == "parser" and chosen == config.RULES_READER:
             return None
         if chosen:
@@ -38,7 +38,7 @@ class Router:
             except KeyError:
                 pass
         if task == "cover_letter":
-            return self.default_model("resume")
+            return self.default_model("resume", automatic)
         priority = config.PARSER_PRIORITY if task == "parser" else config.DEFAULT_PRIORITY
         picked = self.registry.pick_default(priority, s["allowed_regions"])
         if task == "parser" and picked and self.registry.get(picked).provider == "fake":

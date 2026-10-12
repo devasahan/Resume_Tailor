@@ -338,10 +338,12 @@ async def _cover_letter(
 async def write_cover_letter(
     router: Router, db: Database, run_id: int, *, jd: str, model_id: str
 ) -> tuple[TailorResult, str | None]:
-    """Write (or rewrite) the cover letter of a saved run and add its cost to that run.
+    """Write (or rewrite) the cover letter of a saved run.
 
     Returns (updated run, error). The caller has checked that the run exists and has a resume and analysis.
-    The run is read again before saving so that edits made on the Review page in the meantime are kept.
+    The spend is saved as its own row dated today (task 'cover_letter'), so the daily cost cap counts it even
+    when the run itself is from an earlier day; the run only shows it in cover_cost_usd. The run is read again
+    before saving so that edits made on the Review page in the meantime are kept.
     """
     base = db.get_run(run_id)
     assert base is not None and base.resume is not None and base.analysis is not None
@@ -352,15 +354,18 @@ async def write_cover_letter(
         company_name=base.company_name or base.analysis.company, hiring_manager="",
         model_id=model_id, allow_fallback=True,
     )
+    if outcome.attempts:
+        db.save_run(TailorResult(
+            requested_model=model_id, served_model=outcome.served_model, status="error" if error else "ok",
+            error=error or "", input_tokens=outcome.input_tokens, output_tokens=outcome.output_tokens,
+            cost_usd=round(outcome.cost_usd, 6), attempts=outcome.attempts, retries=outcome.retries,
+            fallback_chain=outcome.chain, latency_ms=int((time.perf_counter() - started) * 1000),
+            notes=[f"Cover letter for run {run_id}."],
+        ), None, "", task="cover_letter")
     fresh = db.get_run(run_id) or base
     if base.cover_letter is not None:
         fresh.cover_letter = base.cover_letter  # replaces any earlier letter
-    fresh.input_tokens += outcome.input_tokens
-    fresh.output_tokens += outcome.output_tokens
-    fresh.cost_usd = round(fresh.cost_usd + outcome.cost_usd, 6)
-    fresh.attempts += outcome.attempts
-    fresh.retries += outcome.retries
-    fresh.latency_ms += int((time.perf_counter() - started) * 1000)
+    fresh.cover_cost_usd = round(fresh.cover_cost_usd + outcome.cost_usd, 6)
     fresh.notes = [n for n in fresh.notes if not n.startswith(("Cover letter failed", "Cover letter not written"))]
     fresh.notes += notes
     if not fresh.jd:

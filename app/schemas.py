@@ -150,6 +150,7 @@ class TailorResult(BaseModel):
     input_tokens: int = 0
     output_tokens: int = 0
     cost_usd: float = 0.0
+    cover_cost_usd: float = 0.0  # cover letters written later for this run (each also has its own dated cost row)
     latency_ms: int = 0
     attempts: int = 1  # model calls made in total (resume + cover letter + any retries)
     retries: int = 0  # times a model was asked again because its answer was unusable

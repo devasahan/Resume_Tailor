@@ -7,9 +7,10 @@ import secrets
 import unicodedata
 import time
 from pathlib import Path
+from urllib.parse import urlsplit
 
 from fastapi import Depends, FastAPI, File, Form, Header, HTTPException, Request, UploadFile
-from fastapi.responses import RedirectResponse, Response
+from fastapi.responses import JSONResponse, RedirectResponse, Response
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from pydantic import BaseModel, Field
@@ -89,6 +90,22 @@ def resume_entry(entry: dict, registry: Registry) -> dict:
         "read_with": read_with, "profile": profile.model_dump(),
         "warnings": entry["notes"] + profile_warnings(profile),
     }
+
+
+UNSAFE_METHODS = {"POST", "PUT", "PATCH", "DELETE"}
+
+
+def cross_site(request: Request) -> bool:
+    """True for a state-changing request sent by another website. Browsers label every request with
+    Sec-Fetch-Site and send Origin on cross-origin posts; a plain HTML form on any other page (which needs no
+    CORS preflight, e.g. a multipart upload) is caught here. Scripts and tests send neither header."""
+    site = request.headers.get("sec-fetch-site")
+    if site and site not in ("same-origin", "none"):
+        return True
+    origin = request.headers.get("origin")
+    if origin and origin != "null":
+        return urlsplit(origin).netloc.lower() != request.headers.get("host", "").lower()
+    return origin == "null"
 
 
 def require_admin(x_admin_token: str | None = Header(default=None)) -> None:
@@ -182,6 +199,8 @@ def create_app(db: Database | None = None, registry: Registry | None = None, rou
     app.state.db, app.state.registry, app.state.router = db, registry, router
     @app.middleware("http")
     async def security_headers(request: Request, call_next):
+        if request.method in UNSAFE_METHODS and cross_site(request):
+            return JSONResponse({"detail": "Cross-site request refused."}, status_code=403)
         response = await call_next(request)
         response.headers.setdefault("X-Content-Type-Options", "nosniff")
         response.headers.setdefault("Referrer-Policy", "no-referrer")
@@ -247,6 +266,7 @@ def create_app(db: Database | None = None, registry: Registry | None = None, rou
         return {
             "settings": settings,
             "resolved": {t: router.default_model(t) for t in ("resume", "cover_letter", "parser")},
+            "automatic": {t: router.default_model(t, automatic=True) for t in ("resume", "cover_letter", "parser")},
             "cost_today": round(db.cost_today(), 4),
             "admin_token_required": bool(config.admin_token()),
         }
@@ -318,9 +338,11 @@ def create_app(db: Database | None = None, registry: Registry | None = None, rou
     async def api_upload_resume(file: UploadFile = File(...)):
         """Read an uploaded base resume with the Settings reader and save it. Nothing to check or confirm."""
         data = await file.read(MAX_BYTES + 1)  # never buffer more than the limit
-        filename = Path(file.filename or "resume").name[:120]
+        original = Path(file.filename or "resume").name
+        suffix = Path(original).suffix[:10]
+        filename = original if len(original) <= 120 else Path(original).stem[: 120 - len(suffix)] + suffix
         try:
-            text = extract_text(data, filename)
+            text = extract_text(data, original)
         except ValueError as exc:
             raise HTTPException(422, str(exc)) from exc
         profile, method, notes = await read_resume(router, db, text, router.default_model("parser"))
@@ -419,6 +441,9 @@ def create_app(db: Database | None = None, registry: Registry | None = None, rou
             raise HTTPException(422, str(exc)) from exc
         result.resume = merged
         style, pages, fits, notes = await fit_report(merged, db.get_settings()["paper_size"])
+        latest = db.get_run(run_id)  # a cover letter may have been written while this edit was in flight
+        if latest is not None and body.cover_paragraphs is None:
+            result.cover_letter, result.cover_cost_usd = latest.cover_letter, latest.cover_cost_usd
         result.style, result.pages, result.fits = style, pages, fits
         result.notes = [n for n in result.notes if not n.startswith(("Font reduced", "Still"))] + notes
         run_checks(result, result.jd or analysis_terms(result.analysis))

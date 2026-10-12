@@ -66,7 +66,7 @@ function showResult(run, view = 'resume') {
   $('#chips').replaceChildren(
     chip(run.pages === 1 ? '1 page' : `${run.pages} pages`, run.fits ? 'ok' : 'bad'),
     chip(`${Math.round(run.coverage.score * 100)}% keywords`, run.coverage.score >= 0.8 ? 'ok' : 'warn'),
-    chip(run.served_model || run.requested_model), chip(money(run.cost_usd)),
+    chip(run.served_model || run.requested_model), chip(money(run.cost_usd + (run.cover_cost_usd || 0))),
     verify ? chip(`${verify} to verify`, 'warn') : null);
   $('#downloads').replaceChildren(
     el('a', { class: 'btn primary', href: `/api/runs/${id}/resume.pdf?download=1`, text: 'Download resume PDF' }),
@@ -97,7 +97,11 @@ function readJd() {
 async function tailorNow(jd) {
   const profileId = chosenId();
   const run = await api('/api/tailor', { method: 'POST', body: { jd, profile_id: profileId } });
-  if (run.status === 'error') { current = null; throw new Error(run.error || 'Tailoring failed.'); }
+  if (run.status === 'error') {
+    current = null;  // no usable result: do not leave the previous one's downloads on screen
+    $('#result').classList.add('hidden'); $('#empty').classList.remove('hidden');
+    throw new Error(run.error || 'Tailoring failed.');
+  }
   current = { run, jd, profileId };
   showResult(run);
   return run;

@@ -78,10 +78,10 @@ async function init() {
     el('td', { text: x.demo ? 'free' : `${x.price_in} / ${x.price_out}` }), el('td', { text: x.data_region }),
     el('td', {}, x.available ? chip('ready', 'ok') : chip('off', 'warn'), x.verified ? null : chip('unverified'), x.available ? null : el('div', { class: 'small muted', text: x.reason }), x.key_hint ? el('div', { class: 'small muted', text: 'key ' + x.key_hint }) : null))));
   const st = s.settings;
-  modelOptions(field('resume_model'), st.resume_model, `Automatic (${labelOf(s.resolved.resume) || 'none available'})`);
+  modelOptions(field('resume_model'), st.resume_model, `Automatic (${labelOf(s.automatic.resume) || 'none available'})`);
   modelOptions(field('cover_letter_model'), st.cover_letter_model, 'Same as the resume model');
   modelOptions(field('parser_model'), st.parser_model,
-    `Automatic (${st.parser_model === 'rules' || !s.resolved.parser ? 'built-in rules' : labelOf(s.resolved.parser)})`,
+    `Automatic (${s.automatic.parser ? labelOf(s.automatic.parser) : 'built-in rules'})`,
     [{ value: 'rules', text: 'Rules only (free, nothing is sent)' }]);
   field('fallbacks').replaceChildren(...models.filter(x => x.available).map(x => el('label', {}, el('input', { type: 'checkbox', value: x.id, checked: st.fallback_models.includes(x.id) }), x.label)));
   field('daily_cost_cap_usd').value = st.daily_cost_cap_usd; field('retention_days').value = st.retention_days; field('paper_size').value = st.paper_size; field('metrics_mode').value = st.metrics_mode;
