@@ -59,3 +59,12 @@ def test_cost_cap(router, db):
         router.check_cost_cap()
     db.set_settings({"daily_cost_cap_usd": 0})
     router.check_cost_cap()  # 0 = no cap
+
+
+
+def test_gemini_flash_is_the_automatic_resume_model_once_its_key_is_set(router, monkeypatch):
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "k")
+    monkeypatch.setenv("GEMINI_API_KEY", "g")
+    assert router.default_model("resume") == "gemini-3.8-flash"
+    router.db.set_settings({"resume_model": "claude-sonnet-5-5"})
+    assert router.default_model("resume") == "claude-sonnet-5-5"  # an explicit choice still wins

@@ -86,7 +86,7 @@ def test_degrades_when_provider_rejects_features_and_remembers():
 
     client = client_with(handler, json_mode="json_schema", reasoning_effort="low")
     call(client)
-    assert len(bodies) == 3  # schema+effort -> schema -> json_object works
+    assert len(bodies) == 4  # schema+effort -> object+effort -> schema -> json_object works
     assert bodies[-1]["response_format"] == {"type": "json_object"}
     assert "JSON Schema" in bodies[-1]["messages"][0]["content"]  # schema moved into the prompt
     bodies.clear()
@@ -216,3 +216,63 @@ def test_token_limit_field_name_is_configurable():
 
     call(client_with(handler, json_mode="json_object", max_tokens_param="max_completion_tokens"))
     assert seen[0]["max_completion_tokens"] == 500 and "max_tokens" not in seen[0]
+
+
+
+# ------------------------------------------------------------------ Gemini through the OpenAI-compatible endpoint
+def test_thinking_tokens_left_out_of_completion_tokens_are_still_counted():
+    payload = ok_payload()
+    payload["usage"] = {"prompt_tokens": 100, "completion_tokens": 50, "total_tokens": 400}  # 250 thinking tokens
+    result = call(client_with(lambda r: httpx.Response(200, json=payload), json_mode="json_object"))
+    assert (result.usage.input_tokens, result.usage.output_tokens) == (100, 300)
+    payload["usage"] = {"prompt_tokens": None, "completion_tokens": None, "total_tokens": None}
+    result = call(client_with(lambda r: httpx.Response(200, json=payload), json_mode="json_object"))
+    assert (result.usage.input_tokens, result.usage.output_tokens) == (0, 0)
+
+
+def test_a_gemini_style_key_error_is_reported_at_once():
+    bodies = []
+
+    def handler(request):
+        bodies.append(json.loads(request.content))
+        return httpx.Response(400, json=[{"error": {"code": 400, "status": "INVALID_ARGUMENT",
+                                                    "message": "API key not valid. Please pass a valid API key."}}])
+
+    with pytest.raises(ProviderError) as info:
+        call(client_with(handler, json_mode="json_schema", reasoning_effort="low"))
+    assert len(bodies) == 1  # not walked down the whole ladder
+    assert "The API key was rejected" in str(info.value) and info.value.status == 400
+
+
+def test_a_refused_schema_keeps_the_reasoning_setting():
+    bodies = []
+
+    def handler(request):
+        body = json.loads(request.content)
+        bodies.append(body)
+        if body.get("response_format", {}).get("type") == "json_schema":
+            return httpx.Response(400, json={"error": "response_format json_schema unsupported"})
+        return httpx.Response(200, json=ok_payload())
+
+    call(client_with(handler, json_mode="json_schema", reasoning_effort="low"))
+    assert len(bodies) == 2 and bodies[1]["response_format"] == {"type": "json_object"}
+    assert bodies[1]["reasoning_effort"] == "low"
+
+
+def test_a_failed_call_does_not_downgrade_later_calls():
+    state = {"fail": True}
+    bodies = []
+
+    def handler(request):
+        bodies.append(json.loads(request.content))
+        if state["fail"]:
+            return httpx.Response(400, json={"error": "something odd"})
+        return httpx.Response(200, json=ok_payload())
+
+    client = client_with(handler, json_mode="json_schema", reasoning_effort="low")
+    with pytest.raises(ProviderError):
+        call(client)
+    state["fail"] = False
+    bodies.clear()
+    call(client)
+    assert bodies[0]["response_format"]["type"] == "json_schema" and bodies[0]["reasoning_effort"] == "low"

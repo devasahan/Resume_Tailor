@@ -83,7 +83,7 @@ def test_degrades_across_real_400s_and_remembers_across_calls(server):
     server["behaviour"].update(reject_effort=True, reject_schema=True)
     client = client_for(server, json_mode="json_schema", reasoning_effort="low")
     assert call(client).data == {"a": 7}
-    assert len(server["seen"]) == 3
+    assert len(server["seen"]) == 4  # schema+effort -> object+effort -> schema -> json_object works
     server["seen"].clear()
     assert call(client).data == {"a": 7}
     assert len(server["seen"]) == 1 and server["seen"][0]["body"]["response_format"] == {"type": "json_object"}

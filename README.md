@@ -35,7 +35,7 @@ The demo models write generic template text. They exist to show the flow (fit to
 1. Copy `.env.example` to `.env` (the start script does this for you) and open `.env` in any text editor.
 2. Paste the API key for the provider you have, for example `ANTHROPIC_API_KEY=...`. Use **paid** keys: free tiers may let the provider train on your data.
 3. Stop and start the app again. In **Settings**, press **Run check** to confirm each key and model name works (one tiny call per model, a fraction of a cent).
-4. In **Settings**, choose the **Resume model** and **Cover letter model** the Tailor page uses (Automatic picks the first available). Costs are shown per run. To compare models side by side, use the bake-off below.
+4. In **Settings**, choose the **Resume model** and **Cover letter model** the Tailor page uses (Automatic picks the first available, Gemini 3.8 Flash first when `GEMINI_API_KEY` is set). Costs are shown per run. To compare models side by side, use the bake-off below.
 
 Nothing leaves your computer except the calls to the model providers you pick. See [Privacy and security](#privacy-and-security).
 

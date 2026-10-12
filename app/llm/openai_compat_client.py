@@ -2,8 +2,9 @@
 
 Used for Gemini, Grok, Mistral, DeepSeek, Qwen, GLM, Kimi (see models.yaml). Providers differ in
 what they accept (json_schema vs json_object, reasoning_effort), so a request that gets HTTP
-400/422 is retried with progressively fewer features until one works; the working variant is
-remembered for the rest of the process.
+400/422 is retried with progressively fewer features until one works; the variant that worked is
+remembered for the rest of the process. A rejected API key is not a missing feature: some providers
+(Gemini) answer it with HTTP 400, so it is recognised by its message and reported at once.
 """
 from __future__ import annotations
 
@@ -27,6 +28,15 @@ from .registry import ModelSpec
 from .schema import extract_json
 
 TRANSIENT = {408, 409, 429, 500, 502, 503, 504}
+KEY_ERROR_MARKERS = ("api key not valid", "api_key_invalid", "missing or invalid authorization", "invalid api key",
+                     "incorrect api key", "invalid x-api-key")
+
+
+def is_key_error(resp: httpx.Response) -> bool:
+    """401/403 always; a 400 only when its message says the key is missing or invalid (Gemini does this)."""
+    if resp.status_code in (401, 403):
+        return True
+    return resp.status_code == 400 and any(marker in resp.text.lower() for marker in KEY_ERROR_MARKERS)
 RETRY_DELAYS = (1.5, 4.0)
 
 
@@ -44,9 +54,13 @@ class OpenAICompatClient(LLMClient):
 
     # ------------------------------------------------------------------ request building
     def _variants(self) -> list[tuple[str, bool]]:
+        """Most capable first. When only the schema format is refused, keep the reasoning setting (dropping it
+        would switch some providers to a costlier default amount of thinking)."""
         mode = self.spec.settings.get("json_mode", "json_object")
         effort = bool(self.spec.settings.get("reasoning_effort"))
         ladder = [(mode, effort)]
+        if mode == "json_schema" and effort:
+            ladder.append(("json_object", True))
         if effort:
             ladder.append((mode, False))
         if mode == "json_schema":
@@ -122,14 +136,17 @@ class OpenAICompatClient(LLMClient):
             for index in range(self._start, len(variants)):
                 body = self._body(variants[index], system, user, schema, schema_name, max_tokens)
                 resp = await self._post(http, body)
+                if is_key_error(resp):
+                    break  # no feature to drop: the key itself was refused
                 if resp.status_code in (400, 422) and index < len(variants) - 1:
                     continue  # the provider rejected a feature: degrade and retry
-                self._start = index
+                if resp.status_code < 400:
+                    self._start = index  # remember only a variant that actually worked
                 break
         assert resp is not None
         if resp.status_code >= 400:
             hint = ""
-            if resp.status_code in (401, 403):
+            if is_key_error(resp):
                 hint = (f" -> The API key was rejected. In use: {config.key_hint(self.spec.key_env) or 'none'}. "
                         "Put a valid key in .env and restart.")
             raise ProviderError(f"{self.spec.label}: HTTP {resp.status_code}: {resp.text[:300]}{hint}", resp.status_code)
@@ -159,9 +176,15 @@ class OpenAICompatClient(LLMClient):
         except json.JSONDecodeError as exc:
             raise InvalidOutputError(f"{self.spec.label} returned text that is not valid JSON: {exc}") from exc
         usage = payload.get("usage") or {}
+        prompt = int(usage.get("prompt_tokens") or 0)
+        completion = int(usage.get("completion_tokens") or 0)
+        total = int(usage.get("total_tokens") or 0)
+        # Thinking tokens are billed as output. Some providers (Gemini) leave them out of completion_tokens but
+        # include them in total_tokens, so the larger of the two readings is the billed output.
+        output = max(completion, total - prompt)
         return LLMResult(
             data=data,
-            usage=Usage(int(usage.get("prompt_tokens", 0)), int(usage.get("completion_tokens", 0))),
+            usage=Usage(prompt, output),
             served_model=str(payload.get("model") or self.spec.model),
             raw_text=text,
         )

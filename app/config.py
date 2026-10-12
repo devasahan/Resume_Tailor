@@ -75,9 +75,9 @@ DEFAULT_SETTINGS: dict = {
 }
 
 # Used only when a task has no model chosen in Settings. Real models first, demo last.
-DEFAULT_PRIORITY = [
-    "claude-sonnet-5-5",
+DEFAULT_PRIORITY = [  # Automatic resume model: the first one with a key (the Settings choice always wins)
     "gemini-3.8-flash",
+    "claude-sonnet-5-5",
     "grok-4.3",
     "mistral-large",
     "gemini-3.5-flash-lite",

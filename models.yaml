@@ -46,9 +46,9 @@ models:
     price_in: 0.75
     price_out: 3.75
     data_region: US
-    verified: false
+    verified: true
     settings: {reasoning_effort: low, json_mode: json_schema, max_output_tokens: 16000}
-    notes: Introductory price reportedly ends 2026-12-31. Use a paid key, free-tier data may be used to improve Google models.
+    notes: "Introductory price $0.75 / $3.75 per 1M tokens until 2026-12-31; standard $1.50 / $7.50 from 2027-01-01 (update price_in / price_out then). Use a paid key: free-tier data may be used to improve Google models."
 
   - id: gemini-3.5-flash-lite
     label: Gemini 3.5 Flash-Lite
