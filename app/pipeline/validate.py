@@ -201,6 +201,36 @@ def figure_style_problems(resume: Resume, allowed_text: str) -> list[str]:
     return list(dict.fromkeys(problems))
 
 
+MAX_FIGURE_BULLETS_PER_JOB = 2
+MAX_FIGURE_SHARE = 0.5
+
+
+def has_figure(text: str) -> bool:
+    """True if the text carries a number other than a plain year."""
+    for token in _numbers_in(text):
+        if token.isdigit() and 1900 <= int(token) <= 2100:
+            continue
+        if token:
+            return True
+    return False
+
+
+def metric_density_problems(resume: Resume) -> list[str]:
+    """Employers with more than 2 bullets carrying figures, and an overall share above half."""
+    problems: list[str] = []
+    total = with_figure = 0
+    for exp in resume.experience:
+        count = sum(has_figure(b) for b in exp.bullets)
+        total += len(exp.bullets)
+        with_figure += count
+        if count > MAX_FIGURE_BULLETS_PER_JOB:
+            company = resume.profile.companies[exp.company_index].name
+            problems.append(f"{company}: {count} of {len(exp.bullets)} bullets have figures")
+    if total and with_figure / total > MAX_FIGURE_SHARE:
+        problems.append(f"{with_figure} of {total} bullets overall have figures")
+    return problems
+
+
 def claim_flags(resume: Resume, jd: str, hints: str) -> list[Flag]:
     """Things the user did not provide and should confirm before sending the resume."""
     flags: list[Flag] = []

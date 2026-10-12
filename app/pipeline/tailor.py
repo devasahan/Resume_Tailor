@@ -62,6 +62,12 @@ def run_checks(result: TailorResult, jd_text: str) -> None:
     result.ats_warnings = validate.ats_lint(result.resume)
     allowed = f"{result.hints}\n{result.facts}"
     result.flags = validate.claim_flags(result.resume, jd_text, allowed)
+    dense = validate.metric_density_problems(result.resume)
+    if dense:
+        result.ats_warnings.append(
+            "Many bullets carry figures (" + "; ".join(dense) + "). Recruiters read a few strong numbers better "
+            "than many: consider keeping at most 2 per role."
+        )
     rounded = validate.figure_style_problems(result.resume, allowed)
     if rounded:
         result.ats_warnings.append(
@@ -119,16 +125,26 @@ async def run_tailor(
         allowed_figures = f"{hints}\n{facts}"
 
         def refine(value) -> str | None:
-            """Ask once for specific, measured-looking figures if the draft relies on round guesses."""
-            problems = validate.figure_style_problems(value[1], allowed_figures)
-            if len(problems) < 2:
+            """Ask once to fix the figures if the draft uses too many, or round guesses."""
+            feedback = []
+            density = validate.metric_density_problems(value[1])
+            if density:
+                feedback.append(
+                    "Too many bullets carry numbers (" + "; ".join(density) + "). Keep a figure in at most "
+                    f"{validate.MAX_FIGURE_BULLETS_PER_JOB} bullets per employer and about 2 in 5 overall; rewrite "
+                    "the other bullets to describe the impact in words. Keep the candidate's own figures."
+                )
+            rounded = validate.figure_style_problems(value[1], allowed_figures)
+            if len(rounded) >= 2:
+                feedback.append(
+                    "Some figures look like round guesses or approximations: " + ", ".join(rounded[:8])
+                    + ". Rewrite those figures as specific, measured-looking values (for example 23.4%, 21%, "
+                    "17.8%, 1.7TB, 38 analysts): no numbers ending in 0 or 5, no '~', no 'approximately'. Keep any "
+                    "figure the candidate gave exactly as it is."
+                )
+            if not feedback:
                 return None
-            return (
-                "Some figures look like round guesses or approximations: " + ", ".join(problems[:8])
-                + ". Rewrite only those figures as specific, measured-looking values (for example 23.4%, 21%, "
-                "17.8%, 1.7TB, 38 analysts): no numbers ending in 0 or 5, no '~', no 'approximately'. Keep any "
-                "figure the candidate gave exactly as it is, and keep everything else unchanged."
-            )
+            return " ".join(feedback) + " Keep everything else unchanged."
 
         await generate_validated(
             router, chain, system=tailor_system(metrics_mode), user=tailor_user(jd, profile.companies, hints, facts),

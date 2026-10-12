@@ -28,8 +28,23 @@ TEXT_X = 13.0  # points from the left margin to bullet text (hanging indent)
 ROW_GAP = 10.0  # minimum space between the left text and the right-aligned dates
 
 
+def display_url(url: str) -> str:
+    """linkedin.com/in/name instead of https://www.linkedin.com/in/name/.
+
+    PDF viewers (Chrome, Edge, Acrobat) turn text that starts with http(s):// or www. into a clickable
+    link by themselves; without the prefix it stays plain text, and it is shorter and still ATS-readable.
+    """
+    value = url.strip()
+    for prefix in ("https://", "http://"):
+        if value.lower().startswith(prefix):
+            value = value[len(prefix):]
+    if value.lower().startswith("www."):
+        value = value[4:]
+    return value.rstrip("/")
+
+
 def contact_line(contact: Contact) -> str:
-    parts = [contact.email, contact.phone, contact.linkedin, contact.location, contact.website]
+    parts = [contact.email, contact.phone, display_url(contact.linkedin), contact.location, display_url(contact.website)]
     return " | ".join(part for part in parts if part)
 
 
