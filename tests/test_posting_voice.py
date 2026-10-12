@@ -37,6 +37,16 @@ def test_posting_voice_is_found_in_the_summary_and_bullets(profile):
     assert validate.posting_voice_problems(resume)[0] == resume.summary
 
 
+def test_standard_names_with_you_or_your_are_not_posting_voice(profile):
+    resume = validate.build_resume(profile, make_output())
+    resume.summary = "Fintech engineer. Our clients rely on it."  # a sentence that starts with Our still counts
+    resume.experience[0].bullets = [f"Built Know Your Customer (KYC) document checks {LONG}",
+                                    f"Moved hosting to pay-as-you-go cloud billing {LONG}"]
+    resume.experience[1].bullets = [f"Rolled out a Bring Your Own Device (BYOD) policy {LONG}",
+                                    f"Cut deploy time so we could ship daily {LONG}"]
+    assert validate.posting_voice_problems(resume) == [resume.summary, resume.experience[1].bullets[1]]
+
+
 def test_a_posting_phrase_used_more_than_twice_is_stuffing(profile):
     resume = validate.build_resume(profile, make_output())
     resume.headline = "Java Engineer | Modern Software Development"  # the headline and skills do not count
@@ -53,15 +63,30 @@ def test_a_posting_phrase_used_more_than_twice_is_stuffing(profile):
     assert validate.repeated_phrase_problems(resume, lean_analysis()) == ["'modern software development' (3 times)"]
 
 
+def test_hyphenated_phrases_count_and_tool_names_may_recur(profile):
+    resume = validate.build_resume(profile, make_output())
+    resume.summary = f"Data engineer who applies test-driven development on Azure Data Factory {LONG}."
+    resume.experience[0].bullets = [f"Brought test-driven development to Azure Data Factory pipelines {LONG}",
+                                    f"Ran Ruby on Rails services next to Azure Data Factory {LONG}"]
+    resume.experience[1].bullets = [f"Used test-driven development for Ruby on Rails jobs {LONG}",
+                                    f"Moved batch loads to Azure Data Factory {LONG}"]
+    resume.experience[2].bullets = [f"Kept Ruby on Rails releases steady {LONG}", f"Wrote Azure Data Factory alerts {LONG}"]
+    analysis = lean_analysis(must_have_skills=["test-driven development", "Azure Data Factory"],
+                             keywords=["Ruby on Rails", "Microsoft Power BI"])
+    assert validate.repeated_phrase_problems(resume, analysis) == ["'test-driven development' (3 times)"]
+
+
 def test_qualities_are_not_skills(profile):
     resume = validate.build_resume(profile, make_output())
     resume.skills = [
-        SkillGroup(category="Practices", skills=["Test-Driven Development", "Clean Architecture", "Site Reliability Engineering"]),
+        SkillGroup(category="Practices", skills=["Test-Driven Development", "Clean Architecture", "Site Reliability Engineering",
+                                                 "Scalable Vector Graphics (SVG)", "Robust Optimization", "Quality Assurance"]),
         SkillGroup(category="Quality", skills=["High-Quality Code", "Scalable and Maintainable Applications",
-                                               "Low-Maintenance Software Solutions", "Robust APIs"]),
+                                               "Low-Maintenance Software Solutions", "Robust APIs", "High Quality Code"]),
     ]
     assert validate.quality_skill_problems(resume) == [
-        "High-Quality Code", "Scalable and Maintainable Applications", "Low-Maintenance Software Solutions", "Robust APIs"]
+        "High-Quality Code", "Scalable and Maintainable Applications", "Low-Maintenance Software Solutions", "Robust APIs",
+        "High Quality Code"]
 
 
 class CopiesThePosting(LLMClient):
@@ -103,4 +128,5 @@ def test_prompt_states_the_posting_copy_rules():
     assert "at most twice across the summary and bullets" in text and '"TDD"' in text
     assert "never a quality or outcome" in text and '"High-Quality Code"' in text
     assert "never copy its own setting into earlier jobs" in text and '"refine your craft"' in text
-    assert 'Never write "you", "your", "we" or "our"' in text
+    assert 'Never write "you", "your", "we" or "our"' in text and "Know Your Customer" in text
+    assert "even when the JD requires it" in text

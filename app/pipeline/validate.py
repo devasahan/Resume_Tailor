@@ -225,7 +225,12 @@ def thin_text_problems(resume: Resume) -> list[str]:
     return problems
 
 
-_POSTING_VOICE = re.compile(r"\b(you|your|yours|yourself|we|our|ours)\b", re.IGNORECASE)
+# A capitalized pronoun counts only where a sentence starts, and a lowercase one never inside a hyphenated word,
+# so standard names stay fine: 'Know Your Customer (KYC)', 'Bring Your Own Device', 'pay-as-you-go'.
+_POSTING_VOICE = re.compile(
+    r"(?:^|(?<=[.!?]\s))(?:You|Your|Yours|Yourself|We|Our|Ours)\b(?!-)"
+    r"|(?<![\w-])(?:you|your|yours|yourself|we|our|ours)(?![\w-])"
+)
 
 
 def posting_voice_problems(resume: Resume) -> list[str]:
@@ -236,15 +241,23 @@ def posting_voice_problems(resume: Resume) -> list[str]:
 
 
 MAX_PHRASE_REPEATS = 2
-MIN_PHRASE_WORDS = 3  # 'modern software development', not tool names such as 'Spring Boot' that recur wherever used
+MIN_PHRASE_WORDS = 3  # 'modern software development', 'test-driven development'; not 'Spring Boot' or 'REST APIs'
+_NAME_JOINERS = {"on", "of", "and", "for", "the", "&", "to", "in", "with"}
+
+
+def _looks_like_name(term: str) -> bool:
+    """'Azure Data Factory', 'Ruby on Rails', 'Microsoft Power BI': every main word capitalized, so a product or
+    tool, which recurs wherever it was really used. The JD's spelling is kept, and descriptive phrases are lowercase."""
+    words = [w for w in re.split(r"[\s-]+", term.strip()) if w and w.lower() not in _NAME_JOINERS]
+    return bool(words) and all(w[:1].isupper() or w[:1].isdigit() for w in words)
 
 
 def repeated_phrase_problems(resume: Resume, analysis: JDAnalysis) -> list[str]:
-    """JD phrases of three or more words used more than twice in the summary and bullets: keyword stuffing.
-    Hyphenated words count once ('low-maintenance software solutions' is three words)."""
+    """Descriptive JD phrases of three or more words used more than twice in the summary and bullets: keyword
+    stuffing. Hyphen-joined parts count as words, as in matching ('test-driven development' is three)."""
     evidence = evidence_text(resume)
     terms = [t for t in _unique([*analysis.must_have_skills, *analysis.nice_to_have_skills, *analysis.keywords])
-             if len(t.split()) >= MIN_PHRASE_WORDS]
+             if len(re.split(r"[\s-]+", t.strip())) >= MIN_PHRASE_WORDS and not _looks_like_name(t)]
     problems = []
     for term in terms:
         count = mention_count(evidence, term)
@@ -253,7 +266,11 @@ def repeated_phrase_problems(resume: Resume, analysis: JDAnalysis) -> list[str]:
     return problems
 
 
-_QUALITY_WORDS = re.compile(r"\b(scalable|maintainable|low-maintenance|high-quality|robust|reliable)\b", re.IGNORECASE)
+_QUALITY_WORDS = re.compile(
+    r"\b(scalable(?!\s+vector\s+graphics)|maintainable|low[\s-]+maintenance|high[\s-]+quality"
+    r"|robust(?!\s+(?:control|optimization|statistics|regression)\b)|reliable)\b",
+    re.IGNORECASE,
+)
 
 
 def quality_skill_problems(resume: Resume) -> list[str]:

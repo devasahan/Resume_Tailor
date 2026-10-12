@@ -1,7 +1,7 @@
 """DOCX export (editable copy). Plain paragraphs, tab stops and the built-in bullet style: no tables or text boxes."""
 from __future__ import annotations
 
-from datetime import date
+from datetime import UTC, date, datetime
 from io import BytesIO
 
 from docx import Document
@@ -16,8 +16,13 @@ from .pdf import contact_line, fmt_dates
 PAPER = {"Letter": (Inches(8.5), Inches(11)), "A4": (Inches(8.27), Inches(11.69))}
 
 
-def _setup(style: FitStyle, margin_in: float, font_pt: float) -> Document:
+def _setup(style: FitStyle, margin_in: float, font_pt: float, *, author: str, title: str) -> Document:
     doc = Document()
+    # python-docx's template says "python-docx" and a 2013 date; use the candidate's own details instead
+    props, now = doc.core_properties, datetime.now(UTC).replace(microsecond=0)
+    props.author = props.last_modified_by = author
+    props.title, props.comments = title, ""
+    props.created = props.modified = now
     section = doc.sections[0]
     section.page_width, section.page_height = PAPER[style.paper]
     for side in ("left_margin", "right_margin", "top_margin", "bottom_margin"):
@@ -65,7 +70,7 @@ def _row(doc: Document, left_bold: str, left_rest: str, right: str, text_width, 
 
 def resume_docx(resume: Resume, style: FitStyle) -> bytes:
     p = resume.profile
-    doc = _setup(style, style.margin_in, style.font_pt)
+    doc = _setup(style, style.margin_in, style.font_pt, author=p.name, title=f"{p.name} - Resume")
     text_width = PAPER[style.paper][0] - Inches(style.margin_in * 2)
 
     name = doc.add_paragraph()
@@ -126,7 +131,7 @@ def resume_docx(resume: Resume, style: FitStyle) -> bytes:
 def cover_docx(resume: Resume, letter: CoverLetter, paper: str = "Letter") -> bytes:
     p = resume.profile
     style = FitStyle(font_pt=11, margin_in=1.0, paper=paper)  # type: ignore[arg-type]
-    doc = _setup(style, 1.0, 11)
+    doc = _setup(style, 1.0, 11, author=p.name, title=f"{p.name} - Cover Letter")
     name = doc.add_paragraph()
     run = name.add_run(p.name)
     run.bold = True

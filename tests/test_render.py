@@ -65,6 +65,12 @@ def test_metadata_and_embedded_font(resume):
     assert embedded and all(is_carlito and has_file for is_carlito, has_file in embedded)
 
 
+def test_docx_metadata_names_the_candidate_not_the_library(resume):
+    props = Document(io.BytesIO(resume_docx(resume, FitStyle()))).core_properties
+    assert props.author == props.last_modified_by == "Jordan Rivera" and props.title == "Jordan Rivera - Resume"
+    assert "python-docx" not in props.comments and props.created.year >= 2026
+
+
 @pytest.mark.parametrize("paper,size", [("Letter", (612, 792)), ("A4", (595, 842))])
 def test_paper_sizes(resume, paper, size):
     pdf, pages = render_resume_pdf(resume, FitStyle(paper=paper))
