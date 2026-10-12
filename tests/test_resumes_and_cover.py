@@ -274,7 +274,7 @@ def test_long_file_names_keep_their_type(client):
 
 
 def test_an_edit_saved_while_the_letter_is_written_keeps_the_letter(client, monkeypatch):
-    import app.main as main
+    from app import main
 
     save_profile(client)
     run = tailor(client).json()
