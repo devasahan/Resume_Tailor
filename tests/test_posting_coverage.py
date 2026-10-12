@@ -277,9 +277,36 @@ def test_tools_that_did_not_exist_yet_are_flagged():
     resume.experience[4].bullets = ["Explored agentic development and GitHub Actions for the mobile team"]
     problems = validate.era_problems(resume)
     assert problems == [
-        "Q2 Holdings (May 2020 - May 2021) mentions OpenTofu, which first appeared in 2023.",
-        "Earlier Co (Jun 2018 - Apr 2020) mentions agentic, which first appeared in 2023.",
-    ]  # current job, a job ending 2024, 'took the helm' and GitHub Actions (2019) by 2020 are all fine
+        "Q2 Holdings (May 2020 - May 2021) mentions OpenTofu, which only became common in 2024.",
+        "Earlier Co (Jun 2018 - Apr 2020) mentions agentic: AI tools belong only to the most recent one or two jobs.",
+    ]  # fine: the current job, OpenTofu at Orbital (ends 2024), 'took the helm', GitHub Actions at a job ending 2020
+
+
+def test_ai_tools_only_at_the_latest_one_or_two_jobs_and_once_they_were_popular():
+    titles = ["Backend Engineer", "Software Engineer II", "Software Engineer", "Software Engineer",
+              "Junior Software Engineer"]
+    # five_jobs: Lindy (current), Acquire.com (ends Feb 2025), Orbital (ends Jun 2024), Q2 (ends May 2021), Earlier Co
+    resume = _with_titles(titles)
+    resume.experience[0].bullets = ["Use agentic development and LLM evaluations every day"]
+    resume.experience[1].bullets = ["Built LLM features and coding agent workflows for the listings team"]
+    resume.experience[2].bullets = ["Added an LLM summary to the reporting service for teachers"]
+    problems = validate.era_problems(resume)
+    assert problems == [
+        "Orbital Education (Jun 2021 - Jun 2024) mentions LLM: AI tools belong only to the most recent one or two jobs."
+    ]  # LLM (2023) and coding agents (2025) are fine at a job ending 2025; anything goes at the current job
+    resume.profile.companies[1].end = "Dec 2024"  # the 2nd job now ends before coding agents were popular
+    assert validate.era_problems(resume)[0] == (
+        "Acquire.com (Jul 2024 - Dec 2024) mentions coding agent, which only became common in 2025.")
+
+
+def test_other_tools_count_from_when_they_became_common():
+    resume = _with_titles(["Backend Engineer", "Software Engineer II", "Software Engineer"])
+    resume.profile.companies[2].end = "Dec 2019"
+    resume.experience[2].bullets = ["Set up GitHub Actions pipelines for every service"]
+    assert validate.era_problems(resume) == [
+        "Orbital Education (Jun 2021 - Dec 2019) mentions GitHub Actions, which only became common in 2020."]
+    resume.profile.companies[2].end = "Dec 2020"
+    assert validate.era_problems(resume) == []
 
 
 class Anachronism(LLMClient):
@@ -302,11 +329,12 @@ def test_a_tool_from_the_future_is_rewritten_in_the_one_rewrite_pass(router, db,
     router.overrides["demo-concise"] = client
     result = asyncio.run(run_tailor(router, db, profile=profile, profile_id=None, jd=jd, model_id="demo-concise"))
     assert result.status == "ok" and result.retries == 1 and len(client.prompts) == 2
-    assert "did not exist yet during that job" in client.prompts[1] and "OpenTofu" in client.prompts[1]
+    assert "could not really have used" in client.prompts[1] and "OpenTofu" in client.prompts[1]
     assert validate.era_problems(result.resume) == []
 
 
 def test_prompt_states_the_career_flow_rules():
     text = tailor_system("estimate")
     assert "CAREER FLOW" in text and "career_plan" in text and "stepping stones" in text
-    assert "Only what really existed" in text and "never decreases toward the present" in text
+    assert "Only what was really in common use" in text and "never decreases toward the present" in text
+    assert "one or two most recent employers" in text and "agentic development from 2025" in text

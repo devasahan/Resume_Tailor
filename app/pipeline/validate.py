@@ -266,35 +266,48 @@ def fix_title_regressions(resume: Resume) -> list[str]:
     return notes
 
 
-# The year each tool or practice first became available (only ones a recent career can get wrong). A job that
-# ended before that year cannot have used it. Lenient on purpose: compared with the job's END year.
-FIRST_YEAR: dict[str, int] = {
-    "agentic": 2023, "coding agent": 2023, "AI coding assistant": 2022, "Copilot": 2021, "ChatGPT": 2022,
-    "GPT-4": 2023, "LLM": 2022, "large language model": 2022, "LangChain": 2022, "OpenTofu": 2023,
-    "Microsoft Fabric": 2023, "Bun": 2022, "Astro": 2021, "Vite": 2020, "Polars": 2020, "GitHub Actions": 2019,
-    "OpenTelemetry": 2019, "Delta Lake": 2019, "Azure Synapse": 2019, "FastAPI": 2018, "Amazon EKS": 2018,
-    "EKS": 2018, "Argo CD": 2018, "Tailwind CSS": 2017, "Istio": 2017, "Helm": 2016, "Next.js": 2016, "dbt": 2016,
-    "Kubernetes": 2014,
+# When each tool became COMMON at work (not its first release): a job that ended before that year should not
+# mention it. Lenient on purpose: compared with the job's END year. Only tools a recent career can get wrong.
+COMMON_YEAR: dict[str, int] = {
+    "Kubernetes": 2017, "Helm": 2018, "Amazon EKS": 2019, "EKS": 2019, "Istio": 2019, "Next.js": 2019,
+    "GitHub Actions": 2020, "dbt": 2020, "Argo CD": 2021, "Tailwind CSS": 2021, "FastAPI": 2021, "Delta Lake": 2021,
+    "Azure Synapse": 2021, "OpenTelemetry": 2022, "Vite": 2022, "Astro": 2023, "Polars": 2023, "OpenTofu": 2024,
+    "Bun": 2024, "Microsoft Fabric": 2024,
 }
+# AI tools, with the year they became popular at work. They also belong only to the most recent AI_RECENT_JOBS jobs.
+AI_TOOLS: dict[str, int] = {
+    "ChatGPT": 2023, "LLM": 2023, "large language model": 2023, "GPT-4": 2023, "LangChain": 2023,
+    "prompt engineering": 2023, "vector database": 2023, "retrieval-augmented generation": 2023,
+    "AI coding assistant": 2023, "Copilot": 2022, "agentic": 2025, "coding agent": 2025,
+}
+AI_RECENT_JOBS = 2
 _EVERYDAY_WORDS = {"Helm", "Astro", "Vite", "Copilot", "Bun", "Polars"}  # matched only as written: "at the helm" is fine
+_CURRENT = ("", "present", "current", "now", "today")
+
+
+def _mentions_tool(text: str, term: str) -> bool:
+    return mentions(text, term, case_sensitive=term in _EVERYDAY_WORDS or None)
 
 
 def era_problems(resume: Resume) -> list[str]:
-    """Tools mentioned in a job that ended before they existed, e.g. OpenTofu at a job that ended in 2021.
-    The current job, and jobs whose end date cannot be read, are never flagged."""
+    """Tools a job could not really have used: an AI tool outside the most recent one or two jobs, or any tool in a
+    job that ended before it became common (e.g. OpenTofu at a job that ended in 2021). The current job, and jobs
+    whose end date cannot be read, are never flagged for dates."""
     problems: list[str] = []
-    for exp in resume.experience:
+    for index, exp in enumerate(resume.experience):  # most recent first
         company = resume.profile.companies[exp.company_index]
-        end = parse_point(company.end, is_end=True)
-        if end is None or company.end.strip().lower() in ("", "present", "current", "now", "today"):
-            continue
         text = "\n".join([exp.job_title, *exp.bullets])
-        for term, year in FIRST_YEAR.items():
-            if year > end[0] and mentions(text, term, case_sensitive=term in _EVERYDAY_WORDS or None):
-                problems.append(
-                    f"{company.name} ({company.start or '?'} - {company.end}) mentions {term}, which first appeared "
-                    f"in {year}."
-                )
+        when = f"{company.name} ({company.start or '?'} - {company.end or 'Present'})"
+        if index >= AI_RECENT_JOBS:
+            for term in AI_TOOLS:
+                if _mentions_tool(text, term):
+                    problems.append(f"{when} mentions {term}: AI tools belong only to the most recent one or two jobs.")
+        end = parse_point(company.end, is_end=True)
+        if end is None or company.end.strip().lower() in _CURRENT:
+            continue
+        for term, year in {**COMMON_YEAR, **(AI_TOOLS if index < AI_RECENT_JOBS else {})}.items():
+            if year > end[0] and _mentions_tool(text, term):
+                problems.append(f"{when} mentions {term}, which only became common in {year}.")
     return problems
 
 

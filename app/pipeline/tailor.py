@@ -210,9 +210,9 @@ async def run_tailor(
             era = validate.era_problems(value[1])
             if era:
                 feedback.append(
-                    "Some bullets mention tools that did not exist yet during that job: " + " ".join(era)
-                    + " Move each one to a later job where it was possible, or replace it with a tool of that time; "
-                    "keep the same number of bullets per employer."
+                    "Some bullets mention tools that job could not really have used: " + " ".join(era)
+                    + " Move each one to a later job where it was common (AI tools only to the one or two most recent "
+                    "jobs), or replace it with a tool of that time; keep the same number of bullets per employer."
                 )
             titles = validate.title_growth_problems(value[1])
             if titles:
