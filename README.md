@@ -26,7 +26,9 @@ If something does not start, run **`python -m app.doctor`**. It checks Python, t
 ### Try the demo (about two minutes)
 1. **Profile** > choose `evals/sample_base_resume.docx` (or `.pdf` / `.txt`) > **Read file** > check the fields > **Save profile**.
 2. **Tailor** > paste a job description (for example `evals/jds/01_data_engineer.txt`) > tick **Compare several** > tick the three *Demo* models > **Tailor resume**.
-3. Open a result with **Review and edit**: change text, watch the live PDF preview, download the PDF or DOCX.
+3. Click **Download PDF** on a result card, or open **Review and edit** to change text with a live PDF preview first.
+   Files are named company, your name, role: `Acme_Corp_Jordan_Rivera_Senior_Data_Engineer.pdf`. The company is the one you type in
+   **Company applying to**, or the one the job description names; it is left out if neither has one.
 
 The demo models write generic template text. They exist to show the flow (compare, fit to one page, flags for invented numbers, retries); they say nothing about what real models write.
 

@@ -24,7 +24,7 @@ from .prompts import METRICS_MODES
 from .pipeline.tailor import analysis_terms, fit_report, run_checks, run_tailor
 from .render.docx import cover_docx, resume_docx
 from .render.pdf import render_cover_pdf, render_resume_pdf
-from .schemas import ExperienceOut, Profile, SkillGroup, TailoredSections, TailorOutput
+from .schemas import ExperienceOut, Profile, SkillGroup, TailoredSections, TailorOutput, TailorResult
 from .storage.db import Database
 
 WEB = Path(__file__).parent / "web"
@@ -63,11 +63,28 @@ def require_admin(x_admin_token: str | None = Header(default=None)) -> None:
         raise HTTPException(401, "Admin token required (set it on the Settings page).")
 
 
-def safe_filename(name: str, suffix: str) -> str:
-    """'José Álvarez' -> 'Jose_Alvarez_Resume.pdf' (accents become plain letters, the rest becomes _)."""
-    ascii_name = unicodedata.normalize("NFKD", name).encode("ascii", "ignore").decode("ascii")
-    base = re.sub(r"[^A-Za-z0-9]+", "_", ascii_name).strip("_") or "Resume"
-    return f"{base}_{suffix}"
+def file_part(text: str, limit: int = 50) -> str:
+    """'José Álvarez' -> 'Jose_Alvarez' (accents become plain letters, everything else becomes _)."""
+    ascii_text = unicodedata.normalize("NFKD", text).encode("ascii", "ignore").decode("ascii")
+    return re.sub(r"[^A-Za-z0-9]+", "_", ascii_text).strip("_")[:limit].strip("_")
+
+
+def download_name(result: TailorResult, ext: str, cover: bool = False) -> str:
+    """Company applied to, name on the resume, target role: 'Stripe_Jordan_Rivera_Senior_Data_Engineer.pdf'.
+
+    The company typed on the tailor form wins over the one read from the JD; missing parts are left out.
+    """
+    assert result.resume is not None
+    analysis = result.analysis
+    company = result.company_name or (analysis.company if analysis else "")
+    role = analysis.target_role if analysis else ""
+    if not role and result.resume.experience:
+        role = result.resume.experience[0].job_title
+    parts = [file_part(company, 40), file_part(result.resume.profile.name, 40), file_part(role, 60)]
+    if cover:
+        parts.append("Cover_Letter")
+    base = "_".join(p for p in parts if p) or "Resume"
+    return f"{base}.{ext}"
 
 
 def model_info(registry: Registry, spec: ModelSpec, allowed_regions: list[str]) -> dict:
@@ -340,7 +357,7 @@ def create_app(db: Database | None = None, registry: Registry | None = None, rou
         if result.resume is None:
             raise HTTPException(404, "No resume in this run.")
         disposition = "attachment" if download else "inline"
-        name = safe_filename(result.resume.profile.name, "Resume.pdf")
+        name = download_name(result, "pdf")
         return Response(_resume_pdf(result), media_type="application/pdf",
                         headers={"Content-Disposition": f'{disposition}; filename="{name}"'})
 
@@ -349,7 +366,7 @@ def create_app(db: Database | None = None, registry: Registry | None = None, rou
         result = load_run(run_id)
         if result.resume is None:
             raise HTTPException(404, "No resume in this run.")
-        name = safe_filename(result.resume.profile.name, "Resume.docx")
+        name = download_name(result, "docx")
         return Response(resume_docx(result.resume, result.style), media_type=DOCX,
                         headers={"Content-Disposition": f'attachment; filename="{name}"'})
 
@@ -360,7 +377,7 @@ def create_app(db: Database | None = None, registry: Registry | None = None, rou
             raise HTTPException(404, "No cover letter in this run.")
         pdf, _ = render_cover_pdf(result.resume, result.cover_letter, result.style.paper)
         disposition = "attachment" if download else "inline"
-        name = safe_filename(result.resume.profile.name, "Cover_Letter.pdf")
+        name = download_name(result, "pdf", cover=True)
         return Response(pdf, media_type="application/pdf",
                         headers={"Content-Disposition": f'{disposition}; filename="{name}"'})
 
@@ -369,7 +386,7 @@ def create_app(db: Database | None = None, registry: Registry | None = None, rou
         result = load_run(run_id)
         if result.resume is None or result.cover_letter is None:
             raise HTTPException(404, "No cover letter in this run.")
-        name = safe_filename(result.resume.profile.name, "Cover_Letter.docx")
+        name = download_name(result, "docx", cover=True)
         return Response(cover_docx(result.resume, result.cover_letter, result.style.paper), media_type=DOCX,
                         headers={"Content-Disposition": f'attachment; filename="{name}"'})
 

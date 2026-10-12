@@ -42,6 +42,10 @@ ROLE_RE = re.compile(
     r"Consultant|Specialist|Administrator|Coordinator|Director|Accountant|Recruiter|Marketer))\b"
 )
 LEVELS = ["Junior", "", "Senior", "Lead", "Principal"]
+COMPANY_RE = re.compile(
+    r"(?:\bCompany:[ \t]*|\bAbout[ \t]+|\bJoin[ \t]+|\bat[ \t]+)"
+    r"([A-Z][A-Za-z0-9&'-]*(?:\.[A-Za-z0-9]+)*(?:[ \t]+[A-Z][A-Za-z0-9&'-]*(?:\.[A-Za-z0-9]+)*){0,3})"
+)
 
 CONCISE = [
     ("Delivered {k1} solutions for cross-functional teams, improving reliability and turnaround.",
@@ -105,6 +109,15 @@ def guess_role(jd: str) -> tuple[str, str]:
     prefix = (match.group(1) or "").strip().rstrip(".")
     prefix = {"Sr": "Senior", "Jr": "Junior"}.get(prefix, prefix)
     return prefix, match.group(2).strip()
+
+
+def guess_company(jd: str) -> str:
+    """'... at Stripe', 'About Acme Corp', 'Company: Globex' -> the name; '' when the JD names none."""
+    for match in COMPANY_RE.finditer(jd):
+        name = match.group(1).strip(" .,'-")
+        if name and name.split()[0] not in STOP and name not in VOCAB:
+            return name
+    return ""
 
 
 def _title_ladder(prefix: str, base: str, count: int) -> list[str]:
@@ -175,6 +188,7 @@ class FakeClient(LLMClient):
         ]
         return {
             "jd_analysis": {
+                "company": guess_company(jd),
                 "target_role": target,
                 "seniority": seniority,
                 "domain": "General",

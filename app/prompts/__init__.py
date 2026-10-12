@@ -9,7 +9,7 @@ from pathlib import Path
 
 from ..schemas import Company, Resume
 
-PROMPT_VERSION = "v5"
+PROMPT_VERSION = "v6"
 RETRY_MARKER = "Your previous answer was rejected"
 
 _DIR = Path(__file__).parent

@@ -48,6 +48,7 @@ class Profile(BaseModel):
 
 # ---------------------------------------------------------------- what the model returns
 class JDAnalysis(BaseModel):
+    company: str = ""  # hiring company as the JD names it; "" if it does not (default keeps older runs loadable)
     target_role: str
     seniority: str
     domain: str
@@ -155,4 +156,5 @@ class TailorResult(BaseModel):
     prompt_version: str = ""
     hints: str = ""  # the user's own facts, kept so claim checks can be re-run after manual edits
     facts: str = ""  # facts computed from the profile (years of experience) that were given to the model
+    company_name: str = ""  # company the user typed on the tailor form (wins over the one read from the JD)
     created_at: str = ""

@@ -198,27 +198,79 @@ def test_cross_site_style_requests_cannot_use_a_non_json_content_type(client):
     assert r.status_code == 422
 
 
-@pytest.mark.parametrize("name,expected", [
-    ("JUAN DANIEL RAMIREZ", "JUAN_DANIEL_RAMIREZ_Resume.pdf"),
-    ("José Álvarez-Łukasz", "Jose_Alvarez_ukasz_Resume.pdf"),
-    ("王小明", "Resume_Resume.pdf"),
-    ("O'Brien, Ann", "O_Brien_Ann_Resume.pdf"),
+@pytest.mark.parametrize("text,expected", [
+    ("JUAN DANIEL RAMIREZ", "JUAN_DANIEL_RAMIREZ"),
+    ("José Álvarez-Łukasz", "Jose_Alvarez_ukasz"),
+    ("王小明", ""),
+    ("O'Brien, Ann", "O_Brien_Ann"),
+    ("Senior Data Engineer (Remote)", "Senior_Data_Engineer_Remote"),
 ])
-def test_download_file_names(name, expected):
-    from app.main import safe_filename
+def test_file_name_parts(text, expected):
+    from app.main import file_part
 
-    assert safe_filename(name, "Resume.pdf") == expected
+    assert file_part(text) == expected
+
+
+def _result(name="Jordan Rivera", company_typed="", company_in_jd="", role="Senior Data Engineer"):
+    from app.schemas import (
+        Contact,
+        JDAnalysis,
+        Profile,
+        Resume,
+        ResumeExperience,
+        SkillGroup,
+        TailorResult,
+    )
+
+    profile = Profile(name=name, contact=Contact(), companies=[])
+    resume = Resume(profile=profile, headline="h", summary="s", skills=[SkillGroup(category="c", skills=["x"])],
+                    experience=[ResumeExperience(company_index=0, job_title="Data Engineer", bullets=["b"])])
+    analysis = JDAnalysis(company=company_in_jd, target_role=role, seniority="", domain="", must_have_skills=[],
+                          nice_to_have_skills=[], keywords=[], key_responsibilities=[])
+    return TailorResult(requested_model="m", resume=resume, analysis=analysis, company_name=company_typed)
+
+
+def test_download_name_is_company_name_role():
+    from app.main import download_name
+
+    assert download_name(_result(company_in_jd="Stripe"), "pdf") == "Stripe_Jordan_Rivera_Senior_Data_Engineer.pdf"
+    # the company typed on the form wins over the one read from the job description
+    typed = _result(company_typed="Société Générale", company_in_jd="SG")
+    assert download_name(typed, "docx") == "Societe_Generale_Jordan_Rivera_Senior_Data_Engineer.docx"
+    assert download_name(typed, "pdf", cover=True) == "Societe_Generale_Jordan_Rivera_Senior_Data_Engineer_Cover_Letter.pdf"
+    # no company anywhere: the part is left out, not replaced by a placeholder
+    assert download_name(_result(), "pdf") == "Jordan_Rivera_Senior_Data_Engineer.pdf"
+    # no target role: the most recent job title stands in
+    assert download_name(_result(company_in_jd="Stripe", role=""), "pdf") == "Stripe_Jordan_Rivera_Data_Engineer.pdf"
+    assert download_name(_result(name="王小明", role=""), "pdf") == "Data_Engineer.pdf"
+
+
+def test_runs_saved_before_the_company_field_still_load():
+    from app.schemas import TailorResult
+
+    old = _result().model_dump()
+    del old["company_name"]
+    del old["analysis"]["company"]
+    loaded = TailorResult.model_validate(old)
+    assert loaded.company_name == "" and loaded.analysis.company == ""
 
 
 def test_download_headers(client):
     save_profile(client)
     run_id = tailor(client, cover_letter=True).json()["run_id"]
     pdf = client.get(f"/api/runs/{run_id}/resume.pdf?download=1")
-    assert pdf.headers["content-disposition"] == 'attachment; filename="Jordan_Rivera_Resume.pdf"'
+    assert pdf.headers["content-disposition"] == 'attachment; filename="Jordan_Rivera_Senior_Data_Engineer.pdf"'
     assert client.get(f"/api/runs/{run_id}/resume.pdf").headers["content-disposition"].startswith("inline;")
     docx = client.get(f"/api/runs/{run_id}/resume.docx")
     assert docx.headers["content-type"].startswith("application/vnd.openxmlformats-officedocument.wordprocessingml.document")
-    assert docx.headers["content-disposition"] == 'attachment; filename="Jordan_Rivera_Resume.docx"'
-    assert client.get(f"/api/runs/{run_id}/cover.docx").headers["content-disposition"] == 'attachment; filename="Jordan_Rivera_Cover_Letter.docx"'
+    assert docx.headers["content-disposition"] == 'attachment; filename="Jordan_Rivera_Senior_Data_Engineer.docx"'
+    assert (client.get(f"/api/runs/{run_id}/cover.docx").headers["content-disposition"]
+            == 'attachment; filename="Jordan_Rivera_Senior_Data_Engineer_Cover_Letter.docx"')
+    typed = tailor(client, company_name="Acme Corp").json()["run_id"]
+    assert (client.get(f"/api/runs/{typed}/resume.pdf?download=1").headers["content-disposition"]
+            == 'attachment; filename="Acme_Corp_Jordan_Rivera_Senior_Data_Engineer.pdf"')
+    from_jd = tailor(client, jd="About Globex Corporation\n" + SAMPLE_JD).json()["run_id"]
+    assert (client.get(f"/api/runs/{from_jd}/resume.pdf?download=1").headers["content-disposition"]
+            == 'attachment; filename="Globex_Corporation_Jordan_Rivera_Senior_Data_Engineer.pdf"')
     no_cover = tailor(client).json()["run_id"]
     assert client.get(f"/api/runs/{no_cover}/cover.pdf").status_code == 404

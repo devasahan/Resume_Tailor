@@ -13,7 +13,7 @@
     <label for="hints">Real facts about you <span class="opt">(optional)</span></label>
     <textarea id="hints" style="min-height: 70px" placeholder="Tools you actually used and real numbers (team size, data volume, % improvements). The AI uses these first; any figure it estimates is flagged for you to check."></textarea>
     <div class="grid2">
-      <div><label for="company">Company applying to <span class="opt">(cover letter)</span></label><input type="text" id="company"></div>
+      <div><label for="company">Company applying to <span class="opt">(file name, cover letter)</span></label><input type="text" id="company" placeholder="Read from the job description if empty"></div>
       <div><label for="manager">Hiring manager <span class="opt">(cover letter)</span></label><input type="text" id="manager"></div>
     </div>
     <label class="row" style="font-weight:400"><input type="checkbox" id="cover" style="width:auto"> Also write a cover letter</label>
@@ -102,8 +102,8 @@ function fillCard(body, m, r) {
   if (r.ats_warnings.length) parts.push(notice('warn', 'Format notes:', r.ats_warnings));
   const id = r.run_id;
   parts.push(el('div', { class: 'row', style: 'margin-top:10px' },
-    el('a', { class: 'btn primary small', href: `/run/${id}`, text: 'Review and edit' }),
-    el('a', { class: 'btn small', href: `/api/runs/${id}/resume.pdf?download=1`, text: 'Download PDF' }),
+    el('a', { class: 'btn primary small', href: `/api/runs/${id}/resume.pdf?download=1`, text: 'Download PDF' }),
+    el('a', { class: 'btn small', href: `/run/${id}`, text: 'Review and edit' }),
     el('a', { class: 'btn small', href: `/api/runs/${id}/resume.docx`, text: 'Download DOCX' }),
     r.cover_letter ? el('a', { class: 'btn small', href: `/api/runs/${id}/cover.pdf?download=1`, text: 'Cover letter PDF' }) : null,
     r.cover_letter ? el('a', { class: 'btn small', href: `/api/runs/${id}/cover.docx`, text: 'Cover letter DOCX' }) : null));

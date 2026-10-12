@@ -109,7 +109,9 @@ async def run_tailor(
     paper = settings["paper_size"]
     metrics_mode = settings.get("metrics_mode", "estimate")
     facts = candidate_facts(profile)
-    result = TailorResult(requested_model=model_id, prompt_version=PROMPT_VERSION, hints=hints, facts=facts)
+    result = TailorResult(
+        requested_model=model_id, prompt_version=PROMPT_VERSION, hints=hints, facts=facts, company_name=company_name
+    )
     outcome: Outcome = Outcome()
     notes: list[str] = []
 
