@@ -86,7 +86,8 @@ function readJd() {
   return jd;
 }
 
-function stillWorking(text, waited) {  // the slow-service note only once the wait is really long
+function stillWorking(text, waited, error) {  // the slow-service note only once the wait is really long
+  if (error) return `${text} Cannot reach the server right now; still trying.`;
   return waited > 60000 ? `${text} The AI service is slow right now; this can take a few minutes.` : text;
 }
 
@@ -100,7 +101,7 @@ async function tailorNow(jd) {
   let run;
   try {
     run = await finished(await api('/api/tailor', { method: 'POST', body: { jd, profile_id: profileId } }),
-      waited => busy(true, stillWorking('Still tailoring the resume...', waited)));
+      (waited, error) => busy(true, stillWorking('Still tailoring the resume...', waited, error)));
   } catch (err) { clearResult(); throw err; }
   if (run.status === 'error') {
     clearResult();
@@ -131,7 +132,7 @@ $('#cover-letter').addEventListener('click', async () => {
     }
     busy(true, 'Writing the cover letter...');
     const run = await finished(await api(`/api/runs/${current.run.run_id}/cover-letter`, { method: 'POST', body: {} }),
-      waited => busy(true, stillWorking('Still writing the cover letter...', waited)));
+      (waited, error) => busy(true, stillWorking('Still writing the cover letter...', waited, error)));
     current.run = run;
     showResult(run, 'cover');
     busy(false, 'Resume and cover letter ready.');

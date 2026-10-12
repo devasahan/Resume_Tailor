@@ -65,19 +65,23 @@ async function api(path, { method = 'GET', body = null, form = null } = {}) {
 
 // Slow work (tailoring, a cover letter) answers {job, status: 'running'} instead of keeping the request open for
 // minutes, which hosting proxies cut off. Ask again every few seconds until the real answer arrives. A lost
-// connection or a proxy error page does not end the wait (the work goes on on the server), unless nothing has been
-// heard for 10 minutes. onWait(ms) gets the time waited so far.
+// connection or a proxy error page does not end the wait (the work goes on on the server), unless the asking has
+// failed for 10 minutes and at least 5 times in a row (time asleep does not count: the first try after waking is
+// always repeated). onWait(ms, error) gets the time waited so far and the last failure, if the last try failed.
 async function finished(data, onWait) {
   const started = Date.now();
-  let heard = started;
+  let failingSince = null, failures = 0, lastError = null;
   while (data && data.job && data.status === 'running') {
-    if (onWait) onWait(Date.now() - started);
+    if (onWait) onWait(Date.now() - started, lastError);
     await new Promise(resolve => setTimeout(resolve, 3000));
     try {
       data = await api(`/api/jobs/${encodeURIComponent(data.job)}`);
-      heard = Date.now();
+      failingSince = null; failures = 0; lastError = null;
     } catch (err) {
-      if (!err.transient || Date.now() - heard > 10 * 60 * 1000) throw err;
+      if (!err.transient) throw err;
+      failures += 1; lastError = err;
+      if (failingSince === null) failingSince = Date.now();
+      if (failures >= 5 && Date.now() - failingSince > 10 * 60 * 1000) throw err;
     }
   }
   return data;
