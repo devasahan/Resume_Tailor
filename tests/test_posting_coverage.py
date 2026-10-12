@@ -184,8 +184,8 @@ def test_a_title_that_steps_down_is_raised_to_the_level_before_it():
     notes = validate.fix_title_regressions(resume)
     assert [e.job_title for e in resume.experience] == [
         "Backend Engineer", "Software Engineer II", "Software Engineer II", "Software Engineer", "Junior Software Engineer"]
-    assert notes == ["Acquire.com: title changed from 'Software Engineer' to 'Software Engineer II' so the career "
-                     "path never steps down."]
+    assert notes == [("Acquire.com: title changed from 'Software Engineer' to 'Software Engineer II' so the career "
+                      "path never steps down.")]
     assert validate.title_growth_problems(resume) == [] or "step down" not in validate.title_growth_problems(resume)[0]
 
 
