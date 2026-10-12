@@ -8,8 +8,10 @@ from __future__ import annotations
 import base64
 import hashlib
 import hmac
+import os
 import re
 import secrets
+import threading
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
@@ -66,12 +68,24 @@ def _b64(raw: bytes) -> str:
 
 
 # Each scrypt call needs 16 MiB. Running them all on two threads caps that memory (and the CPU) however many
-# login or sign-up requests arrive at once; the memory stays with these two threads.
-_HASHER = ThreadPoolExecutor(max_workers=2, thread_name_prefix="scrypt")
+# login or sign-up requests arrive at once; the memory stays with these two threads. Threads do not survive a
+# fork (a WSGI server that loads the app and then forks its workers), so each process makes its own pool.
+_hasher: ThreadPoolExecutor | None = None
+_hasher_pid = 0
+_hasher_lock = threading.Lock()
+
+
+def _pool() -> ThreadPoolExecutor:
+    global _hasher, _hasher_pid
+    if _hasher is None or _hasher_pid != os.getpid():
+        with _hasher_lock:
+            if _hasher is None or _hasher_pid != os.getpid():
+                _hasher, _hasher_pid = ThreadPoolExecutor(max_workers=2, thread_name_prefix="scrypt"), os.getpid()
+    return _hasher
 
 
 def _scrypt(password: str, salt: bytes, n: int, r: int, p: int, dklen: int) -> bytes:
-    return _HASHER.submit(hashlib.scrypt, password.encode("utf-8"), salt=salt, n=n, r=r, p=p, maxmem=_MAXMEM,
+    return _pool().submit(hashlib.scrypt, password.encode("utf-8"), salt=salt, n=n, r=r, p=p, maxmem=_MAXMEM,
                           dklen=dklen).result()
 
 

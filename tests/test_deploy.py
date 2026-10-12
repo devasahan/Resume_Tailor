@@ -1,5 +1,7 @@
 """Running behind a host's proxy (PythonAnywhere): same-origin check, HTTPS only, the WSGI entry point, and the
 setup script."""
+import io
+import json
 import os
 import shutil
 import subprocess
@@ -72,17 +74,22 @@ def test_the_wsgi_file_works_in_workers_forked_after_loading(tmp_path, monkeypat
     monkeypatch.setenv("DATA_DIR", str(tmp_path))  # importing app.wsgi builds the real app
     from app import wsgi
 
-    def status_of(path):
+    def status_of(path, body=b""):
         environ, seen = {"PATH_INFO": path}, []
+        if body:
+            environ.update(REQUEST_METHOD="POST", CONTENT_TYPE="application/json", CONTENT_LENGTH=str(len(body)),
+                           **{"wsgi.input": io.BytesIO(body)})
         setup_testing_defaults(environ)
-        body = b"".join(wsgi.application(environ, lambda status, headers, exc=None: seen.append(status)))
-        return seen[0], body
+        answer = b"".join(wsgi.application(environ, lambda status, headers, exc=None: seen.append(status)))
+        return seen[0], answer
 
-    assert status_of("/login")[0].startswith("200")  # the parent made its bridge (and its thread)
+    login = json.dumps(LOGIN).encode()
+    # the parent made its bridge and hashed the admin password: both started threads
+    assert status_of("/login")[0].startswith("200") and status_of("/api/login", login)[0].startswith("200")
     pid = os.fork()
-    if pid == 0:  # the worker: must answer instead of waiting forever on the parent's loop
-        code = 0 if status_of("/login")[0].startswith("200") else 1
-        os._exit(code)
+    if pid == 0:  # the worker: must answer (page and login) instead of waiting forever on the parent's threads
+        ok = status_of("/login")[0].startswith("200") and status_of("/api/login", login)[0].startswith("200")
+        os._exit(0 if ok else 1)
     deadline_ok = False
     for _ in range(100):
         done, status = os.waitpid(pid, os.WNOHANG)
