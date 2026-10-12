@@ -7,7 +7,9 @@ set -euo pipefail
 APP_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 VENV="${RESUME_TAILOR_VENV:-$HOME/.virtualenvs/resume_tailor}"
 ACCOUNT="${USER:-$(whoami)}"
-DOMAIN="${RESUME_TAILOR_DOMAIN:-$ACCOUNT.pythonanywhere.com}"  # EU accounts: set RESUME_TAILOR_DOMAIN=$USER.eu.pythonanywhere.com
+# Web addresses are lowercase even when the username is not (ResumeBuilder -> resumebuilder.pythonanywhere.com);
+# home folders keep the username as it is. EU accounts: set RESUME_TAILOR_DOMAIN=name.eu.pythonanywhere.com
+DOMAIN="${RESUME_TAILOR_DOMAIN:-${ACCOUNT,,}.pythonanywhere.com}"
 ENV_FILE="$APP_DIR/.env"
 
 set_value() {  # KEY VALUE: set KEY=VALUE in .env, replacing an empty or existing line

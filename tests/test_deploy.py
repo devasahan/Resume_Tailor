@@ -124,6 +124,9 @@ def test_setup_script_makes_env_once_and_prints_the_commands(tmp_path):
     assert oct((project / ".env").stat().st_mode)[-3:] == "600"
     assert "--domain jdoe.pythonanywhere.com" in first and "--uds ${DOMAIN_SOCKET}" in first
     assert "from app.wsgi import application" in first and "https://jdoe.pythonanywhere.com" in first
+    mixed = subprocess.run(["bash", script], env={**env, "USER": "ResumeBuilder"}, capture_output=True, text=True,
+                           check=True).stdout  # the address is lowercase, the home folder keeps its capitals
+    assert "--domain resumebuilder.pythonanywhere.com" in mixed and "https://resumebuilder.pythonanywhere.com" in mixed
     (project / ".env").write_text("ADMIN_EMAIL=kept@example.com\n")
     again = subprocess.run(["bash", script], env=env, capture_output=True, text=True, check=True).stdout
     assert "left as it is" in again and (project / ".env").read_text() == "ADMIN_EMAIL=kept@example.com\n"
