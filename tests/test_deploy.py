@@ -62,8 +62,44 @@ def test_the_wsgi_entry_point_serves_the_app(tmp_path):
             assert "Log out" in http.get("/tailor").text
     finally:
         server.shutdown()
-    import app.wsgi  # the module the WSGI file imports
-    assert callable(app.wsgi.application)
+
+
+@pytest.mark.skipif(not hasattr(os, "fork"), reason="needs fork")
+def test_the_wsgi_file_works_in_workers_forked_after_loading(tmp_path, monkeypatch):
+    """WSGI servers often import the app once and then fork workers: each worker needs its own bridge thread."""
+    from wsgiref.util import setup_testing_defaults
+
+    monkeypatch.setenv("DATA_DIR", str(tmp_path))  # importing app.wsgi builds the real app
+    from app import wsgi
+
+    def status_of(path):
+        environ, seen = {"PATH_INFO": path}, []
+        setup_testing_defaults(environ)
+        body = b"".join(wsgi.application(environ, lambda status, headers, exc=None: seen.append(status)))
+        return seen[0], body
+
+    assert status_of("/login")[0].startswith("200")  # the parent made its bridge (and its thread)
+    pid = os.fork()
+    if pid == 0:  # the worker: must answer instead of waiting forever on the parent's loop
+        code = 0 if status_of("/login")[0].startswith("200") else 1
+        os._exit(code)
+    deadline_ok = False
+    for _ in range(100):
+        done, status = os.waitpid(pid, os.WNOHANG)
+        if done:
+            deadline_ok = True
+            break
+        threading.Event().wait(0.1)
+    if not deadline_ok:
+        os.kill(pid, 9)
+        os.waitpid(pid, 0)
+    assert deadline_ok and os.waitstatus_to_exitcode(status) == 0
+
+
+def test_hsts_header_when_https_is_forced(client, monkeypatch):
+    assert "strict-transport-security" not in client.get("/login").headers  # local use: never
+    monkeypatch.setenv("FORCE_HTTPS", "1")
+    assert client.get("/login").headers["strict-transport-security"] == "max-age=31536000"
 
 
 @pytest.mark.skipif(shutil.which("bash") is None, reason="needs bash")

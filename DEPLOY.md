@@ -81,11 +81,13 @@ from app.wsgi import application  # noqa: E402
 
 ## 6. Check it
 1. Open **https://USERNAME.pythonanywhere.com**. You should see the **Log in** page.
-2. Log in with `ADMIN_EMAIL` and `ADMIN_PASSWORD`.
-3. **Settings** > Check models > tick **Gemini 3.8 Flash** > **Run check**: it should say "works".
-4. **Settings**: Resume model = Gemini 3.8 Flash, Cover letter model = Same as the resume model > **Save settings**.
-5. **Profile**: upload your base resumes. The server starts empty; your PC's resumes are not copied.
-6. Test a user: open a private browser window, **Sign up** with another email, approve it on **Users**, log in
+2. Also open **http://USERNAME.pythonanywhere.com** (http, without the s). The address must change to
+   **https://** by itself. If it stays http://, do not log in there and tell Claude.
+3. Log in with `ADMIN_EMAIL` and `ADMIN_PASSWORD`.
+4. **Settings** > Check models > tick **Gemini 3.8 Flash** > **Run check**: it should say "works".
+5. **Settings**: Resume model = Gemini 3.8 Flash, Cover letter model = Same as the resume model > **Save settings**.
+6. **Profile**: upload your base resumes. The server starts empty; your PC's resumes are not copied.
+7. Test a user: open a private browser window, **Sign up** with another email, approve it on **Users**, log in
    as that user, tailor once and download. The download appears on **History**.
 
 ## Updating to a new version
@@ -105,7 +107,7 @@ Changing `.env` also needs this restart. A new `ADMIN_PASSWORD` replaces the old
 | The page does not load | Look at the error log: A: `/var/log/USERNAME.pythonanywhere.com.error.log` and `.server.log`; B: the **Error log** link on the Web tab |
 | "Something went wrong" right after the install | Run the setup script again; it reinstalls missing libraries and keeps your `.env` |
 | Log in says the admin account is not set up | `ADMIN_EMAIL` or `ADMIN_PASSWORD` is empty in `.env`; fill it in and restart the website |
-| Log in keeps returning to the login page | Open the **https://** address, not http:// |
+| Log in keeps returning to the login page | You are on the http:// address and the site did not switch to https://. Use only https://, change `ADMIN_PASSWORD` in `.env`, restart the website, and tell Claude |
 | "Cross-site request refused" | Tell Claude: the hosting proxy changes a header the app checks |
 | Gemini check fails with "403" or "Tunnel connection failed" | The free account cannot reach that address; a paid account has full internet access |
 | Gemini says "quota" or "429" | The Gemini free tier allows few requests per minute; wait a minute, or turn on billing in Google AI Studio |

@@ -318,6 +318,8 @@ def create_app(db: Database | None = None, registry: Registry | None = None, rou
             response.headers.setdefault("Cache-Control", "no-store")  # nothing personal stays in a shared browser
         response.headers.setdefault("X-Content-Type-Options", "nosniff")
         response.headers.setdefault("Referrer-Policy", "no-referrer")
+        if config.force_https():  # browsers then use https:// for this site by themselves for a year
+            response.headers.setdefault("Strict-Transport-Security", "max-age=31536000")
         if response.headers.get("content-type", "").startswith("text/html"):
             response.headers.setdefault("X-Frame-Options", "SAMEORIGIN")
             response.headers.setdefault(

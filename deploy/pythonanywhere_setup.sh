@@ -52,8 +52,13 @@ chmod 600 "$ENV_FILE"
 mkdir -p "$APP_DIR/data"
 
 if [ "${RESUME_TAILOR_SKIP_INSTALL:-}" != "1" ]; then
-  echo "== Checking the setup"
-  (cd "$APP_DIR" && "$VENV/bin/python" -m app.doctor) || true
+  echo "== Checking the install"
+  # Only the install matters here (keys and the admin account come in step 1 below); the full check is in DEPLOY.md
+  if (cd "$APP_DIR" && "$VENV/bin/python" -m app.doctor --quiet >/dev/null 2>&1); then
+    echo "   OK: libraries, PDF and DOCX export, data folder"
+  else
+    (cd "$APP_DIR" && "$VENV/bin/python" -m app.doctor --quiet) || true
+  fi
 fi
 
 cat <<EOF
