@@ -169,14 +169,16 @@ async def run_tailor(
         context = {"profile": profile.model_dump(), "jd": jd, "hints": hints, "bullets": budget}
 
         def parse(data: dict):
+            """(output, resume, notes). Titles that step down are corrected here, on every draft, for free."""
             out = TailorOutput.model_validate(data)
-            return out, validate.build_resume(profile, out)
+            resume = validate.build_resume(profile, out)
+            return out, resume, validate.fix_title_regressions(resume)
 
         allowed_figures = f"{hints}\n{facts}"
 
         def refine(value) -> str | None:
-            """Ask once to fix the draft if it uses too many figures, round guesses, thin text, or leaves
-            must-have JD terms out of the summary and bullets. The draft itself is attached: the rewrite prompt
+            """Ask once to fix the draft if it uses too many figures, round guesses, thin text, leaves must-have
+            JD terms out of the summary and bullets, or has job titles that do not read as a career path. The draft itself is attached: the rewrite prompt
             is the original prompt plus this feedback, so without it the model could not keep what was good."""
             feedback = []
             density = validate.metric_density_problems(value[1])
@@ -204,6 +206,12 @@ async def run_tailor(
             coverage = coverage_feedback(value[1], value[0].jd_analysis)
             if coverage:
                 feedback.append(coverage)
+            titles = validate.title_growth_problems(value[1])
+            if titles:
+                feedback.append(
+                    "The job titles do not read as a believable career path: " + " ".join(titles) + " Choose the "
+                    "titles again following the JOB TITLES rule, using the stay lengths given in <employers>."
+                )
             if not feedback:
                 return None
             return (
@@ -217,7 +225,7 @@ async def run_tailor(
             schema=schema, schema_name="tailor_output", parse=parse, context=context, outcome=outcome,
             refine=refine,
         )
-        output, resume = outcome.value  # type: ignore[misc]
+        output, resume, title_notes = outcome.value  # type: ignore[misc]
 
         # --- fit to one page: shrink style -> ask once more with a smaller bullet budget -> trim bullets
         fit = await asyncio.to_thread(try_styles, resume, paper)
@@ -233,10 +241,10 @@ async def run_tailor(
                     refine=None,  # the shorten call is already the extra call; never let it ask a third time
                 )
                 _absorb(outcome, second)
-                short_output, short_resume = second.value  # type: ignore[misc]
+                short_output, short_resume, short_title_notes = second.value  # type: ignore[misc]
                 fit = await asyncio.to_thread(try_styles, short_resume, paper)
                 if fit:
-                    output, resume = short_output, short_resume
+                    output, resume, title_notes = short_output, short_resume, short_title_notes
                     notes.append("The model shortened the bullets to fit one page.")
             except GenerationFailed as exc:
                 _absorb(outcome, exc.outcome)
@@ -256,6 +264,7 @@ async def run_tailor(
                     notes.append("The provider did not report token usage, so the cost shown ($0) is unknown.")
             except KeyError:
                 pass
+        notes += title_notes
         result.resume = resume
         result.analysis = output.jd_analysis
         result.style, result.pages, result.fits = style, pages, fits

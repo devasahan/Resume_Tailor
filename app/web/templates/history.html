@@ -19,7 +19,9 @@ async function init() {
       el('td', { text: r.requested_model }), el('td', { text: r.served_model || '-' }), el('td', { text: r.target_role || '-' }),
       el('td', {}, result, r.cover_letter ? chip('+ cover letter', 'ok') : null, r.error ? el('div', { class: 'small muted', text: r.error.slice(0, 100) }) : null),
       el('td', { text: money(r.cost_usd) }), el('td', { text: String(r.input_tokens + r.output_tokens) }), el('td', { text: seconds(r.latency_ms) }),
-      el('td', {}, r.status === 'ok' && r.task === 'resume' ? el('a', { href: '/run/' + r.id, text: 'Open' }) : null));
+      el('td', {}, r.status === 'ok' && r.task === 'resume' ? el('div', { class: 'row' },
+        el('a', { href: `/api/runs/${r.id}/resume.pdf?download=1`, text: 'Resume PDF' }),
+        r.cover_letter ? el('a', { href: `/api/runs/${r.id}/cover.pdf?download=1`, text: 'Cover letter PDF' }) : null) : null));
   }) : [el('tr', {}, el('td', { colspan: 11, class: 'muted', text: 'No runs yet.' }))]));
 }
 init().catch(err => $('#rows').replaceChildren(el('tr', {}, el('td', { colspan: 11 }, notice('bad', err.message)))));

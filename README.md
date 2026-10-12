@@ -28,7 +28,6 @@ If something does not start, run **`python -m app.doctor`**. It checks Python, t
 2. **Tailor** > pick the base resume > paste a job description (for example `evals/jds/01_data_engineer.txt`) > **Tailor resume**.
 3. **Download resume PDF**, then **Make cover letter** > **Download cover letter PDF**. (**Make cover letter** on its own also tailors the resume first.)
    Files are named company, name, role: `Acme_Corp_Jordan_Rivera_Senior_Data_Engineer.pdf`; the company is read from the job description and left out if it names none.
-   **Review and edit** opens the editor with a live PDF preview and the list of things to confirm.
 
 The demo models write generic template text. They exist to show the flow (fit to one page, flags for invented numbers, retries); they say nothing about what real models write.
 
@@ -44,7 +43,7 @@ Nothing leaves your computer except the calls to the model providers you pick. S
 1. **Profile**: upload one or more base resumes (PDF, DOCX, TXT). Each is read and saved right away and listed with its employers, education and anything to double-check (for example "Phone not found"). The reader is set in Settings > Base-resume reader: Automatic uses the cheapest available model (the resume text is sent to that provider), **Rules only** reads it on your machine for free. If a read is wrong, delete it and upload again. Uploaded resumes stay until you delete them.
 2. **Tailor**: pick a base resume, paste the job description, **Tailor resume**. The resume model comes from Settings.
 3. **Make cover letter** writes the letter for that resume (one more call, added to the same run's cost).
-4. **Download resume PDF** / **Download cover letter PDF**. **Review and edit** lets you change any AI-written text with a live preview, and also exports DOCX.
+4. **Download resume PDF** / **Download cover letter PDF**. There is no manual editing step: the app checks and fixes the draft itself (one page, title path, required skills, thin text, figures) before you see it. History keeps the PDFs of every run.
 
 ## Models
 
@@ -90,11 +89,12 @@ It prints a cost estimate and asks before spending anything, then writes `result
 ## How the guarantees work
 - **Fixed facts cannot change.** The model returns only the editable sections as JSON. Code merges them into your saved profile and asserts the profile is unchanged. The edit endpoint never reads profile fields from the request.
 - **Years of experience are calculated, not guessed.** The app computes them from your locked employment dates (overlapping jobs counted once, rounded down, e.g. "7+ years") and gives that figure to the model, which must use it exactly in the summary.
-- **Metrics are estimates until you confirm them.** By default (Settings > Numbers in bullets) the model adds realistic, specific-looking metrics to about 2 in 5 bullets (at most 2 per employer), using real numbers passed as `hints` (API and CLI only) first. Every figure you did not give is flagged "to verify" in the review panel so you can replace or remove it. Switch the setting to "No figures" to forbid estimates.
+- **Metrics are estimates until you confirm them.** By default (Settings > Numbers in bullets) the model adds realistic, specific-looking metrics to about 2 in 5 bullets (at most 2 per employer), using real numbers passed as `hints` (API and CLI only) first. Switch the setting to "No figures" to forbid estimates.
 - **Related skills are marked.** The skills list starts with the job description's skills, then adds closely related skills that support them; each added one is flagged so you keep only what you really have.
 - **One page without thin text.** Before the model writes anything, the app works out how many full-length bullets fit on one page for your employers (recent and longer roles get more, e.g. 5/3/3/3 for four jobs) and tells the model exactly that number per employer, so the first draft fits and nothing has to be squeezed. If a draft still runs over, the renderer shrinks font and margins (floor 9.5 pt / 0.5 in), then asks the model once more with one bullet fewer for two roles, then drops the last bullets of the roles with the most bullets (keeping two each), and reports what it did.
 - **Strong bullets and summary.** Every bullet must say what was done (specifically), how, and what changed, in 18-28 words; the summary is 3-4 flowing sentences of 60-85 words. If a draft comes back thin (short summary, short bullets, "Responsible for"-style openers), the model is asked once to rewrite it, and the Format notes point out anything still thin.
-- **Every required skill is covered, in the posting's own words.** An ATS matches words, not meaning, so the model must show each must-have skill from the job description word for word ("schema design", not "schema changes") in the summary or a bullet, at the most plausible employer, without you supplying facts. A skill that is only listed under Skills does not count. If the first draft misses any, the same single rewrite pass adds them (the model sees its draft and changes only what is needed). Every sentence that carries a required skill is flagged on the review page ("Added to match the posting: confirm you can speak to it in an interview") so you can keep or delete it.
+- **Every required skill is covered, in the posting's own words.** An ATS matches words, not meaning, so the model must show each must-have skill from the job description word for word ("schema design", not "schema changes") in the summary or a bullet, at the most plausible employer, without you supplying facts. A skill that is only listed under Skills does not count. If the first draft misses any, the same single rewrite pass adds them (the model sees its draft and changes only what is needed).
+- **A career path that shows growth and never steps down.** A title is never lower than the one before it (no "Software Engineer II" followed by plain "Software Engineer"): the app corrects that itself at no cost, and any other title problem is fixed in the one rewrite pass.
 - **A career path that shows growth.** The model is told how long each stay was and how much experience came before it, so a stay of 2+ years shows a step up (for example "Software Engineer II") and the same title never repeats three times in a row; the Format notes warn when it does. Long stays also get more bullets than short ones (a 3-year role before an 8-month one).
 - **ATS-friendly layout.** Single column, real text with an embedded standard-metrics font (Carlito, compatible with Calibri), standard section headings, no tables, columns, images or icons, contact details in the body. No tool can guarantee how every ATS parses a file; this follows the common advice.
 - **Bad model output is handled.** Invalid or incomplete JSON is sent back once with the error; if it still fails the next fallback model is used; failures show up in History instead of crashing.
@@ -114,7 +114,7 @@ It prints a cost estimate and asks before spending anything, then writes `result
 | Anything else that will not start | `python -m app.doctor` says what is wrong and how to fix it |
 | "Port 8000 is already in use" | Another copy is running. Close it, or set another port: Windows `set PORT=8001`, macOS/Linux `PORT=8001 ./start.sh` |
 | Browser did not open | Open <http://127.0.0.1:8000> yourself (or set `OPEN_BROWSER=0` to stop it trying) |
-| PDF preview is blank | Use **Download PDF** (some browsers block inline PDFs) |
+| PDF preview is blank | Use **Download resume PDF** (some browsers block inline PDFs) |
 | A model says "no API key" | Put the key in `.env`, then stop and start the app again |
 | A model fails on the first call | Run **Settings > Run check**: the error names the problem (key, model name, unsupported feature). Fix the entry in `models.yaml` |
 | "hit the token limit" | Raise `max_output_tokens` for that model in `models.yaml` or lower its reasoning effort (reasoning tokens count too) |
@@ -130,7 +130,7 @@ Tests cover the schemas, validation and fixed-field integrity, both provider ada
 
 **What is not verified:** calls to the real provider APIs (no keys were available while building), the exact model strings and prices marked unverified, writing quality for any real model, and running on Windows/macOS (built and tested on Linux; the PDF engine is pure Python and `start.bat` is plain batch, but neither has been run on those systems). Use `app.doctor`, `app.cli check` and the bake-off for those.
 
-Known limits: scanned (image-only) PDFs are not supported (no OCR); names in scripts the bundled font lacks (for example Chinese) are missing from the PDF, but not the DOCX; the rule-based reader is rough on unusual layouts, which is why you always review the profile; the page-fit logic is tuned for Letter/A4 resumes of roughly 3-5 employers.
+Known limits: scanned (image-only) PDFs are not supported (no OCR); names in scripts the bundled font lacks (for example Chinese) are missing from the PDF, but not the DOCX; the rule-based reader is rough on unusual layouts (check the warnings on the Profile list, or choose an AI reader in Settings); the page-fit logic is tuned for Letter/A4 resumes of roughly 3-5 employers.
 
 ```
 models.yaml            model registry (prices, regions, key variables, settings)
@@ -141,7 +141,7 @@ app/pipeline/          tailor (whole run), generate (validate + retry + fallback
 app/prompts/           versioned prompt files
 app/render/            PDF (fpdf2, pure Python, bundled Carlito font) and DOCX (python-docx)
 app/parsing/           PDF/DOCX/TXT -> text -> profile
-app/web/               pages (Profile, Tailor, Review, History, Settings)
+app/web/               pages (Profile, Tailor, History, Settings)
 app/cli.py             models, check, bakeoff
 evals/                 sample base resume, sample profile and job descriptions
 ```

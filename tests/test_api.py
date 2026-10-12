@@ -105,7 +105,7 @@ def test_full_flow_pdf_docx_and_edit(client):
     bad = dict(edit, experience=edit["experience"][:1])
     assert client.put(f"/api/runs/{run_id}/resume", json=bad).status_code == 422
 
-    assert client.get(f"/run/{run_id}").status_code == 200
+    assert client.get(f"/run/{run_id}", follow_redirects=False).headers["location"] == "/tailor"  # page removed
     assert client.get("/api/runs/9999").status_code == 404
 
 

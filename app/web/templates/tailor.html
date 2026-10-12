@@ -26,7 +26,6 @@
     <div class="panel hidden" id="result">
       <div class="metrics" id="chips"></div>
       <div class="row" id="downloads"></div>
-      <p class="small" id="check-note"></p>
       <div class="row hidden" id="toggles" style="margin-bottom:8px">
         <button class="small" id="show-resume" type="button">Resume</button>
         <button class="small" id="show-cover" type="button">Cover letter</button>
@@ -60,21 +59,15 @@ function resumeNote() {
 
 function showResult(run, view = 'resume') {
   const id = run.run_id;
-  const verify = run.flags.filter(f => f.level === 'verify').length;
   $('#empty').classList.add('hidden');
   $('#result').classList.remove('hidden');
   $('#chips').replaceChildren(
     chip(run.pages === 1 ? '1 page' : `${run.pages} pages`, run.fits ? 'ok' : 'bad'),
     chip(`${Math.round(run.coverage.score * 100)}% keywords`, run.coverage.score >= 0.8 ? 'ok' : 'warn'),
-    chip(run.served_model || run.requested_model), chip(money(run.cost_usd + (run.cover_cost_usd || 0))),
-    verify ? chip(`${verify} to verify`, 'warn') : null);
+    chip(run.served_model || run.requested_model), chip(money(run.cost_usd + (run.cover_cost_usd || 0))));
   $('#downloads').replaceChildren(
     el('a', { class: 'btn primary', href: `/api/runs/${id}/resume.pdf?download=1`, text: 'Download resume PDF' }),
     run.cover_letter ? el('a', { class: 'btn primary', href: `/api/runs/${id}/cover.pdf?download=1`, text: 'Download cover letter PDF' }) : null);
-  const checks = verify + run.flags.filter(f => f.level !== 'verify').length;
-  $('#check-note').replaceChildren(
-    checks ? `${checks} thing(s) to check before sending. ` : '',
-    el('a', { href: `/run/${id}`, text: 'Review and edit' }));
   $('#toggles').classList.toggle('hidden', !run.cover_letter);
   preview(run.cover_letter ? view : 'resume');
 }

@@ -250,9 +250,9 @@ def create_app(db: Database | None = None, registry: Registry | None = None, rou
         return page(request, "settings.html", "settings")
 
     @app.get("/run/{run_id}")
-    def run_page(request: Request, run_id: int):
-        load_run(run_id)
-        return page(request, "run.html", "history", run_id=run_id)
+    def run_page(run_id: int):
+        """The Review and edit page was removed: tailoring is final. Old links go to the Tailor page."""
+        return RedirectResponse("/tailor")
 
     # ------------------------------------------------------------------ models + settings
     @app.get("/api/models")

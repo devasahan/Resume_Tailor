@@ -163,3 +163,82 @@ def test_never_more_than_one_extra_call_for_coverage(router, db, registry, profi
     assert result.status == "ok" and len(client.prompts) <= 3
     assert sum(RETRY_MARKER in p for p in client.prompts) == 1
     assert any("agentic development" in w for w in result.ats_warnings)  # still visible to the user
+
+
+# ------------------------------------------------------------------ titles never step down
+def _with_titles(titles):
+    from app.schemas import ExperienceOut
+
+    out = make_output(n=1)
+    out.sections.experience = [
+        ExperienceOut(company_index=i, job_title=title, bullets=["Built things", "Improved things"])
+        for i, title in enumerate(titles)
+    ]
+    return validate.build_resume(five_jobs(len(titles)), out)
+
+
+def test_a_title_that_steps_down_is_raised_to_the_level_before_it():
+    # the reported case: Orbital 'Software Engineer II', then Acquire.com plain 'Software Engineer'
+    resume = _with_titles(["Backend Engineer", "Software Engineer", "Software Engineer II", "Software Engineer",
+                           "Junior Software Engineer"])
+    notes = validate.fix_title_regressions(resume)
+    assert [e.job_title for e in resume.experience] == [
+        "Backend Engineer", "Software Engineer II", "Software Engineer II", "Software Engineer", "Junior Software Engineer"]
+    assert notes == ["Acquire.com: title changed from 'Software Engineer' to 'Software Engineer II' so the career "
+                     "path never steps down."]
+    assert validate.title_growth_problems(resume) == [] or "step down" not in validate.title_growth_problems(resume)[0]
+
+
+def test_the_most_recent_title_is_kept_and_the_older_one_lowered():
+    resume = _with_titles(["Software Engineer", "Software Engineer II", "Associate Software Engineer"])
+    validate.fix_title_regressions(resume)
+    assert [e.job_title for e in resume.experience] == [
+        "Software Engineer", "Software Engineer", "Associate Software Engineer"]  # the target title stays
+
+
+def test_manual_step_down_is_warned_and_good_paths_are_left_alone():
+    good = ["Backend Engineer", "Software Engineer II", "Software Engineer", "Associate Software Engineer",
+            "Junior Software Engineer"]
+    resume = _with_titles(good)
+    assert validate.fix_title_regressions(resume) == [] and [e.job_title for e in resume.experience] == good
+    warned = validate.title_growth_problems(_with_titles(["Data Analyst", "Senior Data Engineer", "Data Engineer"]))
+    assert len(warned) == 1 and "step down" in warned[0]
+
+
+class TitlesOff(LLMClient):
+    """Writes titles that step down (first draft only, or every draft with flat=True: the same title everywhere)."""
+
+    def __init__(self, inner, flat=False):
+        self.inner, self.flat, self.prompts = inner, flat, []
+
+    async def generate_structured(self, **kwargs):
+        self.prompts.append(kwargs["user"])
+        result = await self.inner.generate_structured(**kwargs)
+        experience = result.data["sections"]["experience"]
+        if self.flat and RETRY_MARKER not in kwargs["user"]:
+            for exp in experience:
+                exp["job_title"] = "Data Engineer"
+        elif not self.flat:
+            titles = ["Backend Engineer", "Software Engineer", "Software Engineer II"]  # II -> plain: a step down
+            for exp, title in zip(experience, titles, strict=False):
+                exp["job_title"] = title
+        return result
+
+
+def test_step_down_titles_are_fixed_without_an_extra_call(router, db, registry, jd):
+    # the reported case: Orbital Education 'Software Engineer II', then Acquire.com (8 months) 'Software Engineer'
+    client = TitlesOff(FakeClient(registry.get("demo-concise")))
+    router.overrides["demo-concise"] = client
+    result = asyncio.run(run_tailor(router, db, profile=five_jobs(3), profile_id=None, jd=jd, model_id="demo-concise"))
+    assert result.status == "ok" and result.retries == 0 and len(client.prompts) == 1
+    assert [e.job_title for e in result.resume.experience] == ["Backend Engineer", "Software Engineer II", "Software Engineer II"]
+    assert any("never steps down" in n for n in result.notes)
+
+
+def test_flat_titles_are_rewritten_in_the_one_rewrite_pass(router, db, registry, profile, jd):
+    client = TitlesOff(FakeClient(registry.get("demo-concise")), flat=True)
+    router.overrides["demo-concise"] = client
+    result = asyncio.run(run_tailor(router, db, profile=profile, profile_id=None, jd=jd, model_id="demo-concise"))
+    assert result.status == "ok" and result.retries == 1 and len(client.prompts) == 2
+    assert "do not read as a believable career path" in client.prompts[1]
+    assert len({e.job_title for e in result.resume.experience}) > 1

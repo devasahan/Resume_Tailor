@@ -214,11 +214,68 @@ def thin_text_problems(resume: Resume) -> list[str]:
     return problems
 
 
+_LEVEL_WORDS = {
+    "intern": -1, "trainee": -1, "junior": 0, "jr": 0, "associate": 0, "graduate": 0,
+    "senior": 3, "sr": 3, "staff": 4, "lead": 4, "principal": 5,
+}
+_LEVEL_NUMBERS = {"i": 1, "ii": 2, "iii": 3, "iv": 4, "1": 1, "2": 2, "3": 3, "4": 4}
+
+
+def title_level(title: str) -> tuple[str, int]:
+    """('software engineer', 2) for 'Software Engineer II': the role without its level words, and the level
+    (intern -1, junior/associate 0, plain 1, II 2, III or senior 3, staff or lead 4, principal 5)."""
+    words = re.findall(r"[a-z0-9]+(?:[-/][a-z0-9]+)*", title.lower().replace(".", ""))
+    level, base = None, []
+    for index, word in enumerate(words):
+        if word in _LEVEL_WORDS and level is None:
+            level = _LEVEL_WORDS[word]
+        elif index == len(words) - 1 and index > 0 and word in _LEVEL_NUMBERS:
+            level = max(level or 0, _LEVEL_NUMBERS[word])
+        else:
+            base.append(word)
+    return " ".join(base), (1 if level is None else level)
+
+
+def _steps_down(newer: str, older: str) -> bool:
+    """A newer title below the older one: same role at a lower level, or a different role 2+ levels lower."""
+    (new_base, new_level), (old_base, old_level) = title_level(newer), title_level(older)
+    return new_level < old_level and (new_base == old_base or old_level - new_level >= 2)
+
+
+def fix_title_regressions(resume: Resume) -> list[str]:
+    """Make sure no job title steps down from one employer to the next (for example 'Software Engineer II'
+    then 'Software Engineer'). Changes the resume in place and returns a note per change.
+
+    Same role at a lower level: the newer title is raised to the older one, unless the newer job is the most
+    recent (its title matches the target role) or raising it would step above the job after it; then the older
+    title is lowered instead. Different roles are only reported by title_growth_problems."""
+    exps, notes = resume.experience, []  # most recent first
+    for i in range(1, len(exps)):
+        newer, older = exps[i - 1], exps[i]
+        (new_base, new_level), (old_base, old_level) = title_level(newer.job_title), title_level(older.job_title)
+        if new_base != old_base or new_level >= old_level:
+            continue
+        above = title_level(exps[i - 2].job_title) if i >= 2 else None
+        can_raise = i - 1 > 0 and above is not None and (above[0] != old_base or above[1] >= old_level)
+        changed, before = (newer, newer.job_title) if can_raise else (older, older.job_title)
+        changed.job_title = older.job_title if can_raise else newer.job_title
+        company = resume.profile.companies[changed.company_index].name
+        notes.append(f"{company}: title changed from '{before}' to '{changed.job_title}' so the career path never "
+                     "steps down.")
+    return notes
+
+
 def title_growth_problems(resume: Resume) -> list[str]:
-    """At most one warning about a flat career path: the same title everywhere, the same title at 3+ employers
-    in a row, or else each stay of 2+ years with the same title as the job before it."""
+    """At most one warning about the career path: a title that steps down from one job to the next, the same
+    title everywhere, the same title at 3+ employers in a row, or a stay of 2+ years with the same title as the
+    job before it."""
     exps = resume.experience  # most recent first
     titles = [e.job_title.strip().lower() for e in exps]
+    for i in range(len(exps) - 1):
+        if _steps_down(exps[i].job_title, exps[i + 1].job_title):
+            company = resume.profile.companies[exps[i].company_index].name
+            return [(f"{company}: '{exps[i].job_title}' comes after '{exps[i + 1].job_title}', which reads as a step "
+                     "down. Use the same level or higher than the job before it.")]
     if len(titles) > 1 and len(set(titles)) == 1:
         return ["The same job title is used at every employer, so there is no visible career progression."]
     for i in range(2, len(titles)):
