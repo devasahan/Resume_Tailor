@@ -98,9 +98,37 @@ def test_lockout_after_five_failures_and_restart_clears_the_admin(tmp_path):
     auth.bootstrap_admin(db)
     for _ in range(auth.MAX_FAILURES):
         assert auth.login(db, ADMIN_EMAIL, "wrong password!")[1] == auth.BAD_LOGIN
-    assert auth.login(db, ADMIN_EMAIL, ADMIN_PASSWORD) == (None, auth.LOCKED)  # even the right password waits
+    # even the right password waits, and the answer is the one an unknown email gets
+    assert auth.login(db, ADMIN_EMAIL, ADMIN_PASSWORD) == (None, auth.BAD_LOGIN)
+    assert auth.login(db, "nobody@example.com", ADMIN_PASSWORD) == (None, auth.BAD_LOGIN)
     auth.bootstrap_admin(db)  # restarting the app (PythonAnywhere: Reload) unlocks the admin
     assert auth.login(db, ADMIN_EMAIL, ADMIN_PASSWORD)[0] is not None
+
+
+def test_a_pause_that_ran_out_starts_the_count_again(tmp_path):
+    """One wrong guess after a pause must not pause the account again: that would keep someone out forever."""
+    db = Database(tmp_path / "a.db")
+    user_id = db.create_user("u@example.com", auth.hash_password("right password"), status="active")
+    for _ in range(auth.MAX_FAILURES):
+        auth.login(db, "u@example.com", "wrong password!")
+    assert not auth.claim_attempt(db, user_id)  # paused
+    with sqlite3.connect(db.path) as raw:
+        raw.execute("UPDATE users SET locked_until = '2020-01-01T00:00:00Z'")  # the pause ran out
+    assert auth.login(db, "u@example.com", "wrong password!")[1] == auth.BAD_LOGIN
+    row = db.get_user(user_id)
+    assert row["failed_logins"] == 1 and row["locked_until"] == ""
+    assert auth.login(db, "u@example.com", "right password")[0] is not None
+
+
+def test_only_five_tries_per_pause_even_all_at_once(tmp_path):
+    """The try is counted before the password is checked, in one write, so a burst gets no extra guesses."""
+    from concurrent.futures import ThreadPoolExecutor
+
+    db = Database(tmp_path / "a.db")
+    user_id = db.create_user("u@example.com", auth.hash_password("right password"), status="active")
+    with ThreadPoolExecutor(max_workers=16) as pool:
+        allowed = list(pool.map(lambda _: auth.claim_attempt(db, user_id), range(40)))
+    assert sum(allowed) == auth.MAX_FAILURES
 
 
 def test_pending_and_disabled_are_named_only_after_the_right_password(tmp_path):

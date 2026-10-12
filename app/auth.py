@@ -10,6 +10,7 @@ import hashlib
 import hmac
 import re
 import secrets
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 
@@ -24,8 +25,11 @@ MIN_PASSWORD, MAX_PASSWORD = 10, 256
 MAX_FAILURES, LOCK_MINUTES = 5, 15
 MAX_PENDING = 50  # sign-ups waiting for approval; more are refused until the admin catches up
 
-BAD_LOGIN = "Email or password is incorrect."
-LOCKED = f"Too many failed attempts. Try again in {LOCK_MINUTES} minutes."
+# One answer for an unknown email, a wrong password and a paused account, so a stranger cannot tell which
+# emails have accounts. It still tells a real user why logging in may not work for a while.
+BAD_LOGIN = (f"Email or password is incorrect. After {MAX_FAILURES} wrong tries in a row, that email cannot log in "
+             f"for {LOCK_MINUTES} minutes.")
+LOCKED = f"Too many wrong tries. Try again in {LOCK_MINUTES} minutes."
 PENDING = "Your account is waiting for the admin's approval."
 DISABLED = "This account is disabled. Contact the admin."
 
@@ -61,10 +65,19 @@ def _b64(raw: bytes) -> str:
     return base64.b64encode(raw).decode("ascii")
 
 
+# Each scrypt call needs 16 MiB. Running them all on two threads caps that memory (and the CPU) however many
+# login or sign-up requests arrive at once; the memory stays with these two threads.
+_HASHER = ThreadPoolExecutor(max_workers=2, thread_name_prefix="scrypt")
+
+
+def _scrypt(password: str, salt: bytes, n: int, r: int, p: int, dklen: int) -> bytes:
+    return _HASHER.submit(hashlib.scrypt, password.encode("utf-8"), salt=salt, n=n, r=r, p=p, maxmem=_MAXMEM,
+                          dklen=dklen).result()
+
+
 def hash_password(password: str) -> str:
     salt = secrets.token_bytes(16)
-    digest = hashlib.scrypt(password.encode("utf-8"), salt=salt, n=SCRYPT_N, r=SCRYPT_R, p=SCRYPT_P,
-                            maxmem=_MAXMEM, dklen=32)
+    digest = _scrypt(password, salt, SCRYPT_N, SCRYPT_R, SCRYPT_P, 32)
     return f"scrypt${SCRYPT_N}${SCRYPT_R}${SCRYPT_P}${_b64(salt)}${_b64(digest)}"
 
 
@@ -76,8 +89,7 @@ def verify_password(password: str, encoded: str) -> bool:
         if scheme != "scrypt" or not (1 < n <= 2**20 and 0 < r <= 32 and 0 < p <= 16):
             return False
         expected = base64.b64decode(digest, validate=True)
-        actual = hashlib.scrypt(password.encode("utf-8"), salt=base64.b64decode(salt, validate=True),
-                                n=n, r=r, p=p, maxmem=_MAXMEM, dklen=len(expected))
+        actual = _scrypt(password, base64.b64decode(salt, validate=True), n, r, p, len(expected))
     except (ValueError, TypeError):
         return False
     return hmac.compare_digest(actual, expected)
@@ -154,25 +166,32 @@ def cookie_options(headers, scheme: str) -> dict:
 
 
 # ------------------------------------------------------------------ login and the admin account
+def claim_attempt(db, user_id: int) -> bool:
+    """Count one password try before checking it. False while the account is paused. The count and the pause
+    are one database write, so tries sent all at once (or to several web workers) still get only
+    MAX_FAILURES checks per pause, and a pause that has run out starts the count again."""
+    now = now_utc()
+    return db.claim_login_attempt(user_id, MAX_FAILURES, utc(now), utc(now + timedelta(minutes=LOCK_MINUTES)))
+
+
 def login(db, email: str, password: str) -> tuple[User | None, str | None]:
-    """(user, None) on success, else (None, the message to show). Pending and disabled accounts are only
-    named after the right password, so the message never tells a stranger which emails have accounts."""
+    """(user, None) on success, else (None, the message to show). Unknown emails, wrong passwords and paused
+    accounts get the same answer in about the same time. Pending and disabled accounts are only named after
+    the right password."""
     address = normalize_email(email)
     row = db.user_by_email(address) if address else None
-    if row is None:
+    if row is None or not claim_attempt(db, row["id"]):
         _waste_time(password)
         return None, BAD_LOGIN
-    now = now_utc()
-    if row["locked_until"] and row["locked_until"] > utc(now):
-        return None, LOCKED
     if not verify_password(password, row["password_hash"]):
-        db.record_login_failure(row["id"], MAX_FAILURES, utc(now + timedelta(minutes=LOCK_MINUTES)))
         return None, BAD_LOGIN
     if row["status"] == "pending":
+        db.clear_login_failures(row["id"])
         return None, PENDING
     if row["status"] != "active":
+        db.clear_login_failures(row["id"])
         return None, DISABLED
-    db.record_login_success(row["id"], utc(now))
+    db.record_login_success(row["id"], utc(now_utc()))
     return User.from_row(row), None
 
 

@@ -4,7 +4,8 @@ import pytest
 from fastapi.testclient import TestClient
 
 from app import auth
-from app.main import public_error, safe_next
+from app.llm.base import InvalidOutputError, LLMClient
+from app.main import BUSY_MESSAGE, public_error, safe_next
 from app.schemas import TailorResult
 
 from .conftest import ADMIN_EMAIL, USER_PASSWORD, add_user, log_in
@@ -105,7 +106,7 @@ def test_login_messages_and_lockout(client):
     for _ in range(auth.MAX_FAILURES - 1):
         stranger.post("/api/login", json={"email": "user@example.com", "password": "wrong password!"})
     locked = stranger.post("/api/login", json={"email": "user@example.com", "password": USER_PASSWORD})
-    assert locked.status_code == 429
+    assert locked.status_code == 401 and locked.json() == unknown.json()  # a pause looks like any wrong password
     assert client.post(f"/api/users/{user_id_of(client, 'user@example.com')}/enable").status_code == 409  # still active
     assert any(u["locked_until"] for u in client.get("/api/users").json()["users"])
 
@@ -186,13 +187,16 @@ def test_each_account_sees_only_its_own_resumes_and_runs(client, user_client):
     assert tailor(user_client, profile_id=theirs["id"]).status_code == 404
     assert user_client.delete(f"/api/resumes/{theirs['id']}").status_code == 404
     admin_run = tailor(client, profile_id=theirs["id"]).json()["run_id"]
-    for path in (f"/api/runs/{admin_run}", f"/api/runs/{admin_run}/resume.pdf", f"/api/runs/{admin_run}/resume.docx"):
+    for path in (f"/api/runs/{admin_run}", f"/api/runs/{admin_run}/resume.pdf", f"/api/runs/{admin_run}/cover.pdf"):
         assert user_client.get(path).status_code == 404, path
     assert user_client.post(f"/api/runs/{admin_run}/cover-letter", json={}).status_code == 404
     user_run = tailor(user_client).json()["run_id"]  # no profile_id: the user's own newest resume
     assert client.get(f"/api/runs/{user_run}/resume.pdf").status_code == 200  # the admin can view it (History)
     assert client.post(f"/api/runs/{user_run}/cover-letter", json={}).status_code == 404  # but not change it
     assert user_client.post(f"/api/runs/{user_run}/cover-letter", json={}).status_code == 200
+    for file in ("resume.docx", "cover.docx"):  # users download PDFs only; Word files are the admin's
+        assert user_client.get(f"/api/runs/{user_run}/{file}").status_code == 403, file
+        assert client.get(f"/api/runs/{user_run}/{file}").status_code == 200, file
     another = log_in(browser(client), add_user(client, "other@example.com") and "other@example.com", USER_PASSWORD)
     assert another.get(f"/api/runs/{user_run}/resume.pdf").status_code == 404
     assert another.get("/api/resumes").json()["resumes"] == []
@@ -282,3 +286,50 @@ def test_pages_render_for_each_role(client, user_client):
         page = user_client.get(path)
         assert page.status_code == 200 and "user@example.com" in page.text, path
     assert client.get("/login", follow_redirects=False).status_code == 303  # already logged in
+
+
+class BrokenModel(LLMClient):
+    """A model that answers with nothing usable, naming itself in the error the way real adapters do."""
+
+    async def generate_structured(self, **kwargs):
+        raise InvalidOutputError("Demo Concise returned an empty answer")
+
+
+def test_a_failing_model_is_never_named_to_users(client, user_client):
+    save_profile(user_client)
+    ok_run = tailor(user_client).json()["run_id"]  # made before the model breaks
+    client.app.state.router.overrides["demo-concise"] = BrokenModel()
+    run = tailor(user_client).json()
+    assert run["status"] == "error" and run["error"] == BUSY_MESSAGE
+    assert user_client.get(f"/api/runs/{run['run_id']}").json()["error"] == BUSY_MESSAGE
+    letter = user_client.post(f"/api/runs/{ok_run}/cover-letter", json={})
+    assert letter.status_code == 502 and letter.json()["detail"] == BUSY_MESSAGE
+    assert "demo-concise" in client.get(f"/api/runs/{run['run_id']}").json()["error"]  # the admin sees which one
+    assert public_error("Gemini 3.8 Flash returned text that is not valid JSON") == BUSY_MESSAGE
+
+
+def test_a_later_sign_up_replaces_a_pending_one_with_the_same_email(client):
+    sign_up(client, email="real@example.com", password="someone else's guess")  # signed up first by a stranger
+    sign_up(client, email="real@example.com", password=NEW_PASSWORD)  # the real person
+    assert client.app.state.db.count_users("pending") == 1
+    client.post(f"/api/users/{user_id_of(client, 'real@example.com')}/approve")
+    person = browser(client)
+    assert person.post("/api/login", json={"email": "real@example.com", "password": "someone else's guess"}).status_code == 401
+    assert person.post("/api/login", json={"email": "real@example.com", "password": NEW_PASSWORD}).status_code == 200
+    sign_up(client, email="real@example.com", password="third try password")  # an approved account never changes
+    assert browser(client).post("/api/login", json={"email": "real@example.com", "password": NEW_PASSWORD}).status_code == 200
+
+
+def test_change_password_has_the_login_limit(client, user_client):
+    for _ in range(auth.MAX_FAILURES):
+        user_client.post("/api/account/password", json={"current": "a wrong guess!", "new": NEW_PASSWORD})
+    paused = user_client.post("/api/account/password", json={"current": USER_PASSWORD, "new": NEW_PASSWORD})
+    assert paused.status_code == 429
+    assert browser(client).post("/api/login", json={"email": "user@example.com", "password": NEW_PASSWORD}).status_code == 401
+
+
+def test_upload_errors_keep_the_file_name_even_with_technical_words(user_client):
+    response = user_client.post("/api/resumes", files={"file": ("Regional_Provider_Token_Resume.txt", b"Jordan Rivera\nAustin, TX | jordan@example.com\n\nSKILLS\nPython, SQL, Airflow and dbt for data teams\n")})
+    assert response.status_code == 422
+    detail = response.json()["detail"]
+    assert detail.startswith("Could not find") and "Regional_Provider_Token_Resume.txt" in detail and "Settings" not in detail

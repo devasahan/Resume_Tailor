@@ -381,13 +381,32 @@ class Database:
             conn.execute("DELETE FROM runs WHERE user_id = ?", (user_id,))
         return True
 
-    def record_login_failure(self, user_id: int, max_failures: int, lock_until: str) -> None:
+    def claim_login_attempt(self, user_id: int, max_failures: int, now: str, lock_until: str) -> bool:
+        """Count one password try in a single write; False while the account is paused. SET reads the row as it
+        was, so a pause that has run out (locked_until set but past) starts the count again at 1."""
         with self._conn() as conn:
-            conn.execute(
-                "UPDATE users SET failed_logins = failed_logins + 1,"
-                " locked_until = CASE WHEN failed_logins + 1 >= ? THEN ? ELSE locked_until END WHERE id = ?",
-                (max_failures, lock_until, user_id),
-            )
+            return conn.execute(
+                "UPDATE users SET"
+                " failed_logins = CASE WHEN locked_until <> '' THEN 1 ELSE failed_logins + 1 END,"
+                " locked_until = CASE WHEN (CASE WHEN locked_until <> '' THEN 1 ELSE failed_logins + 1 END) >= ?"
+                " THEN ? ELSE '' END"
+                " WHERE id = ? AND (locked_until = '' OR locked_until <= ?)",
+                (max_failures, lock_until, user_id, now),
+            ).rowcount > 0
+
+    def clear_login_failures(self, user_id: int) -> None:
+        with self._conn() as conn:
+            conn.execute("UPDATE users SET failed_logins = 0, locked_until = '' WHERE id = ?", (user_id,))
+
+    def renew_pending_password(self, email: str, password_hash: str) -> bool:
+        """A second sign-up for an address still waiting for approval replaces the first one's password, so
+        someone who signed up with another person's email first cannot keep that person out."""
+        with self._conn() as conn:
+            return conn.execute(
+                "UPDATE users SET password_hash = ?, failed_logins = 0, locked_until = ''"
+                " WHERE email = ? AND status = 'pending' AND role = 'user'",
+                (password_hash, email),
+            ).rowcount > 0
 
     def record_login_success(self, user_id: int, when: str) -> None:
         with self._conn() as conn:

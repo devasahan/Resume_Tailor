@@ -88,15 +88,29 @@ class PasswordChange(BaseModel):
 PUBLIC_PATHS = {"/login", "/signup", "/api/login", "/api/signup", "/api/logout"}
 LIMIT_MESSAGE = "Today's limit for this site has been reached. Try again tomorrow."
 BUSY_MESSAGE = "The service is busy or unavailable right now. Try again in a few minutes."
-_TECHNICAL = ("api key", "settings", ".env", "model", "provider", "region", "http ", "quota", "rate limit", "token")
+_TECHNICAL = (
+    "api key", "settings", ".env", "model", "provider", "region", "http ", "quota", "rate limit", "token",
+    "json", "invalid structure", "empty answer", "response shape", "declined", "unexpected error", "network",
+)
 
 
-def public_error(text: str) -> str:
-    """What a user (not the admin) is told: no model names, key hints or Settings advice."""
+class PlainError(HTTPException):
+    """A message the app wrote itself and that is fine for every user as it is, even when it contains their own
+    text (a file name): the error handler never rewrites it."""
+
+
+def failure_message(text: str) -> str:
+    """A failed model call as a user sees it: the daily limit, or a plain 'try again'. Never the model, the
+    provider, the fallback chain or what the model answered."""
+    return LIMIT_MESSAGE if "cost cap" in text.lower() else BUSY_MESSAGE
+
+
+def public_error(text: str, names: frozenset[str] = frozenset()) -> str:
+    """What a user (not the admin) is told for a refused request: no model names, key hints or Settings advice."""
     low = text.lower()
     if "cost cap" in low:
         return LIMIT_MESSAGE
-    if any(word in low for word in _TECHNICAL):
+    if any(word in low for word in _TECHNICAL) or any(name in low for name in names):
         return BUSY_MESSAGE
     return text
 
@@ -104,7 +118,7 @@ def public_error(text: str) -> str:
 def public_run(result: TailorResult) -> dict:
     """A run as a user sees it: only what the Tailor page needs (no models, costs, notes or attempts)."""
     return {
-        "run_id": result.run_id, "status": result.status, "error": public_error(result.error) if result.error else "",
+        "run_id": result.run_id, "status": result.status, "error": failure_message(result.error) if result.error else "",
         "pages": result.pages, "fits": result.fits, "coverage": result.coverage.model_dump(),
         "cover_letter": result.cover_letter.model_dump() if result.cover_letter else None,
         "created_at": result.created_at,
@@ -266,6 +280,7 @@ def create_app(db: Database | None = None, registry: Registry | None = None, rou
     db.purge(db.get_settings()["retention_days"])
     auth.bootstrap_admin(db)
 
+    model_names = frozenset(n.lower() for spec in registry.all() for n in (spec.id, spec.label, spec.model) if n)
     app = FastAPI(title="Resume Tailor", docs_url=None, redoc_url=None, openapi_url=None)
     app.state.db, app.state.registry, app.state.router = db, registry, router
 
@@ -305,8 +320,8 @@ def create_app(db: Database | None = None, registry: Registry | None = None, rou
         """Users get plain messages; the admin keeps the technical detail (model, key hint, Settings advice)."""
         user = getattr(request.state, "user", None)
         detail = exc.detail
-        if isinstance(detail, str) and not (user and user.is_admin):
-            detail = public_error(detail)
+        if isinstance(detail, str) and not isinstance(exc, PlainError) and not (user and user.is_admin):
+            detail = failure_message(detail) if exc.status_code >= 500 else public_error(detail, model_names)
         return JSONResponse({"detail": detail}, status_code=exc.status_code, headers=getattr(exc, "headers", None))
 
     app.mount("/static", StaticFiles(directory=WEB / "static"), name="static")
@@ -404,7 +419,9 @@ def create_app(db: Database | None = None, registry: Registry | None = None, rou
     # ------------------------------------------------------------------ accounts
     @app.post("/api/signup")
     def api_signup(body: SignupRequest):
-        """Always the same answer for a new or an existing email, so nobody can test which emails have accounts."""
+        """The same answer for a new or an existing email. Emails are not verified, so while an account still
+        waits for approval the newest sign-up's password wins: signing up first with someone else's address
+        cannot keep them out (the admin approves the person, not the first request)."""
         email = auth.normalize_email(body.email)
         if not email:
             raise HTTPException(422, "Enter a valid email address.")
@@ -416,8 +433,9 @@ def create_app(db: Database | None = None, registry: Registry | None = None, rou
         if db.count_users("pending") >= auth.MAX_PENDING:
             raise HTTPException(429, "Too many sign-ups are waiting for approval. Try again later.")
         hashed = auth.hash_password(body.password)
-        if email != auth.normalize_email(config.admin_credentials()[0]):  # the admin's address is never a sign-up
-            db.create_user(email, hashed, role="user", status="pending")
+        is_admin_address = email == auth.normalize_email(config.admin_credentials()[0])  # never a sign-up
+        if not is_admin_address and db.create_user(email, hashed, role="user", status="pending") is None:
+            db.renew_pending_password(email, hashed)
         return {"ok": True, "message": "Request received. You can log in as soon as the admin approves your account."}
 
     @app.post("/api/login")
@@ -447,6 +465,8 @@ def create_app(db: Database | None = None, registry: Registry | None = None, rou
     def api_change_password(body: PasswordChange, request: Request, user: auth.User = Depends(current_user)):
         if user.is_admin:
             raise HTTPException(409, "The admin password comes from the .env file: change ADMIN_PASSWORD there and restart.")
+        if not auth.claim_attempt(db, user.id):  # the same limit as logging in, so a borrowed session cannot guess
+            raise HTTPException(429, auth.LOCKED)
         row = db.get_user(user.id)
         if row is None or not auth.verify_password(body.current, row["password_hash"]):
             raise HTTPException(403, "The current password is not correct.")
@@ -601,7 +621,7 @@ def create_app(db: Database | None = None, registry: Registry | None = None, rou
         if missing:
             tip = (" Try a PDF or DOCX with selectable text, or a different Base-resume reader in Settings."
                    if method == "rules" and user.is_admin else " Try a PDF or DOCX with selectable text.")
-            raise HTTPException(422, f"Could not find {missing} in {filename}, so it was not saved.{tip}")
+            raise PlainError(422, f"Could not find {missing} in {filename}, so it was not saved.{tip}")
         profile_id = db.save_profile(profile, user_id=user.id, filename=filename, method=method, notes=notes)
         db.purge(db.get_settings()["retention_days"])
         entry = db.profile_entry(profile_id, user_id=user.id)
@@ -722,7 +742,7 @@ def create_app(db: Database | None = None, registry: Registry | None = None, rou
             raise HTTPException(422, str(exc)) from exc
         fresh, error = await write_cover_letter(router, db, run_id, jd=jd, model_id=model_id, user_id=user.id)
         if error:
-            raise HTTPException(502, error)
+            raise HTTPException(502, error if user.is_admin else failure_message(error))
         return viewed(fresh, user)
 
     # ------------------------------------------------------------------ files (a Download click is logged)
@@ -738,7 +758,7 @@ def create_app(db: Database | None = None, registry: Registry | None = None, rou
         return file_response(pdf, "application/pdf", "attachment" if download else "inline", name)
 
     @app.get("/api/runs/{run_id}/resume.docx")
-    def api_resume_docx(run_id: int, user: auth.User = Depends(current_user)):
+    def api_resume_docx(run_id: int, user: auth.User = Depends(admin_user)):  # users download PDFs only
         result = load_run(run_id, user)
         if result.resume is None:
             raise HTTPException(404, "No resume in this run.")
@@ -758,7 +778,7 @@ def create_app(db: Database | None = None, registry: Registry | None = None, rou
         return file_response(pdf, "application/pdf", "attachment" if download else "inline", name)
 
     @app.get("/api/runs/{run_id}/cover.docx")
-    def api_cover_docx(run_id: int, user: auth.User = Depends(current_user)):
+    def api_cover_docx(run_id: int, user: auth.User = Depends(admin_user)):  # users download PDFs only
         result = load_run(run_id, user)
         if result.resume is None or result.cover_letter is None:
             raise HTTPException(404, "No cover letter in this run.")
