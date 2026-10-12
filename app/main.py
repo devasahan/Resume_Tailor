@@ -6,6 +6,7 @@ sign-ups) and Settings. New sign-ups wait until the admin approves them.
 """
 from __future__ import annotations
 
+import logging
 import re
 import unicodedata
 import time
@@ -193,6 +194,32 @@ def forwarded_proto(request: Request) -> str:
     return request.headers.get("x-forwarded-proto", "").split(",")[0].strip().lower()
 
 
+HTTPS_PROBE = "rt_https"  # a Secure cookie: browsers send it only over https://
+log = logging.getLogger("resume_tailor")
+_proxy_logged = False
+
+
+def needs_https_redirect(request: Request) -> bool:
+    """FORCE_HTTPS=1: send a plain-http visitor to https://. Some proxies (PythonAnywhere's) report "http" even
+    when the browser used https; a Secure cookie in the request proves it was https, because browsers never send
+    one over http. So a visitor is redirected at most once, never in a loop."""
+    if not config.force_https() or forwarded_proto(request) != "http":
+        return False
+    return not (request.cookies.get(HTTPS_PROBE) or request.cookies.get(auth.COOKIE))
+
+
+def log_proxy_headers(request: Request) -> None:
+    """Once per process, what the proxy says about the scheme: helps when HTTPS behaves oddly on a host."""
+    global _proxy_logged
+    if _proxy_logged:
+        return
+    _proxy_logged = True
+    names = ("x-forwarded-proto", "x-forwarded-host", "x-forwarded-ssl", "x-forwarded-port", "x-scheme", "forwarded")
+    seen = {n: request.headers.get(n) for n in names if request.headers.get(n)}
+    log.warning("FORCE_HTTPS redirect: scheme=%s host=%s proxy headers=%s", request.url.scheme,
+                request.headers.get("host", ""), seen)
+
+
 def current_user(request: Request) -> auth.User:
     user = getattr(request.state, "user", None)
     if user is None:
@@ -294,10 +321,16 @@ def create_app(db: Database | None = None, registry: Registry | None = None, rou
 
     @app.middleware("http")
     async def security_headers(request: Request, call_next):
-        if config.force_https() and forwarded_proto(request) == "http":  # FORCE_HTTPS=1 on a server
+        if needs_https_redirect(request):  # FORCE_HTTPS=1 on a server
+            log_proxy_headers(request)
             if request.method not in ("GET", "HEAD"):
                 return JSONResponse({"detail": "Use the https:// address of this site."}, status_code=403)
-            return RedirectResponse(str(request.url.replace(scheme="https")), status_code=308)
+            redirect = RedirectResponse(str(request.url.replace(scheme="https")), status_code=307)
+            # If the browser was on https already (the proxy's "http" was wrong), it now sends this cookie back
+            # and gets the page; over real http the cookie is never sent, so it is redirected as it should be.
+            redirect.set_cookie(HTTPS_PROBE, "1", max_age=365 * 86400, path="/", secure=True, httponly=True,
+                                samesite="lax")
+            return redirect
         if request.method in UNSAFE_METHODS and cross_site(request):
             return JSONResponse({"detail": "Cross-site request refused."}, status_code=403)
         path = request.url.path

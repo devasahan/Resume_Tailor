@@ -36,13 +36,32 @@ def test_the_site_name_from_the_proxy_counts_as_same_origin(client):
 
 def test_force_https_sends_plain_http_visitors_to_https(client, monkeypatch):
     monkeypatch.setenv("FORCE_HTTPS", "1")
-    page = client.get("/login?next=/tailor", headers={"X-Forwarded-Proto": "http"}, follow_redirects=False)
-    assert page.status_code == 308 and page.headers["location"] == "https://testserver/login?next=/tailor"
-    assert client.post("/api/login", json=LOGIN, headers={"X-Forwarded-Proto": "http"}).status_code == 403
-    assert client.get("/api/me", headers={"X-Forwarded-Proto": "https"}).status_code == 200
-    assert client.get("/api/me").status_code == 200  # no proxy header (local use): nothing changes
+    stranger = TestClient(client.app)
+    http = {"X-Forwarded-Proto": "http"}
+    page = stranger.get("/login?next=/tailor", headers=http, follow_redirects=False)
+    assert page.status_code == 307 and page.headers["location"] == "https://testserver/login?next=/tailor"
+    probe = page.headers["set-cookie"].lower()
+    assert probe.startswith("rt_https=1") and "secure" in probe
+    assert stranger.post("/api/login", json=LOGIN, headers=http).status_code == 403
+    assert stranger.get("/login", headers={"X-Forwarded-Proto": "https"}).status_code == 200
+    assert stranger.get("/login").status_code == 200  # no proxy header (local use): nothing changes
     monkeypatch.delenv("FORCE_HTTPS")
-    assert client.get("/api/me", headers={"X-Forwarded-Proto": "http"}).status_code == 200
+    assert stranger.get("/login", headers=http).status_code == 200
+
+
+def test_force_https_never_loops_when_the_proxy_always_says_http(client, monkeypatch):
+    """PythonAnywhere's proxy can report http for https visits: the Secure probe cookie (which a browser sends
+    only over https) ends the redirect after one round, and a logged-in browser is never redirected at all."""
+    monkeypatch.setenv("FORCE_HTTPS", "1")
+    stranger = TestClient(client.app)
+    http = {"X-Forwarded-Proto": "http"}
+    assert stranger.get("/login", headers=http, follow_redirects=False).status_code == 307
+    back = stranger.get("/login", headers={**http, "Cookie": "rt_https=1"}, follow_redirects=False)
+    assert back.status_code == 200 and back.headers["strict-transport-security"] == "max-age=31536000"
+    login = stranger.post("/api/login", json=LOGIN, headers={**http, "Cookie": "rt_https=1"})
+    assert login.status_code == 200
+    token = login.cookies.get("rt_session")
+    assert client.get("/api/me", headers={**http, "Cookie": f"rt_session={token}"}).status_code == 200
 
 
 class Quiet(WSGIRequestHandler):
