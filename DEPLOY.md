@@ -116,7 +116,7 @@ Changing `.env` also needs this restart. A new `ADMIN_PASSWORD` replaces the old
 | "Cross-site request refused" | Tell Claude: the hosting proxy changes a header the app checks |
 | Check models says "network error (ConnectError)" | The website does not know PythonAnywhere's proxy. In a PythonAnywhere Bash console run `echo $https_proxy`, add `HTTPS_PROXY=` and `HTTP_PROXY=` lines with that address (usually `http://proxy.server:3128`) to `.env`, and restart the website |
 | Gemini check fails with "403" or "Tunnel connection failed" | The free account cannot reach that address; a paid account has full internet access |
-| Gemini says "HTTP 503" and "high demand" | Google's servers are busy for a while; free keys get this more often. Wait a few minutes and try again, or turn on billing in Google AI Studio |
+| Gemini says "HTTP 503" and "high demand" | Google's servers for that model are overloaded, for paid keys too. The app already waits about a minute and tries again before it shows this; wait a few minutes and try again |
 | "Gateway Time-out" or "finished is not defined" while tailoring | Update to the newest version (see **Updating** above), then press **Ctrl+F5** on the Tailor page once. Slow work then goes on in the background and the page shows "Still tailoring..." |
 | Gemini says "quota" or "429" | The Gemini free tier allows few requests per minute; wait a minute, or turn on billing in Google AI Studio |
 | The site stopped after a month | Free accounts must be renewed: on the Web tab (B) press **Run until 1 month from today**; for A, log in to PythonAnywhere and follow its renewal notice |

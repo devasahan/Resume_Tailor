@@ -37,7 +37,11 @@ def is_key_error(resp: httpx.Response) -> bool:
     if resp.status_code in (401, 403):
         return True
     return resp.status_code == 400 and any(marker in resp.text.lower() for marker in KEY_ERROR_MARKERS)
-RETRY_DELAYS = (1.5, 4.0)
+RETRY_DELAYS = (1.5, 4.0)  # network errors, rate limits (429) and other short hiccups
+# "This model is currently experiencing high demand" (503) and other server-side failures usually pass within a
+# minute, for paid keys too. Tailoring runs as a background job, so the page keeps waiting ("Still tailoring...").
+BUSY = {500, 502, 503, 504}
+BUSY_RETRY_DELAYS = (3.0, 8.0, 15.0, 30.0)
 
 
 class OpenAICompatClient(LLMClient):
@@ -101,22 +105,24 @@ class OpenAICompatClient(LLMClient):
     async def _post(self, http: httpx.AsyncClient, body: dict) -> httpx.Response:
         url = f"{self.spec.base_url.rstrip('/')}/chat/completions"
         headers = {"Authorization": f"Bearer {self.spec.api_key()}", "Content-Type": "application/json"}
-        last: Exception | None = None
-        for attempt in range(len(RETRY_DELAYS) + 1):
+        attempt = 0
+        while True:
             try:
                 resp = await http.post(url, json=body, headers=headers)
             except (httpx.TimeoutException, httpx.TransportError) as exc:
                 last = ProviderError(f"{self.spec.label}: network error ({type(exc).__name__})")
+                delays = RETRY_DELAYS
             else:
                 if resp.status_code not in TRANSIENT:
                     return resp
                 last = ProviderError(
                     f"{self.spec.label}: HTTP {resp.status_code}: {resp.text[:200]}", resp.status_code
                 )
-            if attempt < len(RETRY_DELAYS):
-                await self._sleep(RETRY_DELAYS[attempt])
-        assert last is not None
-        raise last
+                delays = BUSY_RETRY_DELAYS if resp.status_code in BUSY else RETRY_DELAYS
+            if attempt >= len(delays):
+                raise last
+            await self._sleep(delays[attempt])
+            attempt += 1
 
     async def generate_structured(
         self,

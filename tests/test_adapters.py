@@ -138,7 +138,27 @@ def test_persistent_server_error_raises_after_retries():
     client = client_with(lambda r: httpx.Response(503, text="down"), json_mode="json_object")
     with pytest.raises(ProviderError):
         call(client)
-    assert len(client.sleeps) == 2
+    assert client.sleeps == [3.0, 8.0, 15.0, 30.0]  # "high demand": waits about a minute in all
+
+
+def test_a_busy_model_is_waited_for_and_a_network_error_is_not():
+    """Gemini's 503 "high demand" usually passes within a minute; a network error (no proxy) is reported soon."""
+    attempts = []
+
+    def busy_then_ok(request):
+        attempts.append(1)
+        return httpx.Response(503, text="high demand") if len(attempts) <= 2 else httpx.Response(200, json=ok_payload())
+
+    client = client_with(busy_then_ok, json_mode="json_object")
+    assert call(client).data == {"a": 1} and client.sleeps == [3.0, 8.0]
+
+    def unreachable(request):
+        raise httpx.ConnectError("no route", request=request)
+
+    client = client_with(unreachable, json_mode="json_object")
+    with pytest.raises(ProviderError, match="network error"):
+        call(client)
+    assert client.sleeps == [1.5, 4.0]
 
 
 # ------------------------------------------------------------------ Anthropic adapter
