@@ -187,3 +187,40 @@ def test_the_demo_model_answers_a_clean_draft_with_an_empty_fix(registry, profil
         system="", user="", schema={}, schema_name="tailor_revision", max_tokens=10,
         context={**context, "draft": draft.model_dump(exclude={"profile"})})).data
     assert fix == {"headline": "", "summary": "", "titles": [], "bullets": [], "skill_changes": []}
+
+
+def test_titles_the_fix_leaves_out_stay_as_the_model_was_shown_them(profile, first):
+    out, draft = first
+    draft = draft.model_copy(deep=True)
+    draft.experience[1].job_title = "Engineer 1 (corrected)"  # what fix_title_regressions made of the raw title
+    revised = validate.apply_revision(out, draft, TailorRevision(titles=[TitleChange(company_index=0, job_title="Lead")]))
+    assert [e.job_title for e in revised.sections.experience] == ["Lead", "Engineer 1 (corrected)", "Engineer 2"]
+
+
+class TitleFix(LLMClient):
+    """First draft: a title that steps down (corrected by the checker); the fix then raises only the newest title."""
+
+    def __init__(self, inner):
+        self.inner = inner
+
+    async def generate_structured(self, **kwargs):
+        result = await self.inner.generate_structured(**kwargs)
+        if kwargs["schema_name"] == "tailor_revision":
+            result.data = {"headline": "", "summary": "", "bullets": [], "skill_changes": [],
+                           "titles": [{"company_index": 0, "job_title": "Senior Data Engineer"}]}
+        else:
+            for exp, title in zip(result.data["sections"]["experience"],
+                                  ["Data Engineer", "Senior Data Engineer", "Junior Data Engineer"]):
+                exp["job_title"] = title
+        return result
+
+
+def test_a_title_fix_keeps_the_corrected_titles_it_did_not_touch(router, db, registry, profile, jd):
+    """Reported by review: the merge used the model's raw titles, so 'Senior, Senior, Junior' came back."""
+    router.overrides["demo-concise"] = TitleFix(FakeClient(registry.get("demo-concise")))
+    result = tailor(router, db, profile, jd)
+    assert result.status == "ok" and result.retries == 1
+    assert [e.job_title for e in result.resume.experience] == ["Senior Data Engineer", "Data Engineer",
+                                                               "Junior Data Engineer"]
+    assert any("Contoso Systems: title changed" in n for n in result.notes)  # the first draft's note is kept
+    assert not any("same title as the job before it" in w for w in result.ats_warnings)

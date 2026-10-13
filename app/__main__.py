@@ -4,6 +4,7 @@ Environment (all optional): PORT, HOST, OPEN_BROWSER=0 (do not open the browser)
 """
 from __future__ import annotations
 
+import logging
 import os
 import sys
 import threading
@@ -32,8 +33,11 @@ def main() -> int:
     print(f"Resume Tailor is running at {url}\nPress Ctrl+C to stop.")
     if os.environ.get("OPEN_BROWSER", "1") != "0":
         threading.Timer(1.5, webbrowser.open, [url]).start()
+    level = os.environ.get("LOG_LEVEL", "warning")
+    if level.lower() not in ("info", "debug", "trace"):
+        logging.getLogger("app").setLevel(logging.WARNING)  # a quiet console: no per-call timing lines
     try:
-        uvicorn.run("app.asgi:app", host=host, port=port, log_level=os.environ.get("LOG_LEVEL", "warning"))
+        uvicorn.run("app.asgi:app", host=host, port=port, log_level=level)
     except KeyboardInterrupt:
         pass
     return 0

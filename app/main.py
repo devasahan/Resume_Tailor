@@ -225,7 +225,8 @@ def forwarded_proto(request: Request) -> str:
 
 def show_app_log() -> None:
     """Send the app's own INFO lines (one per model call: how long it took and how many tokens) to stderr, which
-    hosts keep as the server log. Only the server entry points call this, so tests and the CLI stay quiet."""
+    hosts keep as the server log. Called by the server entry points; it does nothing once the 'app' logger has a
+    level, so `python -m app` keeps its console quiet unless LOG_LEVEL is info or debug."""
     logger = logging.getLogger("app")
     if logger.level == logging.NOTSET:
         handler = logging.StreamHandler()

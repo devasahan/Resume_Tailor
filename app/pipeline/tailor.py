@@ -257,13 +257,21 @@ async def run_tailor(
                 )
             if not feedback:
                 return None
-            output, resume, _notes = value
+            output, resume, first_notes = value
+
+            def revised(data: dict):
+                """The fixed draft. A first-draft note about a corrected title stays while that title does."""
+                out, fixed, notes = build(validate.apply_revision(output, resume, TailorRevision.model_validate(data)))
+                same = {resume.profile.companies[a.company_index].name
+                        for a, b in zip(resume.experience, fixed.experience) if a.job_title == b.job_title}
+                return out, fixed, [n for n in first_notes if n.split(": ", 1)[0] in same] + notes
+
             return Ask(
                 user=revise_user(jd, profile.companies, hints, facts, bullets=budget, today=today,
                                  analysis=output.jd_analysis, plan=output.career_plan, draft=draft_text(resume),
                                  problems=" ".join(feedback)),
                 schema=revision_schema, schema_name="tailor_revision",
-                parse=lambda data: build(validate.apply_revision(output, resume, TailorRevision.model_validate(data))),
+                parse=revised,
                 context={**context, "draft": resume.model_dump(exclude={"profile"})},  # read only by the demo models
             )
 

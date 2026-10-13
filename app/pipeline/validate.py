@@ -114,12 +114,13 @@ def _overlap(a: str, b: str) -> float:
 
 
 def apply_revision(out: TailorOutput, draft: Resume, rev: TailorRevision) -> TailorOutput:
-    """The first answer with a fix applied: `draft` is the resume made from `out`, `rev` lists only what changes.
-    The analysis, the career plan and the number of bullets stay as they are. Raises ValueError for an edit that
+    """The first answer with a fix applied: `draft` is the resume made from `out` (cleaned, titles corrected) and
+    exactly what the model was shown; `rev` lists only what changes, so everything else comes from `draft`. The
+    analysis, the career plan and the number of bullets stay as they are. Raises ValueError for an edit that
     cannot be applied as meant, so the caller keeps the first draft. Neither input is changed."""
     bullets = {exp.company_index: list(exp.bullets) for exp in draft.experience}
     originals = {index: list(items) for index, items in bullets.items()}
-    titles = {entry.company_index: entry.job_title for entry in out.sections.experience}
+    titles = {exp.company_index: exp.job_title for exp in draft.experience}
     for change in rev.titles:
         if change.company_index not in titles:
             raise ValueError(f"titles: there is no company_index {change.company_index}.")
