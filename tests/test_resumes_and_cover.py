@@ -160,7 +160,7 @@ def test_cover_letter_for_an_existing_run(client):
     assert len(letter["paragraphs"]) >= 2 and letter["company_name"] == "Globex Corporation" and letter["hiring_manager"] == ""
     pdf = client.get(f"/api/runs/{run['run_id']}/cover.pdf?download=1")
     assert pdf.headers["content-disposition"] == (
-        'attachment; filename="Globex_Corporation_Jordan_Rivera_Senior_Data_Engineer_Cover_Letter.pdf"')
+        'attachment; filename="Jordan_Rivera_Cover_Letter.pdf"')
     runs = client.get("/api/runs").json()["runs"]
     row = next(r for r in runs if r["id"] == run["run_id"])
     assert row["cover_letter"] is True

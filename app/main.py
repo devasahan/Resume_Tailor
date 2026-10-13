@@ -268,22 +268,19 @@ def file_part(text: str, limit: int = 50) -> str:
     return re.sub(r"[^A-Za-z0-9]+", "_", ascii_text).strip("_")[:limit].strip("_")
 
 
-def download_name(result: TailorResult, ext: str, cover: bool = False) -> str:
-    """Company applied to, name on the resume, target role: 'Stripe_Jordan_Rivera_Senior_Data_Engineer.pdf'.
+def person_name(name: str) -> str:
+    """Normal capitals for a name written all in capitals (or all small): 'JUAN DANIEL RAMIREZ' -> 'Juan Daniel Ramirez'.
+    A name that already mixes them ('Ann McDonald') stays as it is."""
+    return name.title() if name.isupper() or name.islower() else name
 
-    The company typed on the tailor form wins over the one read from the JD; missing parts are left out.
-    """
+
+def download_name(result: TailorResult, ext: str, cover: bool = False) -> str:
+    """The usual pattern for job applications: the name on the resume, then the document. 'Jordan_Rivera_Resume.pdf'
+    and 'Jordan_Rivera_Cover_Letter.pdf'. No company in it, so a file sent to the wrong company does not show it."""
     assert result.resume is not None
-    analysis = result.analysis
-    company = result.company_name or (analysis.company if analysis else "")
-    role = analysis.target_role if analysis else ""
-    if not role and result.resume.experience:
-        role = result.resume.experience[0].job_title
-    parts = [file_part(company, 40), file_part(result.resume.profile.name, 40), file_part(role, 60)]
-    if cover:
-        parts.append("Cover_Letter")
-    base = "_".join(p for p in parts if p) or "Resume"
-    return f"{base}.{ext}"
+    name = file_part(person_name(result.resume.profile.name), 60)
+    kind = "Cover_Letter" if cover else "Resume"
+    return f"{name}_{kind}.{ext}" if name else f"{kind}.{ext}"
 
 
 def model_info(registry: Registry, spec: ModelSpec, allowed_regions: list[str]) -> dict:

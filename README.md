@@ -29,7 +29,7 @@ If something does not start, run **`python -m app.doctor`**. It checks Python, t
 1. **Profile** > drop `evals/sample_base_resume.docx` (or `.pdf` / `.txt`) on the page, or **Choose files**. It is read and saved at once and appears in the list.
 2. **Tailor** > pick the base resume > paste a job description (for example `evals/jds/01_data_engineer.txt`) > **Tailor resume**.
 3. **Download resume PDF**, then **Make cover letter** > **Download cover letter PDF**. (**Make cover letter** on its own also tailors the resume first.)
-   Files are named company, name, role: `Acme_Corp_Jordan_Rivera_Senior_Data_Engineer.pdf`; the company is read from the job description and left out if it names none.
+   Files are named the usual way for applications, name then document: `Jordan_Rivera_Resume.pdf` and `Jordan_Rivera_Cover_Letter.pdf` (a name in capitals gets normal capitals).
 
 The demo models write generic template text. They exist to show the flow (fit to one page, flags for invented numbers, retries); they say nothing about what real models write.
 

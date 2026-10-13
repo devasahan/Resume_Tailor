@@ -221,19 +221,20 @@ def _result(name="Jordan Rivera", company_typed="", company_in_jd="", role="Seni
     return TailorResult(requested_model="m", resume=resume, analysis=analysis, company_name=company_typed)
 
 
-def test_download_name_is_company_name_role():
+def test_download_name_is_the_usual_name_then_document_pattern():
     from app.main import download_name
 
-    assert download_name(_result(company_in_jd="Stripe"), "pdf") == "Stripe_Jordan_Rivera_Senior_Data_Engineer.pdf"
-    # the company typed on the form wins over the one read from the job description
+    # the company and the role are not part of it, wherever they came from
     typed = _result(company_typed="Société Générale", company_in_jd="SG")
-    assert download_name(typed, "docx") == "Societe_Generale_Jordan_Rivera_Senior_Data_Engineer.docx"
-    assert download_name(typed, "pdf", cover=True) == "Societe_Generale_Jordan_Rivera_Senior_Data_Engineer_Cover_Letter.pdf"
-    # no company anywhere: the part is left out, not replaced by a placeholder
-    assert download_name(_result(), "pdf") == "Jordan_Rivera_Senior_Data_Engineer.pdf"
-    # no target role: the most recent job title stands in
-    assert download_name(_result(company_in_jd="Stripe", role=""), "pdf") == "Stripe_Jordan_Rivera_Data_Engineer.pdf"
-    assert download_name(_result(name="王小明", role=""), "pdf") == "Data_Engineer.pdf"
+    assert download_name(typed, "pdf") == "Jordan_Rivera_Resume.pdf"
+    assert download_name(typed, "docx") == "Jordan_Rivera_Resume.docx"
+    assert download_name(typed, "pdf", cover=True) == "Jordan_Rivera_Cover_Letter.pdf"
+    # a name written in capitals gets normal capitals; accents and symbols as in file_part
+    assert download_name(_result(name="JUAN DANIEL RAMIREZ"), "pdf") == "Juan_Daniel_Ramirez_Resume.pdf"
+    assert download_name(_result(name="josé o'brien-smith"), "pdf") == "Jose_O_Brien_Smith_Resume.pdf"
+    assert download_name(_result(name="Ann McDonald"), "pdf") == "Ann_McDonald_Resume.pdf"
+    # no usable name: only the document
+    assert download_name(_result(name="王小明"), "pdf", cover=True) == "Cover_Letter.pdf"
 
 
 def test_runs_saved_before_the_company_field_still_load():
@@ -250,18 +251,18 @@ def test_download_headers(client):
     save_profile(client)
     run_id = tailor(client, cover_letter=True).json()["run_id"]
     pdf = client.get(f"/api/runs/{run_id}/resume.pdf?download=1")
-    assert pdf.headers["content-disposition"] == 'attachment; filename="Jordan_Rivera_Senior_Data_Engineer.pdf"'
+    assert pdf.headers["content-disposition"] == 'attachment; filename="Jordan_Rivera_Resume.pdf"'
     assert client.get(f"/api/runs/{run_id}/resume.pdf").headers["content-disposition"].startswith("inline;")
     docx = client.get(f"/api/runs/{run_id}/resume.docx")
     assert docx.headers["content-type"].startswith("application/vnd.openxmlformats-officedocument.wordprocessingml.document")
-    assert docx.headers["content-disposition"] == 'attachment; filename="Jordan_Rivera_Senior_Data_Engineer.docx"'
+    assert docx.headers["content-disposition"] == 'attachment; filename="Jordan_Rivera_Resume.docx"'
     assert (client.get(f"/api/runs/{run_id}/cover.docx").headers["content-disposition"]
-            == 'attachment; filename="Jordan_Rivera_Senior_Data_Engineer_Cover_Letter.docx"')
+            == 'attachment; filename="Jordan_Rivera_Cover_Letter.docx"')
     typed = tailor(client, company_name="Acme Corp").json()["run_id"]
     assert (client.get(f"/api/runs/{typed}/resume.pdf?download=1").headers["content-disposition"]
-            == 'attachment; filename="Acme_Corp_Jordan_Rivera_Senior_Data_Engineer.pdf"')
+            == 'attachment; filename="Jordan_Rivera_Resume.pdf"')  # the company typed on the form is not in it
     from_jd = tailor(client, jd="About Globex Corporation\n" + SAMPLE_JD).json()["run_id"]
     assert (client.get(f"/api/runs/{from_jd}/resume.pdf?download=1").headers["content-disposition"]
-            == 'attachment; filename="Globex_Corporation_Jordan_Rivera_Senior_Data_Engineer.pdf"')
+            == 'attachment; filename="Jordan_Rivera_Resume.pdf"')
     no_cover = tailor(client).json()["run_id"]
     assert client.get(f"/api/runs/{no_cover}/cover.pdf").status_code == 404
