@@ -19,6 +19,8 @@ _POINT = rf"(?:{_MONTH}\s+\d{{4}}|\d{{1,2}}/\d{{4}}|\d{{4}})"
 DATE_RANGE_RE = re.compile(
     rf"({_POINT})\s*(?:-|–|—|to)\s*({_POINT}|Present|Current|Now|Today)", re.IGNORECASE
 )
+POINT_RE = re.compile(rf"(?<![\w/]){_POINT}(?![\w/])", re.IGNORECASE)
+_PRESENT = ("present", "current", "now", "today")
 MODE_RE = re.compile(r"\b(Remote|On-?site|Hybrid)\b", re.IGNORECASE)
 SEPARATOR_RE = re.compile(r"\s*[|•·—–]\s*|\s+-\s+")
 
@@ -36,7 +38,6 @@ DEGREE_RE = re.compile(
     r"\b(Bachelor|Master|B\.?\s?S\.?c?|M\.?\s?S\.?c?|B\.?A\.?|M\.?A\.?|MBA|Ph\.?D|Associate|Diploma|Doctorate)\b",
     re.IGNORECASE,
 )
-YEAR_RE = re.compile(r"\b(?:19|20)\d{2}\b")
 
 
 def _normalize_mode(text: str) -> str:
@@ -105,19 +106,32 @@ def _parse_company_line(line: str, previous: str | None) -> Company | None:
     )
 
 
+def _take_dates(line: str) -> tuple[str, str, str]:
+    """(the line without its dates, start, end), months kept: 'Fontbonne University Aug 2016 – Aug 2020' ->
+    ('Fontbonne University', 'Aug 2016', 'Aug 2020'). One date is the end ('May 2020', graduation)."""
+    match = DATE_RANGE_RE.search(line)
+    if match:
+        end = match.group(2).strip()
+        rest = line[: match.start()] + " " + line[match.end() :]
+        return rest.strip(" ,;|-–—•·()"), match.group(1).strip(), "Present" if end.lower() in _PRESENT else end
+    points = [m.group(0).strip() for m in POINT_RE.finditer(line)]
+    if not points:
+        return line, "", ""
+    rest = POINT_RE.sub(" ", line)
+    return rest.strip(" ,;|-–—•·()"), points[0] if len(points) > 1 else "", points[-1]
+
+
 def _parse_education(lines: list[str]) -> list[Education]:
     entries: list[Education] = []
     for line in lines:
-        if SCHOOL_RE.search(line):
-            years = YEAR_RE.findall(line)
-            school = SEPARATOR_RE.split(YEAR_RE.sub("", line))[0].strip(" ,-–—")
-            entries.append(
-                Education(school=school or line, end=years[-1] if years else "", start=years[0] if len(years) > 1 else "")
-            )
-        elif DEGREE_RE.search(line):
+        text, start, end = _take_dates(line)
+        if SCHOOL_RE.search(text):
+            school = SEPARATOR_RE.split(text)[0].strip(" ,-–—")
+            entries.append(Education(school=school or text, start=start, end=end))
+        elif DEGREE_RE.search(text):
             if not entries:
                 entries.append(Education(school=""))
-            degree_line = YEAR_RE.sub("", line).strip(" ,-–—")
+            degree_line = re.sub(r"\s{2,}", " ", text).strip(" ,-–—")
             entry = entries[-1]
             if not entry.degree:
                 if " in " in degree_line:
@@ -125,9 +139,10 @@ def _parse_education(lines: list[str]) -> list[Education]:
                     entry.degree, entry.field = degree.strip(" ,"), fld.strip(" ,")
                 else:
                     entry.degree = degree_line
-            years = YEAR_RE.findall(line)
-            if years and not entry.end:
-                entry.end = years[-1]
+            if end and not entry.end:
+                entry.start, entry.end = start, end
+        elif end and not text and entries and not entries[-1].end:  # the dates on their own line under the school
+            entries[-1].start, entries[-1].end = start, end
     return [e for e in entries if e.school or e.degree]
 
 

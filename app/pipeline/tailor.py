@@ -180,9 +180,10 @@ async def run_tailor(
 
         def refine(value) -> str | None:
             """Ask once to fix the draft if it uses too many figures, round guesses, thin text, leaves must-have
-            JD terms out of the summary and bullets, copies the posting's voice, repeats its phrases, lists qualities
-            as skills, or has job titles that do not read as a career path. The draft itself is attached: the rewrite prompt
-            is the original prompt plus this feedback, so without it the model could not keep what was good."""
+            JD terms out of the summary and bullets, copies the posting's voice, repeats its phrases, repeats a word
+            by mistake, lists qualities as skills, or has job titles that do not read as a career path. The draft
+            itself is attached: the rewrite prompt is the original prompt plus this feedback, so without it the model
+            could not keep what was good."""
             feedback = []
             density = validate.metric_density_problems(value[1])
             if density:
@@ -222,6 +223,12 @@ async def run_tailor(
                     "These posting phrases are repeated so often that they read as keyword stuffing: "
                     + ", ".join(repeated[:6]) + ". Keep each one at most twice in the summary and bullets, in the "
                     "places where it fits best, and say the same thing in your own words everywhere else."
+                )
+            doubled = validate.repeated_word_problems(value[1])
+            if doubled:
+                feedback.append(
+                    "These words are repeated by mistake: " + ", ".join(f"'{pair}'" for pair in doubled[:6])
+                    + ". Rewrite each sentence so it reads naturally, keeping its meaning."
                 )
             qualities = validate.quality_skill_problems(value[1])
             if qualities:
@@ -296,6 +303,9 @@ async def run_tailor(
             except KeyError:
                 pass
         notes += title_notes
+        doubled = validate.fix_repeated_words(resume)  # the rewrite pass left some, or there was no pass
+        if doubled:
+            notes.append("Removed a repeated word: " + ", ".join(f"'{pair}'" for pair in doubled) + ".")
         result.resume = resume
         result.analysis = output.jd_analysis
         result.career_plan = output.career_plan

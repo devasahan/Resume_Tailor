@@ -130,3 +130,57 @@ def test_prompt_states_the_posting_copy_rules():
     assert "never copy its own setting into earlier jobs" in text and '"refine your craft"' in text
     assert 'Never write "you", "your", "we" or "our"' in text and "Know Your Customer" in text
     assert "even when the JD requires it" in text
+
+
+DOUBLED = f"Constructed RESTful APIs with Redis caching layers to serve multi-tenant tenant data schemas {LONG}"
+
+
+def test_a_word_repeated_by_mistake_is_found_and_dropped(profile):
+    """Seen in a real result: 'multi-tenant tenant data schemas'."""
+    assert validate.drop_repeated_words("to serve multi-tenant tenant data schemas.") == "to serve multi-tenant data schemas."
+    assert validate.drop_repeated_words("Led the the migration") == "Led the migration"
+    for fine in ("Built a plug-in in Java", "an add-on on Shopify", "what it had had", "Java, Java and Kotlin",
+                 "built-in in-memory cache", "Kotlin\nKotlin"):
+        assert validate.drop_repeated_words(fine) == fine
+    resume = validate.build_resume(profile, make_output())
+    resume.experience[1].bullets[0] = DOUBLED
+    resume.summary = "Backend engineer who owns the the full delivery cycle."
+    assert validate.repeated_word_problems(resume) == ["the the", "multi-tenant tenant"]
+    assert validate.fix_repeated_words(resume) == ["the the", "multi-tenant tenant"]
+    assert "owns the full" in resume.summary and "multi-tenant data schemas" in resume.experience[1].bullets[0]
+    assert validate.repeated_word_problems(resume) == []
+    _greeting, paragraphs, _closing = validate.clean_cover_letter("Dear Sam,", ["I built multi-tenant tenant APIs.", "Two."],
+                                                                  "Sincerely,")
+    assert paragraphs[0] == "I built multi-tenant APIs."
+
+
+class RepeatsAWord(LLMClient):
+    """Puts 'multi-tenant tenant' in a bullet: in the first draft only, or (always=True) in every draft."""
+
+    def __init__(self, inner, always=False):
+        self.inner, self.always, self.prompts = inner, always, []
+
+    async def generate_structured(self, **kwargs):
+        self.prompts.append(kwargs["user"])
+        result = await self.inner.generate_structured(**kwargs)
+        if kwargs["schema_name"] == "tailor_output" and (self.always or RETRY_MARKER not in kwargs["user"]):
+            result.data["sections"]["experience"][1]["bullets"][0] = DOUBLED
+        return result
+
+
+def test_the_rewrite_pass_asks_to_fix_a_repeated_word(router, db, registry, profile, jd):
+    client = RepeatsAWord(FakeClient(registry.get("demo-concise")))
+    router.overrides["demo-concise"] = client
+    result = asyncio.run(run_tailor(router, db, profile=profile, profile_id=None, jd=jd, model_id="demo-concise"))
+    assert result.status == "ok" and len(client.prompts) == 2
+    assert "repeated by mistake: 'multi-tenant tenant'" in client.prompts[1]
+    assert validate.repeated_word_problems(result.resume) == []
+    assert not any(note.startswith("Removed a repeated word") for note in result.notes)  # the rewrite fixed it
+
+
+def test_a_repeat_the_rewrite_left_is_removed_before_anyone_sees_it(router, db, registry, profile, jd):
+    router.overrides["demo-concise"] = RepeatsAWord(FakeClient(registry.get("demo-concise")), always=True)
+    result = asyncio.run(run_tailor(router, db, profile=profile, profile_id=None, jd=jd, model_id="demo-concise"))
+    assert result.status == "ok" and validate.repeated_word_problems(result.resume) == []
+    assert "multi-tenant data schemas" in " ".join(b for exp in result.resume.experience for b in exp.bullets)
+    assert "Removed a repeated word: 'multi-tenant tenant'." in result.notes

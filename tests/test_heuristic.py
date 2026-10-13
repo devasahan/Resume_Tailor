@@ -23,3 +23,23 @@ def test_parses_contact_companies_and_education():
 def test_unknown_text_gives_empty_but_valid_profile():
     p = parse_resume_text("just some words without structure")
     assert p.companies == [] and p.contact.email == ""
+
+
+def test_education_dates_keep_their_months_and_leave_the_school_name():
+    """A real upload showed 'Fontbonne University Aug' with '2016 - 2020': only the years were taken out."""
+    from app.parsing.heuristic import _parse_education
+
+    def read(*lines):
+        return [(e.school, e.degree, e.field, e.start, e.end) for e in _parse_education(list(lines))]
+
+    assert read("Fontbonne University Aug 2016 – Aug 2020", "Bachelor's Degree in Computer Science") == [
+        ("Fontbonne University", "Bachelor's Degree", "Computer Science", "Aug 2016", "Aug 2020")]
+    # the dates on their own line under the school
+    assert read("Fontbonne University", "Aug 2016 - Aug 2020", "B.S. in Computer Science") == [
+        ("Fontbonne University", "B.S.", "Computer Science", "Aug 2016", "Aug 2020")]
+    # one date on the degree line is the graduation date
+    assert read("University of Texas at Austin", "B.S. in Computer Science, May 2016") == [
+        ("University of Texas at Austin", "B.S.", "Computer Science", "", "May 2016")]
+    assert read("Fontbonne University, St. Louis, MO   08/2016 – 05/2020") == [
+        ("Fontbonne University, St. Louis, MO", "", "", "08/2016", "05/2020")]
+    assert read("Fontbonne University Aug 2022 - Present")[0][3:] == ("Aug 2022", "Present")

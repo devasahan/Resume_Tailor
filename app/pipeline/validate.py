@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import re
 import unicodedata
+from itertools import pairwise
 
 from ..schemas import (
     CoverLetter,
@@ -277,6 +278,55 @@ def quality_skill_problems(resume: Resume) -> list[str]:
     """Skills-list items that are qualities or outcomes ('High-Quality Code', 'Scalable and Maintainable
     Applications') rather than something a person uses or does."""
     return [skill for group in resume.skills for skill in group.skills if _QUALITY_WORDS.search(skill)]
+
+
+_WORD = re.compile(r"[A-Za-z][\w+#]*(?:-[\w+#]+)*")
+_REAL_DOUBLES = {"had", "that"}  # 'what it had had', 'said that that': correct English
+# 'a plug-in in Java', 'an add-on on Shopify', 'a follow-up up front': a hyphenated word ending in one of these
+# may be followed by the same small word on purpose
+_PARTICLES = {"in", "on", "up", "out", "off", "to", "of", "by", "at", "for", "with", "as", "over", "down", "back"}
+
+
+def _repeats(text: str) -> list[tuple[int, int, str]]:
+    """Each word that repeats the word just before it, with only a space between: 'the the', and a hyphenated
+    word followed by its own last part, 'multi-tenant tenant'. (start, end) of the repeat, and the two words."""
+    found = []
+    tokens = list(re.finditer(r"\S+", text))
+    for before, after in pairwise(tokens):
+        first, second = before.group(0), after.group(0).rstrip(".,;:!?)")
+        if not (_WORD.fullmatch(first) and _WORD.fullmatch(second)) or text[before.end():after.start()] != " ":
+            continue  # 'Java, Java' or a line break: not the same slip
+        word = second.lower()
+        same = word == first.lower() and word not in _REAL_DOUBLES
+        tail = "-" in first and word == first.split("-")[-1].lower() and word not in _PARTICLES
+        if same or tail:
+            found.append((before.end(), after.start() + len(second), f"{first} {second}"))
+    return found
+
+
+def drop_repeated_words(text: str) -> str:
+    """'multi-tenant tenant data schemas' -> 'multi-tenant data schemas'."""
+    for start, end, _pair in reversed(_repeats(text)):
+        text = text[:start] + text[end:]
+    return text
+
+
+def _resume_texts(resume: Resume) -> list[str]:
+    return [resume.headline, resume.summary, *(b for exp in resume.experience for b in exp.bullets)]
+
+
+def repeated_word_problems(resume: Resume) -> list[str]:
+    """Words the model repeated by mistake in the headline, summary and bullets ('multi-tenant tenant')."""
+    return [pair for text in _resume_texts(resume) for _s, _e, pair in _repeats(text)]
+
+
+def fix_repeated_words(resume: Resume) -> list[str]:
+    """Remove the repeats that are still there after the rewrite pass; returns what was removed."""
+    fixed = repeated_word_problems(resume)
+    resume.headline, resume.summary = drop_repeated_words(resume.headline), drop_repeated_words(resume.summary)
+    for exp in resume.experience:
+        exp.bullets = [drop_repeated_words(b) for b in exp.bullets]
+    return fixed
 
 
 _LEVEL_WORDS = {
@@ -586,7 +636,7 @@ def cover_flags(letter: CoverLetter, hints: str) -> list[Flag]:
 
 
 def clean_cover_letter(greeting: str, paragraphs: list[str], closing: str) -> tuple[str, list[str], str]:
-    paras = [p for p in (clean_text(x) for x in paragraphs) if p]
+    paras = [p for p in (drop_repeated_words(clean_text(x)) for x in paragraphs) if p]
     if not 2 <= len(paras) <= 6:
         raise ValueError("The cover letter needs between 2 and 6 non-empty paragraphs.")
     greeting, closing = clean_text(greeting), clean_text(closing)
