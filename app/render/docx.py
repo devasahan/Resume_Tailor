@@ -1,7 +1,7 @@
 """DOCX export (editable copy). Plain paragraphs, tab stops and the built-in bullet style: no tables or text boxes."""
 from __future__ import annotations
 
-from datetime import UTC, date, datetime
+from datetime import UTC, datetime
 from io import BytesIO
 
 from docx import Document
@@ -11,7 +11,7 @@ from docx.oxml.ns import qn
 from docx.shared import Inches, Pt
 
 from ..schemas import CoverLetter, FitStyle, Resume
-from .pdf import contact_line, fmt_dates
+from .pdf import contact_line, fmt_dates, letter_date, person_name, recipient_lines
 
 PAPER = {"Letter": (Inches(8.5), Inches(11)), "A4": (Inches(8.27), Inches(11.69))}
 
@@ -128,27 +128,48 @@ def resume_docx(resume: Resume, style: FitStyle) -> bytes:
     return buffer.getvalue()
 
 
-def cover_docx(resume: Resume, letter: CoverLetter, paper: str = "Letter") -> bytes:
+def cover_docx(resume: Resume, letter: CoverLetter, paper: str = "Letter", role: str = "") -> bytes:
+    """The same letter as the PDF: the resume's header, a rule, date, recipient, subject line, letter, signature."""
     p = resume.profile
     style = FitStyle(font_pt=11, margin_in=1.0, paper=paper)  # type: ignore[arg-type]
     doc = _setup(style, 1.0, 11, author=p.name, title=f"{p.name} - Cover Letter")
-    name = doc.add_paragraph()
-    run = name.add_run(p.name)
-    run.bold = True
-    run.font.size = Pt(16)
+    doc.styles["Normal"].paragraph_format.line_spacing = 1.15
+
+    def centered(text: str, size: float, bold: bool, before: float = 0.0):
+        para = doc.add_paragraph()
+        para.alignment = WD_ALIGN_PARAGRAPH.CENTER
+        para.paragraph_format.space_before = Pt(before)
+        run = para.add_run(text)
+        run.bold, run.font.size = bold, Pt(size)
+        return para
+
+    last = centered(p.name, 20, True)
+    if resume.headline:
+        last = centered(resume.headline, 10.5, True, before=2)
     line = contact_line(p.contact)
     if line:
-        doc.add_paragraph(line).paragraph_format.space_after = Pt(14)
-    today = date.today()
-    doc.add_paragraph(f"{today:%B} {today.day}, {today.year}").paragraph_format.space_after = Pt(9)
-    for value in (letter.hiring_manager, letter.company_name):
-        if value:
-            doc.add_paragraph(value)
-    if letter.hiring_manager or letter.company_name:
-        doc.add_paragraph().paragraph_format.space_after = Pt(4)
-    for text in [letter.greeting, *letter.paragraphs, letter.closing, p.name]:
-        para = doc.add_paragraph(text)
-        para.paragraph_format.space_after = Pt(9)
+        last = centered(line, 10, False, before=2)
+    last.paragraph_format.space_after = Pt(4)
+    _bottom_border(last)
+
+    def para(text: str, after: float = 0.0, before: float = 0.0, bold: bool = False):
+        paragraph = doc.add_paragraph()
+        paragraph.paragraph_format.space_before = Pt(before)
+        paragraph.paragraph_format.space_after = Pt(after)
+        paragraph.add_run(text).bold = bold
+        return paragraph
+
+    para(letter_date(), after=14, before=22)
+    recipient = recipient_lines(letter)
+    for index, value in enumerate(recipient):
+        para(value, after=14 if index == len(recipient) - 1 else 0)
+    if role.strip():
+        para(f"Re: {role.strip()}", after=14, bold=True)
+    para(letter.greeting, after=9)
+    for text in letter.paragraphs:
+        para(text, after=9)
+    para(letter.closing, after=27)  # room for a handwritten signature on a printout
+    para(person_name(p.name))
     buffer = BytesIO()
     doc.save(buffer)
     return buffer.getvalue()

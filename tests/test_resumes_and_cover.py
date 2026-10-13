@@ -1,9 +1,11 @@
 """Upload-only resume list, picking a resume on the Tailor page, and the cover letter as its own step."""
 import asyncio
+import io
 import sqlite3
 
 import pytest
 from fastapi.testclient import TestClient
+from pypdf import PdfReader
 
 from app.llm.base import LLMClient
 from app.llm.fake_client import FakeClient
@@ -161,6 +163,7 @@ def test_cover_letter_for_an_existing_run(client):
     pdf = client.get(f"/api/runs/{run['run_id']}/cover.pdf?download=1")
     assert pdf.headers["content-disposition"] == (
         'attachment; filename="Jordan_Rivera_Cover_Letter.pdf"')
+    assert "Re: Senior Data Engineer" in "\n".join(page.extract_text() for page in PdfReader(io.BytesIO(pdf.content)).pages)
     runs = client.get("/api/runs").json()["runs"]
     row = next(r for r in runs if r["id"] == run["run_id"])
     assert row["cover_letter"] is True

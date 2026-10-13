@@ -50,6 +50,25 @@ def contact_line(contact: Contact) -> str:
     return " | ".join(part.strip() for part in parts if part and part.strip())
 
 
+def person_name(name: str) -> str:
+    """Normal capitals for a name written all in capitals (or all small): 'JUAN DANIEL RAMIREZ' -> 'Juan Daniel Ramirez'.
+    A name that already mixes them ('Ann McDonald') stays as it is."""
+    return name.title() if name.isupper() or name.islower() else name
+
+
+def letter_date(today: date | None = None) -> str:
+    today = today or date.today()
+    return f"{today:%B} {today.day}, {today.year}"
+
+
+def recipient_lines(letter: CoverLetter) -> list[str]:
+    """Who the letter is for: the hiring manager's name, or 'Hiring Manager' when only the company is known."""
+    manager, company = letter.hiring_manager.strip(), letter.company_name.strip()
+    if not manager and not company:
+        return []
+    return [manager or "Hiring Manager", *([company] if company else [])]
+
+
 def fmt_dates(start: str, end: str) -> str:
     if start and end:
         return f"{start} - {end}"
@@ -224,6 +243,13 @@ class Sheet:
                 self._draw([Piece(right, False, right_w)], self.margin + self.width - right_w, self.y, self.size, height)
             self.y += height
 
+    def rule(self, before: float = 0.0, after: float = 0.0, width: float = 0.75) -> None:
+        """A full-width line, as under the resume's section headings."""
+        self.y += before
+        self.pdf.set_line_width(width)
+        self.pdf.line(self.margin, self.y + width / 2, self.margin + self.width, self.y + width / 2)
+        self.y += width + after
+
     def heading(self, text: str) -> None:
         size = self.size + 0.5
         height = size * self.line
@@ -284,26 +310,60 @@ def render_resume_pdf(resume: Resume, style: FitStyle) -> tuple[bytes, int]:
 
 
 # ---------------------------------------------------------------------- cover letter
-def render_cover_pdf(resume: Resume, letter: CoverLetter, paper: str = "Letter") -> tuple[bytes, int]:
+# (body size, line height, space after a paragraph): the first that keeps the letter on one page is used
+COVER_STYLES = [(11.0, 1.35, 9.0), (10.5, 1.3, 8.0), (10.0, 1.25, 7.0)]
+
+
+def contact_lines(sheet: Sheet, contact: Contact, size: float) -> list[str]:
+    """The contact line, split between items (never inside an email or link) when it is too wide for one line."""
+    lines: list[str] = []
+    for item in [part for part in contact_line(contact).split(" | ") if part]:
+        joined = f"{lines[-1]} | {item}" if lines else item
+        if lines and sheet.measure(joined, False, size) <= sheet.width:
+            lines[-1] = joined
+        else:
+            lines.append(item)
+    return lines
+
+
+def render_cover_pdf(resume: Resume, letter: CoverLetter, paper: str = "Letter", role: str = "") -> tuple[bytes, int]:
+    """A business letter under the same header as the resume (name, headline, contact line), so the two look like
+    one set: a rule, the date, the recipient, a subject line with the role, the letter, and the typed signature.
+    One column of real text in reading order, like the resume, so applicant systems read it too."""
+    for size, line_height, gap in COVER_STYLES:
+        data, pages = _cover(resume, letter, paper, role, size, line_height, gap)
+        if pages == 1:
+            break
+    return data, pages
+
+
+def _cover(resume: Resume, letter: CoverLetter, paper: str, role: str, size: float, line_height: float,
+           gap: float) -> tuple[bytes, int]:
     p = resume.profile
-    sheet = Sheet(paper, 72, 11, 1.35, f"{p.name} - Cover Letter", p.name)
-    sheet.para([Run(p.name, True)], size=sheet.fit_size(p.name, True, 16, sheet.width))
-    line = contact_line(p.contact)
-    if line:
+    sheet = Sheet(paper, 72, size, line_height, f"{p.name} - Cover Letter", p.name)
+    # Letterhead, as on the resume
+    sheet.para([Run(p.name, True)], size=sheet.fit_size(p.name, True, 20, sheet.width), align="C")
+    if resume.headline:
         sheet.space(2)
-        sheet.para([Run(line)], after=14)
-    else:
-        sheet.space(14)
-    today = date.today()
-    sheet.para([Run(f"{today:%B} {today.day}, {today.year}")], after=9)
-    recipient = [x for x in (letter.hiring_manager, letter.company_name) if x]
+        sheet.para([Run(resume.headline, True)], size=10.5, align="C")
+    lines = contact_lines(sheet, p.contact, 10)
+    if lines:
+        sheet.space(2)
+    for line in lines:
+        sheet.para([Run(line)], size=10, align="C")
+    sheet.rule(before=8, after=22)
+
+    sheet.para([Run(letter_date())], after=gap + 5)
+    recipient = recipient_lines(letter)
     for value in recipient:
         sheet.para([Run(value)])
     if recipient:
-        sheet.space(14)
-    sheet.para([Run(letter.greeting)], after=9)
+        sheet.space(gap + 5)
+    if role.strip():
+        sheet.para([Run("Re: ", True), Run(role.strip(), True)], after=gap + 5)
+    sheet.para([Run(letter.greeting)], after=gap)
     for paragraph in letter.paragraphs:
-        sheet.para([Run(paragraph)], after=9)
-    sheet.para([Run(letter.closing)], after=9)
-    sheet.para([Run(p.name)])
+        sheet.para([Run(paragraph)], after=gap)
+    sheet.para([Run(letter.closing)], after=gap + 18)  # room for a handwritten signature on a printout
+    sheet.para([Run(person_name(p.name))])
     return sheet.finish()

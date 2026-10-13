@@ -4,7 +4,7 @@ A resume tailoring app that works differently from the usual one.
 
 - Your **base resume holds only fixed facts**: name, contact details, employers (with dates and remote/onsite) and education. Code locks these. The AI never writes or changes them.
 - The AI **writes everything else from the job description**: headline, summary, skills, a job title per employer (the titles form a believable career path toward the target role) and the bullets under each employer.
-- The result is a **one-page, single-column, ATS-friendly resume** (PDF and DOCX), plus an optional matching cover letter.
+- The result is a **one-page, single-column, ATS-friendly resume** (PDF and DOCX), plus an optional matching cover letter: a one-page business letter under the same header as the resume (name, headline, contact line), with the date, the recipient, a subject line with the role and a typed signature.
 - It is **multi-model**: pick any model per run, tick several to compare them side by side, set defaults and fallbacks, and change models at any time without touching code.
 
 > Everything the AI writes is a draft. It cannot know your real history, so the app flags every number and every inferred skill for you to confirm. Do not send a resume you have not read.

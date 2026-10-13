@@ -164,12 +164,59 @@ def test_wrapping_splits_a_token_longer_than_the_line():
 
 def test_cover_letter_pdf_and_docx(resume):
     letter = CoverLetter(greeting="Dear Sam,", paragraphs=["First paragraph here.", "Second paragraph here.", "Third."], closing="Sincerely,", company_name="Acme Corp", hiring_manager="Sam Lee")
-    pdf, pages = render_cover_pdf(resume, letter)
+    pdf, pages = render_cover_pdf(resume, letter, role="Senior Data Engineer")
     text = text_of(pdf)
     assert pages == 1 and all(item in text for item in ("Jordan Rivera", "Sam Lee", "Acme Corp", "Dear Sam,", "Sincerely,"))
     assert PdfReader(io.BytesIO(pdf)).metadata.title == "Jordan Rivera - Cover Letter"
-    paragraphs = [p.text for p in Document(io.BytesIO(cover_docx(resume, letter))).paragraphs]
-    assert "Dear Sam," in paragraphs and "Acme Corp" in paragraphs
+    paragraphs = [p.text for p in Document(io.BytesIO(cover_docx(resume, letter, role="Senior Data Engineer"))).paragraphs]
+    assert "Dear Sam," in paragraphs and "Acme Corp" in paragraphs and "Re: Senior Data Engineer" in paragraphs
+
+
+def test_cover_letter_is_a_business_letter_under_the_resume_header(resume):
+    """Reading order (what an applicant system extracts): the resume's header, date, recipient, subject, letter,
+    closing, and the signature in normal capitals."""
+    resume.profile.name = "JORDAN RIVERA"
+    letter = CoverLetter(greeting="Dear Hiring Manager,", paragraphs=["One.", "Two."], closing="Sincerely,",
+                         company_name="Acme Corp")
+    pdf, _ = render_cover_pdf(resume, letter, role="Senior Data Engineer")
+    lines = [line.strip() for line in text_of(pdf).splitlines() if line.strip()]
+    order = ["JORDAN RIVERA", resume.headline, "Hiring Manager", "Acme Corp", "Re: Senior Data Engineer",
+             "Dear Hiring Manager,", "One.", "Two.", "Sincerely,", "Jordan Rivera"]
+    assert [line for line in lines if line in order] == order
+    assert any(line.startswith("Austin, TX") or "@" in line for line in lines[2:4])  # the contact line, under the headline
+    docx = [p.text for p in Document(io.BytesIO(cover_docx(resume, letter, role="Senior Data Engineer"))).paragraphs]
+    assert [t for t in docx if t in order] == order
+
+
+def test_cover_letter_recipient_and_subject_only_when_known(resume):
+    bare = CoverLetter(greeting="Dear Hiring Manager,", paragraphs=["One."], closing="Sincerely,")
+    text = text_of(render_cover_pdf(resume, bare)[0])
+    assert "Hiring Manager\n" not in text.replace("Dear Hiring Manager,", "") and "Re:" not in text
+    named = bare.model_copy(update={"hiring_manager": "Sam Lee"})
+    assert "Sam Lee" in text_of(render_cover_pdf(resume, named)[0])
+
+
+def test_a_long_cover_letter_stays_on_one_page(resume):
+    long = CoverLetter(greeting="Dear Hiring Manager,", closing="Sincerely,", company_name="Acme Corp",
+                       paragraphs=[" ".join(["Delivered reliable data pipelines for the analytics team."] * 11)] * 4)
+    from app.render.pdf import COVER_STYLES, _cover
+
+    assert _cover(resume, long, "Letter", "Senior Data Engineer", *COVER_STYLES[0])[1] == 2  # too long at full size
+    pdf, pages = render_cover_pdf(resume, long, role="Senior Data Engineer")
+    assert pages == 1 and "Sincerely," in text_of(pdf)
+
+
+def test_the_cover_contact_line_breaks_between_items(resume):
+    from app.render.pdf import COVER_STYLES, contact_lines
+
+    resume.profile.contact = Contact(location="San Francisco Bay Area, CA", phone="+1 (555) 010-2030",
+                                     email="jordan.alexander.rivera@example-mail.com",
+                                     linkedin="https://www.linkedin.com/in/jordan-alexander-rivera-123456",
+                                     website="https://github.com/jordan-alexander-rivera")
+    sheet = Sheet("Letter", 72, COVER_STYLES[0][0], 1.35, "t", "a")
+    lines = contact_lines(sheet, resume.profile.contact, 10)
+    assert len(lines) == 2 and " | ".join(lines) == contact_line(resume.profile.contact)
+    assert all(sheet.measure(line, False, 10) <= sheet.width for line in lines)
 
 
 def test_docx_resume_content_and_layout_primitives(resume):

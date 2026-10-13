@@ -33,7 +33,7 @@ from .pipeline import validate
 from .prompts import METRICS_MODES
 from .pipeline.tailor import analysis_terms, fit_report, run_checks, run_tailor, write_cover_letter
 from .render.docx import cover_docx, resume_docx
-from .render.pdf import render_cover_pdf, render_resume_pdf
+from .render.pdf import person_name, render_cover_pdf, render_resume_pdf
 from .schemas import ExperienceOut, Profile, SkillGroup, TailoredSections, TailorOutput, TailorResult
 from .storage.db import Database
 
@@ -268,10 +268,9 @@ def file_part(text: str, limit: int = 50) -> str:
     return re.sub(r"[^A-Za-z0-9]+", "_", ascii_text).strip("_")[:limit].strip("_")
 
 
-def person_name(name: str) -> str:
-    """Normal capitals for a name written all in capitals (or all small): 'JUAN DANIEL RAMIREZ' -> 'Juan Daniel Ramirez'.
-    A name that already mixes them ('Ann McDonald') stays as it is."""
-    return name.title() if name.isupper() or name.islower() else name
+def cover_role(result: TailorResult) -> str:
+    """The role for the cover letter's subject line: the one read from the job description."""
+    return result.analysis.target_role if result.analysis else ""
 
 
 def download_name(result: TailorResult, ext: str, cover: bool = False) -> str:
@@ -919,7 +918,7 @@ def create_app(db: Database | None = None, registry: Registry | None = None, rou
         result = load_run(run_id, user)
         if result.resume is None or result.cover_letter is None:
             raise HTTPException(404, "No cover letter in this run.")
-        pdf, _ = render_cover_pdf(result.resume, result.cover_letter, result.style.paper)
+        pdf, _ = render_cover_pdf(result.resume, result.cover_letter, result.style.paper, cover_role(result))
         name = download_name(result, "pdf", cover=True)
         if download:
             log_download(user, run_id, result, "cover_letter", "pdf", name)
@@ -932,7 +931,8 @@ def create_app(db: Database | None = None, registry: Registry | None = None, rou
             raise HTTPException(404, "No cover letter in this run.")
         name = download_name(result, "docx", cover=True)
         log_download(user, run_id, result, "cover_letter", "docx", name)
-        return file_response(cover_docx(result.resume, result.cover_letter, result.style.paper), DOCX, "attachment", name)
+        letter = cover_docx(result.resume, result.cover_letter, result.style.paper, cover_role(result))
+        return file_response(letter, DOCX, "attachment", name)
 
     @app.delete("/api/data", dependencies=[Depends(admin_user)])
     def api_delete_all():
