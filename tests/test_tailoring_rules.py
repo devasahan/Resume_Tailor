@@ -137,3 +137,70 @@ def test_summary_length_warnings(profile):
     assert not any("Summary is" in w for w in validate.ats_lint(validate.build_resume(profile, out)))
     out.sections.summary = " ".join(["word"] * 100)
     assert any("Summary is long" in w for w in validate.ats_lint(validate.build_resume(profile, out)))
+
+
+# ------------------------------------------------------------------ the posting's level number in the headline/summary
+def _with_role(profile, target, latest, headline, summary):
+    out = make_output(headline=headline, summary=summary)
+    out.jd_analysis.target_role = target
+    resume = validate.build_resume(profile, out)
+    resume.experience[0].job_title = latest
+    return resume, out.jd_analysis
+
+
+def test_the_postings_level_number_is_left_out_unless_it_is_the_candidates(profile):
+    """Reported: "Senior Software Engineer II with 7+ years" although the latest title is Senior Software Engineer."""
+    resume, analysis = _with_role(profile, "Senior Software Engineer II", "Senior Software Engineer",
+                                  "Senior Software Engineer II | Python | MCP Gateway",
+                                  "Senior Software Engineer II with 7+ years of experience building developer platforms.")
+    notes = validate.role_level_fixes(resume, analysis)
+    assert resume.headline == "Senior Software Engineer | Python | MCP Gateway"
+    assert resume.summary.startswith("Senior Software Engineer with 7+ years")
+    said = "wrote 'Senior Software Engineer' instead of the posting's level 'Senior Software Engineer II', which is not your title."
+    assert notes == [f"Headline: {said}", f"Summary: {said}"]
+
+
+@pytest.mark.parametrize("target,latest,text,expected", [
+    ("Software Engineer II", "Software Engineer II", "Software Engineer II with 5+ years", "Software Engineer II with 5+ years"),
+    ("Backend Engineer", "Engineer", "Backend Engineer with 5+ years", "Backend Engineer with 5+ years"),
+    ("Data Scientist L5", "Data Scientist", "Data Scientist L5 with 5+ years", "Data Scientist with 5+ years"),
+    ("Engineer Level 2", "Engineer", "Engineer Level 2 with 5+ years", "Engineer with 5+ years"),
+    ("Software Engineer III", "Software Engineer", "software engineer iii with 5+ years", "software engineer with 5+ years"),
+    ("Software Engineer II", "Software Engineer", "Software Engineer III with 5+ years", "Software Engineer III with 5+ years"),
+])
+def test_level_numbers_of_every_kind(profile, target, latest, text, expected):
+    resume, analysis = _with_role(profile, target, latest, "Engineer | Python", text)
+    validate.role_level_fixes(resume, analysis)
+    assert resume.summary == expected
+
+
+class LevelInRole(LLMClient):
+    """Writes the posting's role with its level number in the headline and the summary."""
+
+    def __init__(self, inner):
+        self.inner, self.calls = inner, 0
+
+    async def generate_structured(self, **kwargs):
+        self.calls += 1
+        result = await self.inner.generate_structured(**kwargs)
+        data = result.data
+        role = data["jd_analysis"]["target_role"]
+        data["jd_analysis"]["target_role"] = role + " II"
+        for field in ("headline", "summary"):
+            data["sections"][field] = data["sections"][field].replace(role, role + " II", 1)
+        return result
+
+
+def test_a_run_drops_the_level_number_without_an_extra_call(router, db, registry, profile, jd):
+    client = LevelInRole(FakeClient(registry.get("demo-concise")))
+    router.overrides["demo-concise"] = client
+    result = asyncio.run(run_tailor(router, db, profile=profile, profile_id=None, jd=jd, model_id="demo-concise"))
+    role = result.analysis.target_role.removesuffix(" II")
+    assert result.status == "ok" and client.calls == 1 and result.analysis.target_role.endswith(" II")
+    assert result.resume.headline.startswith(role) and " II" not in result.resume.headline
+    assert result.resume.summary.startswith(role) and " II " not in result.resume.summary
+    assert any(n.startswith("Summary: wrote") for n in result.notes)
+
+
+def test_prompt_says_to_leave_out_the_level_number():
+    assert "without the hiring company's level number (II, III, L5)" in tailor_system("estimate")

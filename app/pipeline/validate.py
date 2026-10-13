@@ -414,6 +414,33 @@ def title_level(title: str) -> tuple[str, int]:
     return " ".join(base), (1 if level is None else level)
 
 
+_ROLE_LEVEL = re.compile(r"^(?P<role>.*?\S)\s+(?P<level>I{1,3}|IV|V|[1-5]|L[1-9]|Level\s+[1-9])$", re.IGNORECASE)
+
+
+def role_level_fixes(resume: Resume, analysis: JDAnalysis) -> list[str]:
+    """The headline and summary name the posting's role without the hiring company's level number (II, L5) when
+    the candidate's latest title does not have that level: "Senior Software Engineer II with 7+ years" claims a
+    level the candidate never held. Changes the resume in place and returns a note per changed field."""
+    match = _ROLE_LEVEL.match(analysis.target_role.strip())
+    if not match or not resume.experience:
+        return []
+    role, level = match.group("role"), match.group("level")
+    level_pattern = r"\s+".join(map(re.escape, level.split()))
+    if re.search(rf"(?<![\w-]){level_pattern}$", resume.experience[0].job_title.strip(), re.IGNORECASE):
+        return []  # the candidate's latest title really has this level
+    role_pattern = r"\s+".join(map(re.escape, role.split()))
+    phrase = re.compile(rf"(?<![\w-])({role_pattern})\s+{level_pattern}(?![\w-])", re.IGNORECASE)
+    notes = []
+    for field in ("headline", "summary"):
+        text = getattr(resume, field)
+        fixed = phrase.sub(lambda m: m.group(1), text)
+        if fixed != text:
+            setattr(resume, field, fixed)
+            notes.append(f"{field.title()}: wrote '{role}' instead of the posting's level '{analysis.target_role}', "
+                         "which is not your title.")
+    return notes
+
+
 def _steps_down(newer: str, older: str) -> bool:
     """A newer title below the older one: same role at a lower level, or a different role 2+ levels lower."""
     (new_base, new_level), (old_base, old_level) = title_level(newer), title_level(older)

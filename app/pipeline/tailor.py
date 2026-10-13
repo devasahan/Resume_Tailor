@@ -176,7 +176,8 @@ async def run_tailor(
         def build(out: TailorOutput):
             """(output, resume, notes). Titles that step down are corrected here, on every draft, for free."""
             resume = validate.build_resume(profile, out)
-            return out, resume, validate.fix_title_regressions(resume)
+            notes = validate.fix_title_regressions(resume)
+            return out, resume, notes + validate.role_level_fixes(resume, out.jd_analysis)
 
         def parse(data: dict):
             return build(TailorOutput.model_validate(data))
@@ -260,10 +261,12 @@ async def run_tailor(
             output, resume, first_notes = value
 
             def revised(data: dict):
-                """The fixed draft. A first-draft note about a corrected title stays while that title does."""
+                """The fixed draft. A first-draft note about a corrected title, headline or summary stays while
+                that text does."""
                 out, fixed, notes = build(validate.apply_revision(output, resume, TailorRevision.model_validate(data)))
                 same = {resume.profile.companies[a.company_index].name
                         for a, b in zip(resume.experience, fixed.experience) if a.job_title == b.job_title}
+                same |= {f.title() for f in ("headline", "summary") if getattr(fixed, f) == getattr(resume, f)}
                 return out, fixed, [n for n in first_notes if n.split(": ", 1)[0] in same] + notes
 
             return Ask(
