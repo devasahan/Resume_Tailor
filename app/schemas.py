@@ -3,7 +3,8 @@
 Three groups:
   * Profile and friends: the FIXED facts from the base resume. The AI never writes these.
   * TailorOutput and friends: what the model returns (all fields required, no defaults, so the
-    JSON schema is strict and works across providers).
+    JSON schema is strict and works across providers). TailorRevision is the answer to a fix request: only
+    what changes. Its defaults only mean "keep" when a key is left out; the schema still requires every field.
   * Resume / TailorResult: the merged document and the full record of one run.
 """
 from __future__ import annotations
@@ -89,6 +90,32 @@ class TailorOutput(BaseModel):
     # serves code that builds an output by hand.
     career_plan: list[CareerStep] = Field(default_factory=list)
     sections: TailoredSections
+
+
+class TitleChange(BaseModel):
+    company_index: int
+    job_title: str
+
+
+class BulletChange(BaseModel):
+    company_index: int
+    bullet_index: int = Field(
+        description="the number in [brackets] before the bullet in the draft, counting from 0 within each employer")
+    text: str = Field(description="the complete new bullet, without the [number]")
+
+
+class SkillChange(BaseModel):
+    old: str = Field(description="a skill exactly as the draft lists it")
+    new: str = Field(description='what replaces it, or "" to remove it')
+
+
+class TailorRevision(BaseModel):
+    """A fix of a draft: only what changes. Everything left out stays as the draft has it, word for word."""
+    headline: str = Field("", description='the complete new headline, or "" to keep the draft\'s')
+    summary: str = Field("", description='the complete new summary, or "" to keep the draft\'s')
+    titles: list[TitleChange] = Field(default_factory=list, description="only the job titles that change")
+    bullets: list[BulletChange] = Field(default_factory=list, description="only the bullets that change")
+    skill_changes: list[SkillChange] = Field(default_factory=list, description="only the skills that are replaced")
 
 
 class CoverLetterOut(BaseModel):

@@ -14,6 +14,7 @@ from ..prompts import (
     PROMPT_VERSION,
     cover_system,
     cover_user,
+    revise_user,
     tailor_system,
     tailor_user,
 )
@@ -26,12 +27,13 @@ from ..schemas import (
     Resume,
     TailorOutput,
     TailorResult,
+    TailorRevision,
 )
 from ..storage.db import Database
 from . import validate
 from .facts import candidate_facts
 from .fit import bullet_budget, render_smallest, smaller_budget, trim_to_fit, try_styles
-from .generate import GenerationFailed, Outcome, generate_validated
+from .generate import Ask, GenerationFailed, Outcome, generate_validated
 
 log = logging.getLogger(__name__)
 
@@ -53,13 +55,14 @@ def _absorb(total: Outcome, other: Outcome) -> None:
 
 
 def draft_text(resume: Resume) -> str:
-    """The editable sections of a draft as plain text, so a rewrite request can show the model what to revise."""
+    """The editable sections of a draft as plain text, so a fix request can show the model what to revise. Bullets
+    are numbered from 0 within each employer: a fix names the bullets it changes by these numbers."""
     lines = [f"Headline: {resume.headline}", f"Summary: {resume.summary}", "Skills:"]
     lines += [f"- {g.category}: {', '.join(g.skills)}" for g in resume.skills]
     for exp in resume.experience:
         company = resume.profile.companies[exp.company_index].name
         lines.append(f"company_index {exp.company_index} ({company}): {exp.job_title}")
-        lines += [f"- {b}" for b in exp.bullets]
+        lines += [f"[{index}] {b}" for index, b in enumerate(exp.bullets)]
     return "\n".join(lines)
 
 
@@ -79,8 +82,7 @@ def coverage_feedback(resume: Resume, analysis: JDAnalysis) -> str | None:
         " Put each one in word for word, in the summary or in one existing bullet of the employer where it fits "
         "best (usually the most recent role), replacing weaker words so each bullet stays 18-28 words and the "
         "summary 60-85 words. Do not add or remove bullets: each employer keeps exactly the number given in "
-        "<employers>. Use at most two of these phrases per bullet, never as a list, and keep them in "
-        "jd_analysis.must_have_skills."
+        "<employers>. Use at most two of these phrases per bullet, never as a list."
     )
 
 
@@ -167,23 +169,26 @@ async def run_tailor(
     try:
         chain = router.chain(model_id, allow_fallback)
         schema = strict_json_schema(TailorOutput)
+        revision_schema = strict_json_schema(TailorRevision)
         budget = await asyncio.to_thread(bullet_budget, profile, paper, today)  # bullets per employer that fit
         context = {"profile": profile.model_dump(), "jd": jd, "hints": hints, "bullets": budget}
 
-        def parse(data: dict):
+        def build(out: TailorOutput):
             """(output, resume, notes). Titles that step down are corrected here, on every draft, for free."""
-            out = TailorOutput.model_validate(data)
             resume = validate.build_resume(profile, out)
             return out, resume, validate.fix_title_regressions(resume)
 
+        def parse(data: dict):
+            return build(TailorOutput.model_validate(data))
+
         allowed_figures = f"{hints}\n{facts}"
 
-        def refine(value) -> str | None:
+        def refine(value) -> Ask | None:
             """Ask once to fix the draft if it uses too many figures, round guesses, thin text, leaves must-have
             JD terms out of the summary and bullets, copies the posting's voice, repeats its phrases, repeats a word
-            by mistake, lists qualities as skills, or has job titles that do not read as a career path. The draft
-            itself is attached: the rewrite prompt is the original prompt plus this feedback, so without it the model
-            could not keep what was good."""
+            by mistake, lists qualities as skills, or has job titles that do not read as a career path. The model
+            gets the numbered draft and returns only what it changes (a TailorRevision): far less to write than a
+            whole new draft, and everything that was fine stays word for word."""
             feedback = []
             density = validate.metric_density_problems(value[1])
             if density:
@@ -252,9 +257,14 @@ async def run_tailor(
                 )
             if not feedback:
                 return None
-            return (
-                " ".join(feedback) + " Revise the previous draft below to fix only this, and keep everything else "
-                "as it is.\n<previous_draft>\n" + draft_text(value[1]) + "\n</previous_draft>"
+            output, resume, _notes = value
+            return Ask(
+                user=revise_user(jd, profile.companies, hints, facts, bullets=budget, today=today,
+                                 analysis=output.jd_analysis, plan=output.career_plan, draft=draft_text(resume),
+                                 problems=" ".join(feedback)),
+                schema=revision_schema, schema_name="tailor_revision",
+                parse=lambda data: build(validate.apply_revision(output, resume, TailorRevision.model_validate(data))),
+                context={**context, "draft": resume.model_dump(exclude={"profile"})},  # read only by the demo models
             )
 
         await generate_validated(

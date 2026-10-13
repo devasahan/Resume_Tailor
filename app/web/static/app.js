@@ -73,7 +73,7 @@ async function finished(data, onWait) {
   let failingSince = null, failures = 0, lastError = null;
   while (data && data.job && data.status === 'running') {
     if (onWait) onWait(Date.now() - started, lastError);
-    await new Promise(resolve => setTimeout(resolve, 3000));
+    await new Promise(resolve => setTimeout(resolve, 1500));
     try {
       data = await api(`/api/jobs/${encodeURIComponent(data.job)}`);
       failingSince = null; failures = 0; lastError = null;

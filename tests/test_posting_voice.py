@@ -165,6 +165,9 @@ class RepeatsAWord(LLMClient):
         result = await self.inner.generate_structured(**kwargs)
         if kwargs["schema_name"] == "tailor_output" and (self.always or RETRY_MARKER not in kwargs["user"]):
             result.data["sections"]["experience"][1]["bullets"][0] = DOUBLED
+        if kwargs["schema_name"] == "tailor_revision" and self.always:  # the fix writes the repeat again
+            edits = [e for e in result.data["bullets"] if (e["company_index"], e["bullet_index"]) != (1, 0)]
+            result.data["bullets"] = edits + [{"company_index": 1, "bullet_index": 0, "text": DOUBLED}]
         return result
 
 

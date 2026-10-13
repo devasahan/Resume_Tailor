@@ -9,9 +9,9 @@ from datetime import date
 from pathlib import Path
 
 from ..pipeline.facts import bullet_caps, experience_before, months_phrase, stay_months
-from ..schemas import Company, Resume
+from ..schemas import CareerStep, Company, JDAnalysis, Resume
 
-PROMPT_VERSION = "v12"
+PROMPT_VERSION = "v13"
 RETRY_MARKER = "Your previous answer was rejected"
 
 _DIR = Path(__file__).parent
@@ -82,6 +82,29 @@ def tailor_user(
         facts=facts.strip() or "Total professional experience: unknown (do not state a number of years).",
         hints=hints.strip() or "(none given)",
         extra=SHORTEN_NOTE if shorten else "",
+    )
+
+
+def revise_user(
+    jd: str, companies: list[Company], hints: str, facts: str = "", *, bullets: list[int] | None = None,
+    today: date | None = None, analysis: JDAnalysis, plan: list[CareerStep], draft: str, problems: str,
+) -> str:
+    """The fix round: the same opening as tailor_user (so the provider can reuse its cache of it), then the final
+    analysis and plan, the numbered draft and what to fix. The answer is a TailorRevision: only what changes."""
+    steps = [f"company_index {s.company_index}: {s.scope} | {', '.join(s.focus)}" for s in plan]
+    return _fill(
+        _read("revise.md"),
+        jd=jd.strip(),
+        count=str(len(companies)),
+        companies=describe_companies(companies, bullets, today),
+        facts=facts.strip() or "Total professional experience: unknown (do not state a number of years).",
+        hints=hints.strip() or "(none given)",
+        must_haves=", ".join(analysis.must_have_skills) or "(none)",
+        keywords=", ".join(analysis.keywords) or "(none)",
+        plan="\n".join(steps) or "(none)",
+        draft=draft,
+        marker=RETRY_MARKER,
+        problems=problems,
     )
 
 

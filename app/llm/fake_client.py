@@ -6,6 +6,9 @@ is template-based and is NOT a measure of what real models write.
 
 Styles:  concise | detailed (long bullets, includes one invented number so the check can flag it)
          flaky (returns invalid JSON until the retry feedback appears in the prompt)
+
+A fix request (schema "tailor_revision") is answered like a real model should: only the parts of the draft that
+differ from what this model would write itself, so a corrupted draft gets exactly its repairs back.
 """
 from __future__ import annotations
 
@@ -142,6 +145,8 @@ class FakeClient(LLMClient):
             data: dict = {"jd_analysis": {"target_role": "x"}} if schema_name == "tailor_output" else {"greeting": "Hi"}
         elif schema_name == "tailor_output":
             data = self._tailor(ctx)
+        elif schema_name == "tailor_revision":
+            data = self._revise(ctx)
         elif schema_name == "cover_letter":
             data = self._cover_letter(ctx)
         elif schema_name == "profile":
@@ -157,6 +162,31 @@ class FakeClient(LLMClient):
         )
 
     # ------------------------------------------------------------------ content
+    def _revise(self, ctx: dict) -> dict:
+        """What differs between the draft in the context and this model's own clean sections."""
+        clean, draft = self._tailor(ctx)["sections"], ctx.get("draft") or {}
+        own = {e["company_index"]: e for e in clean["experience"]}
+        titles, bullets = [], []
+        for exp in draft.get("experience", []):
+            mine = own.get(exp["company_index"])
+            if mine is None:
+                continue
+            if mine["job_title"] != exp["job_title"]:
+                titles.append({"company_index": exp["company_index"], "job_title": mine["job_title"]})
+            for index, (theirs, ours) in enumerate(zip(exp["bullets"], mine["bullets"])):
+                if theirs != ours:
+                    bullets.append({"company_index": exp["company_index"], "bullet_index": index, "text": ours})
+        clean_skills = [skill for group in clean["skills"] for skill in group["skills"]]
+        draft_skills = [skill for group in draft.get("skills", []) for skill in group["skills"]]
+        missing = [s for s in clean_skills if s.lower() not in {d.lower() for d in draft_skills}]
+        changes = [{"old": skill, "new": missing.pop(0) if missing else ""}
+                   for skill in draft_skills if skill.lower() not in {c.lower() for c in clean_skills}]
+        return {
+            "headline": clean["headline"] if clean["headline"] != draft.get("headline") else "",
+            "summary": clean["summary"] if clean["summary"] != draft.get("summary") else "",
+            "titles": titles, "bullets": bullets, "skill_changes": changes,
+        }
+
     def _tailor(self, ctx: dict) -> dict:
         jd = ctx.get("jd", "")
         companies = ctx.get("profile", {}).get("companies", [])

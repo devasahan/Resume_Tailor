@@ -3,7 +3,7 @@ import json
 import pytest
 
 from app.llm.schema import extract_json, strict_json_schema
-from app.schemas import CoverLetterOut, Profile, TailorOutput
+from app.schemas import CoverLetterOut, Profile, TailorOutput, TailorRevision
 
 
 def walk(node):
@@ -16,7 +16,7 @@ def walk(node):
             yield from walk(v)
 
 
-@pytest.mark.parametrize("model", [TailorOutput, CoverLetterOut, Profile])
+@pytest.mark.parametrize("model", [TailorOutput, TailorRevision, CoverLetterOut, Profile])
 def test_strict_schema_is_self_contained_and_closed(model):
     schema = strict_json_schema(model)
     text = json.dumps(schema)

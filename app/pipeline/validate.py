@@ -17,13 +17,16 @@ from itertools import pairwise
 from ..schemas import (
     CoverLetter,
     Coverage,
+    ExperienceOut,
     Flag,
     JDAnalysis,
     Profile,
     Resume,
     ResumeExperience,
     SkillGroup,
+    TailoredSections,
     TailorOutput,
+    TailorRevision,
 )
 from .facts import months_phrase, parse_point, stay_months
 
@@ -95,6 +98,65 @@ def build_resume(profile: Profile, out: TailorOutput) -> Resume:
     )
     assert_fixed_fields_intact(profile, resume)
     return resume
+
+
+_INDEX_LABEL = re.compile(r"^\s*\[\d+\]\s*")
+_FIELD_LABEL = re.compile(r"^\s*(?:headline|summary)\s*:\s*", re.IGNORECASE)
+# An edit whose text is clearly another bullet of the same employer rewritten (it shares at least half its words,
+# and clearly more than with the bullet it claims to replace) points at the wrong bullet_index.
+SHIFT_MIN_OVERLAP, SHIFT_MARGIN = 0.5, 0.2
+
+
+def _overlap(a: str, b: str) -> float:
+    words_a = {w.lower() for w in _WORD.findall(a)}
+    words_b = {w.lower() for w in _WORD.findall(b)}
+    return len(words_a & words_b) / len(words_a | words_b) if words_a | words_b else 0.0
+
+
+def apply_revision(out: TailorOutput, draft: Resume, rev: TailorRevision) -> TailorOutput:
+    """The first answer with a fix applied: `draft` is the resume made from `out`, `rev` lists only what changes.
+    The analysis, the career plan and the number of bullets stay as they are. Raises ValueError for an edit that
+    cannot be applied as meant, so the caller keeps the first draft. Neither input is changed."""
+    bullets = {exp.company_index: list(exp.bullets) for exp in draft.experience}
+    originals = {index: list(items) for index, items in bullets.items()}
+    titles = {entry.company_index: entry.job_title for entry in out.sections.experience}
+    for change in rev.titles:
+        if change.company_index not in titles:
+            raise ValueError(f"titles: there is no company_index {change.company_index}.")
+        if change.job_title.strip():
+            titles[change.company_index] = change.job_title
+    seen: set[tuple[int, int]] = set()
+    for change in rev.bullets:
+        where = f"company_index {change.company_index}, bullet_index {change.bullet_index}"
+        current = bullets.get(change.company_index)
+        if current is None or not 0 <= change.bullet_index < len(current):
+            raise ValueError(f"bullets: there is no bullet at {where}.")
+        if (change.company_index, change.bullet_index) in seen:
+            raise ValueError(f"bullets: {where} is changed twice.")
+        seen.add((change.company_index, change.bullet_index))
+        text = _INDEX_LABEL.sub("", change.text).strip()
+        if not text:
+            continue
+        own = originals[change.company_index]
+        target = _overlap(text, own[change.bullet_index])
+        for other_index, other in enumerate(own):
+            other_overlap = _overlap(text, other)
+            if other_index != change.bullet_index and other_overlap >= SHIFT_MIN_OVERLAP \
+                    and other_overlap >= target + SHIFT_MARGIN:
+                raise ValueError(f"bullets: the new text for {where} rewrites bullet_index {other_index} instead.")
+        current[change.bullet_index] = text
+    skills = [SkillGroup(category=group.category, skills=list(group.skills)) for group in draft.skills]
+    for change in rev.skill_changes:
+        old, new = clean_text(change.old).lower(), clean_text(change.new)
+        for group in skills:
+            group.skills = [new if item.lower() == old else item for item in group.skills if item.lower() != old or new]
+    sections = TailoredSections(
+        headline=_FIELD_LABEL.sub("", rev.headline).strip() or draft.headline,
+        summary=_FIELD_LABEL.sub("", rev.summary).strip() or draft.summary,
+        skills=skills,
+        experience=[ExperienceOut(company_index=i, job_title=titles[i], bullets=bullets[i]) for i in sorted(bullets)],
+    )
+    return out.model_copy(update={"sections": sections})
 
 
 def assert_fixed_fields_intact(original: Profile, resume: Resume) -> None:

@@ -137,10 +137,12 @@ class Uncovered(LLMClient):
     async def generate_structured(self, **kwargs):
         self.prompts.append(kwargs["user"])
         result = await self.inner.generate_structured(**kwargs)
-        must = result.data["jd_analysis"]["must_have_skills"]
-        must.append("agentic development")
-        if RETRY_MARKER in kwargs["user"] and not self.always:
-            result.data["sections"]["summary"] += " Applies agentic development with AI coding agents in a team."
+        if kwargs["schema_name"] == "tailor_revision":  # the fix (the analysis is final, so nothing to add there)
+            if not self.always:
+                draft = kwargs["context"]["draft"]["summary"]
+                result.data["summary"] = draft + " Applies agentic development with AI coding agents in a team."
+            return result
+        result.data["jd_analysis"]["must_have_skills"].append("agentic development")
         return result
 
 
@@ -214,6 +216,8 @@ class TitlesOff(LLMClient):
     async def generate_structured(self, **kwargs):
         self.prompts.append(kwargs["user"])
         result = await self.inner.generate_structured(**kwargs)
+        if kwargs["schema_name"] != "tailor_output":  # a fix only changes what it lists
+            return result
         experience = result.data["sections"]["experience"]
         if self.flat and RETRY_MARKER not in kwargs["user"]:
             for exp in experience:

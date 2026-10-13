@@ -223,6 +223,17 @@ def forwarded_proto(request: Request) -> str:
     return request.headers.get("x-forwarded-proto", "").split(",")[0].strip().lower()
 
 
+def show_app_log() -> None:
+    """Send the app's own INFO lines (one per model call: how long it took and how many tokens) to stderr, which
+    hosts keep as the server log. Only the server entry points call this, so tests and the CLI stay quiet."""
+    logger = logging.getLogger("app")
+    if logger.level == logging.NOTSET:
+        handler = logging.StreamHandler()
+        handler.setFormatter(logging.Formatter("%(asctime)s %(name)s: %(message)s"))
+        logger.addHandler(handler)
+        logger.setLevel(logging.INFO)
+
+
 HTTPS_PROBE = "rt_https"  # a Secure cookie: browsers send it only over https://
 log = logging.getLogger("resume_tailor")
 _proxy_logged = False

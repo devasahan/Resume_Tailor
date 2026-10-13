@@ -9,7 +9,7 @@ from app.llm.base import LLMClient
 from app.llm.fake_client import FakeClient
 from app.pipeline import validate
 from app.pipeline.tailor import run_tailor
-from app.prompts import RETRY_MARKER, tailor_system
+from app.prompts import tailor_system
 from app.render.docx import resume_docx
 from app.render.pdf import display_url, render_resume_pdf
 from app.schemas import FitStyle
@@ -77,13 +77,19 @@ class Dense(LLMClient):
         result = await self.inner.generate_structured(**kwargs)
         figures = iter(["23.4%", "17.8%", "38", "21%", "1.7TB", "12.6%", "47", "8.3%", "19%", "26.1%", "13.7%",
                         "29", "6.4%", "31.2%", "44", "16.9%"])
+
+        def bullet(i):
+            return (f"Improved delivery of reporting stream {'abcdefgh'[i]} by {next(figures)} by reworking its "
+                    "batch schedule and adding checks to every load")
+
+        if kwargs["schema_name"] == "tailor_revision":  # the fix keeps a figure only in each first bullet
+            for edit in result.data["bullets"]:
+                if edit["bullet_index"] == 0:
+                    edit["text"] = bullet(0)
+            return result
         for exp in result.data["sections"]["experience"]:
             for i in range(len(exp["bullets"])):
-                if RETRY_MARKER not in kwargs["user"] or i == 0:
-                    exp["bullets"][i] = (
-                        f"Improved delivery of reporting stream {'abcdefgh'[i]} by {next(figures)} by reworking its "
-                        "batch schedule and adding checks to every load"
-                    )
+                exp["bullets"][i] = bullet(i)
         return result
 
 

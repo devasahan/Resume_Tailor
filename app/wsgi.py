@@ -10,7 +10,7 @@ import threading
 
 from a2wsgi import ASGIMiddleware
 
-from .main import create_app
+from .main import create_app, show_app_log
 
 _bridge: ASGIMiddleware | None = None
 _bridge_pid = 0
@@ -25,5 +25,6 @@ def application(environ, start_response):
     if _bridge is None or _bridge_pid != os.getpid():
         with _lock:
             if _bridge is None or _bridge_pid != os.getpid():
+                show_app_log()
                 _bridge, _bridge_pid = ASGIMiddleware(create_app()), os.getpid()
     return _bridge(environ, start_response)

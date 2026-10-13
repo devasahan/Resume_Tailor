@@ -52,13 +52,19 @@ class Rounder(LLMClient):
         if retry and self.fail_retry:
             raise ProviderError("overloaded", 529)
         result = await self.inner.generate_structured(**kwargs)
+
+        def bullet(figure):
+            return (f"Improved pipeline throughput by {figure} by moving the nightly batch jobs to Spark and "
+                    "partitioning the largest tables by date")
+
+        if kwargs["schema_name"] == "tailor_revision":  # the fix: only the first bullet of the first two jobs
+            edits = [e for e in result.data["bullets"] if not (e["bullet_index"] == 0 and e["company_index"] < 2)]
+            result.data["bullets"] = edits + [{"company_index": i, "bullet_index": 0, "text": bullet(figure)}
+                                              for i, figure in enumerate(("23.4%", "38"))]
+            return result
         experience = result.data["sections"]["experience"]
-        figures = ("23.4%", "38") if retry else self.round_figures
-        for exp, figure in zip(experience, figures, strict=False):  # 3 jobs, 2 figures: only the first two change
-            exp["bullets"][0] = (
-                f"Improved pipeline throughput by {figure} by moving the nightly batch jobs to Spark and partitioning "
-                "the largest tables by date"
-            )
+        for exp, figure in zip(experience, self.round_figures, strict=False):  # 3 jobs, 2 figures: two change
+            exp["bullets"][0] = bullet(figure)
         return result
 
 
