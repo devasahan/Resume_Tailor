@@ -1,9 +1,11 @@
 {% extends "base.html" %}
 {% block title %}Account - Resume Tailor{% endblock %}
 {% block content %}
-<div class="auth" style="margin-top:10px">
-  <h1>Account</h1>
-  <p class="sub">{{ user.email }}{% if user.is_admin %} (admin){% endif %}</p>
+<div class="narrow">
+  <div class="page-head">
+    <h1>Account</h1>
+    <p class="sub">{{ user.email }}{% if user.is_admin %} (admin){% endif %}</p>
+  </div>
   {% if user.is_admin %}
   <div class="panel">
     <h2>Password</h2>
@@ -18,7 +20,7 @@
     <input type="password" id="new" autocomplete="new-password" required>
     <label for="confirm">New password again</label>
     <input type="password" id="confirm" autocomplete="new-password" required>
-    <button class="primary" id="submit" type="submit">Change password</button>
+    <div class="row" style="margin-top:18px"><button class="primary" id="submit" type="submit">Change password</button></div>
     <div id="message"></div>
   </form>
   {% endif %}

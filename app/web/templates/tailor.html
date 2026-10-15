@@ -1,52 +1,94 @@
 {% extends "base.html" %}
 {% block title %}Tailor - Resume Tailor{% endblock %}
 {% block content %}
-<h1>Tailor a resume</h1>
-<p class="sub">Pick a base resume, paste the job description, and tailor it. Then make the cover letter and download both as PDF.</p>
+<div class="page-head">
+  <h1>Tailor your resume</h1>
+  <p class="sub">Choose a base resume, paste the job description, and create a tailored resume and cover letter, ready to download as PDF.</p>
+</div>
 <div id="setup-note"></div>
 
-<div class="two" style="align-items: start">
-  <div class="panel">
-    <label for="resume" style="margin-top:0">Base resume</label>
-    <select id="resume"></select>
-    <p class="small muted" id="resume-note"></p>
-    <label for="jd">Job description</label>
-    <textarea id="jd" style="min-height: 360px" placeholder="Paste the full job description here"></textarea>
-    <div class="row" style="margin-top:12px">
-      <button class="primary" id="run" type="button">Tailor resume</button>
-      <button id="cover-letter" type="button">Make cover letter</button>
-      <span id="status" class="small muted"></span>
-    </div>
-    <div id="messages"></div>
-    <p class="small muted" id="models-note"></p>
+<div class="tailor-grid">
+  <div>
+    <section class="panel">
+      <h2 class="card-title"><span class="step-num">1</span><label for="resume">Choose your resume</label></h2>
+      <select id="resume"></select>
+      <p class="small muted" id="resume-note" style="margin:8px 0 0"></p>
+    </section>
+
+    <section class="panel">
+      <h2 class="card-title"><span class="step-num">2</span><label for="jd">Paste the job description</label></h2>
+      <textarea id="jd" placeholder="Paste the full job description here: the title, the duties and the requirements."></textarea>
+    </section>
+
+    <section class="panel">
+      <h2 class="card-title"><span class="step-num">3</span>Create</h2>
+      <div class="create">
+        <button class="primary btn-lg" id="create" type="button" disabled><span class="icon i-spark" aria-hidden="true"></span>Create resume &amp; cover letter</button>
+        <button class="link-btn" id="resume-only" type="button" disabled>Resume only</button>
+      </div>
+      <ol class="steps hidden" id="steps" aria-live="polite">
+        <li data-step="resume"><span class="dot" aria-hidden="true"></span><span class="label">Tailoring your resume</span><span class="state"></span></li>
+        <li data-step="cover"><span class="dot" aria-hidden="true"></span><span class="label">Writing the cover letter</span><span class="state"></span></li>
+        <li data-step="ready"><span class="dot" aria-hidden="true"></span><span class="label">Ready to download</span><span class="state"></span></li>
+      </ol>
+      <p class="status small muted" id="status" aria-live="polite"></p>
+      <div id="messages"></div>
+      <p class="small muted" id="models-note" style="margin-bottom:0"></p>
+    </section>
   </div>
 
   <div>
-    <div class="panel muted" id="empty">The tailored resume appears here, ready to download.</div>
-    <div class="panel hidden" id="result">
-      <div class="metrics" id="chips"></div>
-      <div class="row" id="downloads"></div>
-      <div class="row hidden" id="toggles" style="margin-bottom:8px">
-        <button class="small" id="show-resume" type="button">Resume</button>
-        <button class="small" id="show-cover" type="button">Cover letter</button>
+    <section class="panel empty-state" id="empty">
+      <div class="icon-box"><span class="icon i-doc" aria-hidden="true"></span></div>
+      <h2>Your documents appear here</h2>
+      <p class="muted">Follow steps 1 to 3. Your tailored resume and cover letter will be ready to download here.</p>
+    </section>
+    <section class="panel hidden" id="result">
+      <div class="result-head">
+        <h2 class="card-title">Your documents</h2>
+        <div class="metrics" id="chips"></div>
+      </div>
+      <div class="downloads" id="downloads"></div>
+      <div class="tabs hidden" id="toggles" role="group" aria-label="Preview">
+        <button id="show-resume" type="button">Resume</button>
+        <button id="show-cover" type="button">Cover letter</button>
       </div>
       <iframe class="pdf" id="pdf" title="PDF preview"></iframe>
-    </div>
+    </section>
   </div>
 </div>
 {% endblock %}
 {% block scripts %}
 <script>
 let resumes = [], current = null;  // current = { run, jd, profileId }
+let working = false, letterComing = false, ticking = null;
 
 function recall() { return recallValue('resumeId'); }  // per account, cleared at logout
 function remember(id) { rememberValue('resumeId', id); }
 function chosenId() { return Number($('#resume').value) || null; }
 function busy(on, text = '') {
-  $('#run').disabled = on || !resumes.length;
-  $('#cover-letter').disabled = on || !resumes.length;
-  $('#status').replaceChildren(on ? el('span', { class: 'spinner' }) : null, text);
+  working = on;
+  for (const button of [$('#create'), $('#resume-only'), $('#add-cover')]) {
+    if (button) button.disabled = on || !resumes.length;
+  }
+  $('#status').textContent = text;
 }
+
+// The progress list: waiting (its number), working (spinner and the time so far), done, skipped or failed.
+function step(name) { return $(`#steps [data-step="${name}"]`); }
+function stepState(name, state, note = '') {
+  step(name).className = state;
+  $('.state', step(name)).textContent = note;
+}
+function clock(ms) { const s = Math.floor(ms / 1000); return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, '0')}`; }
+function startStep(name) {  // a slow AI service should not look stuck: the working step counts the seconds
+  stopClock();
+  const started = Date.now();
+  stepState(name, 'working', '0:00');
+  ticking = setInterval(() => { $('.state', step(name)).textContent = clock(Date.now() - started); }, 1000);
+}
+function stopClock() { clearInterval(ticking); ticking = null; }
+function endStep(name, state) { stopClock(); stepState(name, state, $('.state', step(name)).textContent); }
 
 function resumeNote() {
   const r = resumes.find(x => x.id === chosenId());
@@ -54,6 +96,10 @@ function resumeNote() {
   const jobs = r.profile.companies.map(c => c.name).join(', ');
   $('#resume-note').replaceChildren(`${r.profile.companies.length} employer(s): ${jobs} · `,
     el('a', { href: '/profile', text: 'Manage resumes' }));
+}
+
+function download(href, text) {
+  return el('a', { class: 'btn primary', href }, el('span', { class: 'icon i-download', 'aria-hidden': 'true' }), text);
 }
 
 function showResult(run, view = 'resume') {
@@ -65,8 +111,11 @@ function showResult(run, view = 'resume') {
     chip(`${Math.round(run.coverage.score * 100)}% keywords`, run.coverage.score >= 0.8 ? 'ok' : 'warn'),
     ME.admin ? [chip(run.served_model || run.requested_model), chip(money(run.cost_usd + (run.cover_cost_usd || 0)))] : null);
   $('#downloads').replaceChildren(
-    el('a', { class: 'btn primary', href: `/api/runs/${id}/resume.pdf?download=1`, text: 'Download resume PDF' }),
-    run.cover_letter ? el('a', { class: 'btn primary', href: `/api/runs/${id}/cover.pdf?download=1`, text: 'Download cover letter PDF' }) : null);
+    download(`/api/runs/${id}/resume.pdf?download=1`, 'Download resume PDF'),
+    run.cover_letter ? download(`/api/runs/${id}/cover.pdf?download=1`, 'Download cover letter PDF')
+      : letterComing ? null
+        : el('button', { class: 'outline', id: 'add-cover', type: 'button', disabled: working, onclick: () => create(true, true) },
+          el('span', { class: 'icon i-plus', 'aria-hidden': 'true' }), 'Add cover letter'));
   $('#toggles').classList.toggle('hidden', !run.cover_letter);
   preview(run.cover_letter ? view : 'resume');
 }
@@ -76,8 +125,8 @@ function preview(view) {
   const id = current.run.run_id;
   const file = view === 'cover' ? 'cover.pdf' : 'resume.pdf';
   $('#pdf').src = `/api/runs/${id}/${file}?t=${Date.now()}#toolbar=0&navpanes=0&view=FitH`;
-  $('#show-resume').classList.toggle('primary', view !== 'cover');
-  $('#show-cover').classList.toggle('primary', view === 'cover');
+  $('#show-resume').classList.toggle('on', view !== 'cover');
+  $('#show-cover').classList.toggle('on', view === 'cover');
 }
 
 function readJd() {
@@ -86,9 +135,9 @@ function readJd() {
   return jd;
 }
 
-function stillWorking(text, waited, error) {  // the slow-service note only once the wait is really long
-  if (error) return `${text} Cannot reach the server right now; still trying.`;
-  return waited > 60000 ? `${text} The AI service is slow right now; this can take a few minutes.` : text;
+function stillWorking(waited, error) {  // the slow-service note only once the wait is really long
+  if (error) return 'Cannot reach the server right now; still trying.';
+  return waited > 60000 ? 'The AI service is slow right now; this can take a few minutes.' : 'This usually takes under a minute.';
 }
 
 function clearResult() {  // no usable result: do not leave the previous one's downloads on screen
@@ -101,7 +150,7 @@ async function tailorNow(jd) {
   let run;
   try {
     run = await finished(await api('/api/tailor', { method: 'POST', body: { jd, profile_id: profileId } }),
-      (waited, error) => busy(true, stillWorking('Still tailoring the resume...', waited, error)));
+      (waited, error) => busy(true, stillWorking(waited, error)));
   } catch (err) { clearResult(); throw err; }
   if (run.status === 'error') {
     clearResult();
@@ -112,36 +161,51 @@ async function tailorNow(jd) {
   return run;
 }
 
-$('#run').addEventListener('click', async () => {
+// One click: the resume, then (unless "Resume only") the cover letter. "Add cover letter" keeps the resume made for
+// this same job and base resume.
+async function create(withLetter, keepResume = false) {
   const jd = readJd();
   if (!jd) return;
   $('#messages').replaceChildren();
-  busy(true, 'Tailoring the resume... (usually under a minute)');
-  try { await tailorNow(jd); busy(false, 'Resume ready.'); }
-  catch (err) { busy(false); $('#messages').replaceChildren(notice('bad', err.message)); }
-});
-
-$('#cover-letter').addEventListener('click', async () => {
-  const jd = readJd();
-  if (!jd) return;
-  $('#messages').replaceChildren();
+  const reuse = keepResume && current && current.jd === jd && current.profileId === chosenId();
+  $('#steps').classList.remove('hidden');
+  stepState('resume', reuse ? 'done' : '');
+  stepState('cover', withLetter ? '' : 'skipped', withLetter ? '' : 'skipped');
+  stepState('ready', '');
+  letterComing = withLetter;
+  let now = 'resume';
   try {
-    if (!current || current.jd !== jd || current.profileId !== chosenId()) {
-      busy(true, 'Tailoring the resume first...');
+    if (!reuse) {
+      startStep('resume');
+      busy(true, stillWorking(0, null));
       await tailorNow(jd);
+      endStep('resume', 'done');
     }
-    busy(true, 'Writing the cover letter...');
-    const run = await finished(await api(`/api/runs/${current.run.run_id}/cover-letter`, { method: 'POST', body: {} }),
-      (waited, error) => busy(true, stillWorking('Still writing the cover letter...', waited, error)));
-    current.run = run;
-    showResult(run, 'cover');
-    busy(false, 'Resume and cover letter ready.');
+    if (withLetter) {
+      now = 'cover';
+      startStep('cover');
+      busy(true, stillWorking(0, null));
+      const run = await finished(await api(`/api/runs/${current.run.run_id}/cover-letter`, { method: 'POST', body: {} }),
+        (waited, error) => busy(true, stillWorking(waited, error)));
+      endStep('cover', 'done');
+      current.run = run;
+    }
+    letterComing = false;
+    showResult(current.run, withLetter ? 'cover' : 'resume');
+    stepState('ready', 'done');
+    busy(false, withLetter ? 'Your resume and cover letter are ready.' : 'Your resume is ready.');
+    if (window.matchMedia('(max-width: 960px)').matches) $('#result').scrollIntoView({ behavior: 'smooth', block: 'start' });
   } catch (err) {
+    endStep(now, 'failed');
+    letterComing = false;
     busy(false);
+    if (current) showResult(current.run);  // a failed cover letter keeps the finished resume, with "Add cover letter"
     $('#messages').replaceChildren(notice('bad', err.message));
   }
-});
+}
 
+$('#create').addEventListener('click', () => create(true));
+$('#resume-only').addEventListener('click', () => create(false));
 $('#resume').addEventListener('change', () => { remember(chosenId()); resumeNote(); });
 $('#show-resume').addEventListener('click', () => preview('resume'));
 $('#show-cover').addEventListener('click', () => preview('cover'));
@@ -172,8 +236,8 @@ async function init() {
     text: `${x.profile.name} - ${x.filename || 'saved profile'} (${new Date(x.created_at).toLocaleDateString()})` })));
   if (pick) remember(pick.id);
   resumeNote();
-  if (ME.admin) await modelsNote();
   busy(false);
+  if (ME.admin) await modelsNote();
 }
 init().catch(err => $('#messages').replaceChildren(notice('bad', err.message)));
 </script>

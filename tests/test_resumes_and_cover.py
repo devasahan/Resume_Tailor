@@ -250,7 +250,8 @@ def test_pages_show_only_the_simple_controls(client):
     tailor_page = client.get("/tailor").text
     for gone in ("Real facts about you", "Compare several", "Company applying to", "Hiring manager"):
         assert gone not in tailor_page
-    assert "Make cover letter" in tailor_page and 'id="resume"' in tailor_page
+    assert "Create resume &amp; cover letter" in tailor_page and "Resume only" in tailor_page and 'id="resume"' in tailor_page
+    assert "Make cover letter" not in tailor_page  # one main button now does both
     profile_page = client.get("/profile").text
     assert "Save profile" not in profile_page and "Read file" not in profile_page and "Drop resumes here" in profile_page
 

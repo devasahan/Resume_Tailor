@@ -27,8 +27,8 @@ If something does not start, run **`python -m app.doctor`**. It checks Python, t
 
 ### Try the demo (about two minutes)
 1. **Profile** > drop `evals/sample_base_resume.docx` (or `.pdf` / `.txt`) on the page, or **Choose files**. It is read and saved at once and appears in the list.
-2. **Tailor** > pick the base resume > paste a job description (for example `evals/jds/01_data_engineer.txt`) > **Tailor resume**.
-3. **Download resume PDF**, then **Make cover letter** > **Download cover letter PDF**. (**Make cover letter** on its own also tailors the resume first.)
+2. **Tailor** > pick the base resume > paste a job description (for example `evals/jds/01_data_engineer.txt`) > **Create resume & cover letter**.
+3. **Download resume PDF** and **Download cover letter PDF**. (**Resume only** skips the letter; **Add cover letter** writes it later for the same resume.)
    Files are named the usual way for applications, name then document: `Jordan_Rivera_Resume.pdf` and `Jordan_Rivera_Cover_Letter.pdf` (a name in capitals gets normal capitals).
 
 The demo models write generic template text. They exist to show the flow (fit to one page, flags for invented numbers, retries); they say nothing about what real models write.
@@ -50,8 +50,8 @@ Nothing leaves your computer except the calls to the model providers you pick. S
 
 ## Using it
 1. **Profile**: upload one or more base resumes (PDF, DOCX, TXT). Each is read and saved right away and listed with its employers, education and anything to double-check (for example "Phone not found"). The reader is set in Settings > Base-resume reader: Automatic uses the cheapest available model (the resume text is sent to that provider), **Rules only** reads it on your machine for free. If a read is wrong, delete it and upload again. Uploaded resumes stay until you delete them.
-2. **Tailor**: pick a base resume, paste the job description, **Tailor resume**. The resume model comes from Settings.
-3. **Make cover letter** writes the letter for that resume (one more call, added to the same run's cost).
+2. **Tailor**: pick a base resume, paste the job description, **Create resume & cover letter**. The page shows each step (resume, cover letter, ready) with the time so far. The resume model comes from Settings.
+3. The cover letter is one more call, added to the same run's cost. **Resume only** skips it; **Add cover letter** writes it later for that resume.
 4. **Download resume PDF** / **Download cover letter PDF**. There is no manual editing step: the app checks and fixes the draft itself (one page, title path, required skills, thin text, figures) before you see it. History keeps the PDFs of every run.
 
 ## Models

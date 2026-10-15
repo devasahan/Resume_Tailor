@@ -1,17 +1,19 @@
 {% extends "base.html" %}
 {% block title %}History - Resume Tailor{% endblock %}
 {% block content %}
-<h1>History</h1>
-<p class="sub" id="sub">Every click on a Download button, by every account. Previews are not counted.</p>
+<div class="page-head">
+  <h1>History</h1>
+  <p class="sub" id="sub">Every click on a Download button, by every account. Previews are not counted.</p>
+</div>
 <div class="panel">
   <div class="row" style="margin-bottom:10px">
     <label for="account" style="margin:0">Account</label>
     <select id="account" style="width:auto"><option value="">All accounts</option></select>
     <span class="small muted" id="spent"></span>
   </div>
-  <table><thead><tr>
+  <div class="table-wrap"><table class="wide"><thead><tr>
     <th>When (UTC)</th><th>Account</th><th>Resume of</th><th>Company</th><th>Role</th><th>File</th><th>Model</th><th>Cost</th><th></th>
-  </tr></thead><tbody id="rows"></tbody></table>
+  </tr></thead><tbody id="rows"></tbody></table></div>
 </div>
 {% endblock %}
 {% block scripts %}

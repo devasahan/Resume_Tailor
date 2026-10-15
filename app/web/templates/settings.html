@@ -1,11 +1,13 @@
 {% extends "base.html" %}
 {% block title %}Settings - Resume Tailor{% endblock %}
 {% block content %}
-<h1>Settings</h1>
-<p class="sub">Changes apply immediately to new runs. Runs already in progress finish on the model they started with.</p>
+<div class="page-head">
+  <h1>Settings</h1>
+  <p class="sub">Changes apply immediately to new runs. Runs already in progress finish on the model they started with.</p>
+</div>
 <div class="panel"><h2>Models</h2>
   <p class="small muted">A model is usable when its API key variable is set and its data region is allowed below. Prices and model names marked "unverified" came from third-party sources: run the check below.</p>
-  <table><thead><tr><th>Model</th><th>Provider</th><th>Model string</th><th>$ per 1M in / out</th><th>Region</th><th>Status</th></tr></thead><tbody id="model-rows"></tbody></table>
+  <div class="table-wrap"><table class="wide"><thead><tr><th>Model</th><th>Provider</th><th>Model string</th><th>$ per 1M in / out</th><th>Region</th><th>Status</th></tr></thead><tbody id="model-rows"></tbody></table></div>
 </div>
 
 <div class="panel"><h2>Defaults</h2>
@@ -38,7 +40,7 @@
   <p class="small muted">Makes one tiny real call per ticked model to confirm the key, model name and JSON mode work. It costs a fraction of a cent each.</p>
   <div class="models" id="check-list"></div>
   <div class="row" style="margin-top:8px"><button id="check">Run check</button><span id="check-status" class="small muted"></span></div>
-  <div id="check-results"></div>
+  <div class="table-wrap" id="check-results"></div>
 </div>
 
 <div class="panel"><h2>Your data</h2>

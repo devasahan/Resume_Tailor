@@ -1,11 +1,14 @@
 {% extends "base.html" %}
 {% block title %}Profile - Resume Tailor{% endblock %}
 {% block content %}
-<h1>Base resumes</h1>
-<p class="sub">Upload a resume and it is saved. The app keeps only its fixed facts (name, contact details, employers with dates and work mode, education) and writes everything else for each job.</p>
+<div class="page-head">
+  <h1>Base resumes</h1>
+  <p class="sub">Upload a resume and it is saved. The app keeps only its fixed facts (name, contact details, employers with dates and work mode, education) and writes everything else for each job.</p>
+</div>
 
 <div class="panel">
   <div class="drop" id="drop">
+    <div class="icon-box"><span class="icon i-upload" aria-hidden="true"></span></div>
     <div class="drop-title">Drop resumes here</div>
     <div class="small muted">PDF, DOCX or TXT, up to 5 MB each. You can add several at once.</div>
     <button class="primary" id="choose" type="button">Choose files</button>
@@ -15,7 +18,7 @@
   <div id="uploads"></div>
 </div>
 
-<h2>Uploaded resumes <span class="muted small" id="count"></span></h2>
+<div class="section-head"><h2>Uploaded resumes</h2><span class="muted small" id="count"></span></div>
 <div id="list"></div>
 {% endblock %}
 {% block scripts %}

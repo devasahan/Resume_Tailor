@@ -1,14 +1,16 @@
 {% extends "base.html" %}
 {% block title %}Users - Resume Tailor{% endblock %}
 {% block content %}
-<h1>Users</h1>
-<p class="sub">New sign-ups wait here until you approve them. A user can upload resumes, tailor them and download the PDFs; they never see History, Users or Settings. Sign-up emails are not verified: check with the person before you approve.</p>
+<div class="page-head">
+  <h1>Users</h1>
+  <p class="sub">New sign-ups wait here until you approve them. A user can upload resumes, tailor them and download the PDFs; they never see History, Users or Settings. Sign-up emails are not verified: check with the person before you approve.</p>
+</div>
 <div id="message"></div>
 <div class="panel">
-  <table>
+  <div class="table-wrap"><table class="wide">
     <thead><tr><th>Email</th><th>Status</th><th>Signed up</th><th>Last login</th><th>Resumes</th><th>Downloads</th><th></th></tr></thead>
     <tbody id="rows"></tbody>
-  </table>
+  </table></div>
 </div>
 {% endblock %}
 {% block scripts %}
