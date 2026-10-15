@@ -65,14 +65,15 @@ function row(d) {
       : el('span', { class: 'small muted', text: 'run deleted' })));
 }
 
-function day(group, open, today) {
+function day(group, open, today, partial) {  // partial: older downloads of this day were not loaded
   const count = group.items.length;
   const name = group.key === today ? `Today · ${group.label}` : group.key === keyBefore(today) ? `Yesterday · ${group.label}` : group.label;
   return el('details', { class: 'panel day', open },
     el('summary', {},
       el('span', { class: 'day-name', text: name }),
       el('span', { class: 'day-meta', title: 'Downloads that day, and what the tailored runs behind them cost',
-        text: `${count} download${count === 1 ? '' : 's'} · ${money(dayCost(group.items))}` })),
+        text: `${count}${partial ? '+' : ''} download${count === 1 && !partial ? '' : 's'} · ${money(dayCost(group.items))}`
+          + (partial ? ' (older ones not shown)' : '') })),
     el('div', { class: 'table-wrap' }, el('table', { class: 'wide' },
       el('thead', {}, el('tr', {}, ['Time', 'Account', 'Resume of', 'Company', 'Role', 'File', 'Model', 'Cost', ''].map(h => el('th', { text: h })))),
       el('tbody', {}, group.items.map(row)))));
@@ -90,12 +91,14 @@ async function load() {
   }
   const today = dayKey.format(new Date());
   const groups = groupByDay(data.downloads);
-  $('#days').replaceChildren(groups.length ? groups.map((g, i) => day(g, i === 0, today))
+  const total = data.accounts.filter(a => !chosen || String(a.user_id) === chosen).reduce((n, a) => n + a.downloads, 0);
+  const cut = data.downloads.length >= LIMIT && total > data.downloads.length;  // the newest LIMIT only: the oldest day is cut
+  $('#days').replaceChildren(groups.length ? groups.map((g, i) => day(g, i === 0, today, cut && i === groups.length - 1))
     : el('div', { class: 'panel muted', text: 'No downloads yet.' }));
-  $('#more').textContent = data.downloads.length >= LIMIT ? `Showing the newest ${LIMIT} downloads.` : '';
+  $('#more').textContent = cut ? `Showing the newest ${data.downloads.length} of ${total} downloads. The oldest day shown is not complete.` : '';
 }
 $('#account').addEventListener('change', () => load().catch(showError));
-function showError(err) { $('#days').replaceChildren(notice('bad', err.message)); }
+function showError(err) { $('#days').replaceChildren(notice('bad', err.message)); $('#more').textContent = ''; }
 load().catch(showError);
 </script>
 {% endblock %}
