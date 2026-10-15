@@ -78,7 +78,7 @@ Costs shown in the app are estimates: `tokens reported by the provider x the pri
 ### Settings (applied to new runs immediately)
 - default model for the resume, the cover letter and for reading the base resume
 - fallback models, tried in order when the chosen one fails (not used in Compare, where each result must show one model alone)
-- a **soft daily cost cap** (new runs stop once today's recorded spend reaches it; runs already in flight finish)
+- a **soft daily cost cap** (new runs stop once today's recorded spend reaches it; runs already in flight finish; the day starts at midnight in Arlington, Texas)
 - allowed data regions (models hosted in `CN` or `UNKNOWN` regions stay off until you allow them)
 - retention (tailored runs are deleted after N days; uploaded resumes stay until you delete them), paper size (Letter / A4)
 - numbers in bullets: realistic estimates flagged for you to confirm (default), or only the numbers you give

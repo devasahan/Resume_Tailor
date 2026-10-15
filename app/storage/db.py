@@ -8,11 +8,14 @@ never written to logs. Every change is a single statement, so several web worker
 from __future__ import annotations
 
 import json
+import logging
 import sqlite3
 import os
 from contextlib import contextmanager
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, time, timedelta, timezone, tzinfo
+from functools import lru_cache
 from pathlib import Path
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from .. import config
 from ..schemas import Profile, TailorResult
@@ -143,6 +146,31 @@ def _migrate(conn: sqlite3.Connection) -> None:
 
 def now_iso() -> str:
     return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def utc_now() -> datetime:
+    return datetime.now(timezone.utc)
+
+
+@lru_cache(maxsize=1)
+def local_zone() -> tzinfo:
+    """The owner's time zone (config.LOCAL_ZONE). Without time-zone data (Windows without the tzdata package) the
+    day is the UTC day, rather than the app failing."""
+    try:
+        return ZoneInfo(config.LOCAL_ZONE)
+    except ZoneInfoNotFoundError:
+        logging.getLogger(__name__).warning("No time-zone data for %s: days are counted in UTC", config.LOCAL_ZONE)
+        return timezone.utc
+
+
+def day_bounds(now: datetime) -> tuple[str, str]:
+    """The local day around `now` as [start, end) in the stored UTC format. Built from the local date, so the
+    23- and 25-hour daylight-saving days come out right."""
+    zone = local_zone()
+    day = now.astimezone(zone).date()
+    start = datetime.combine(day, time(), zone).astimezone(timezone.utc)
+    end = datetime.combine(day + timedelta(days=1), time(), zone).astimezone(timezone.utc)
+    return start.strftime("%Y-%m-%dT%H:%M:%SZ"), end.strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
 class Database:
@@ -319,12 +347,14 @@ class Database:
             out.append(item)
         return out
 
-    def cost_today(self) -> float:
-        today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    def cost_today(self, now: datetime | None = None) -> float:
+        """Spent since midnight in Arlington, Texas (config.LOCAL_ZONE, daylight saving included). created_at is
+        always now_iso()'s UTC format, so a text range finds the day."""
+        start, end = day_bounds(now or utc_now())
         with self._conn() as conn:
             row = conn.execute(
-                "SELECT COALESCE(SUM(cost_usd), 0) AS total FROM runs WHERE substr(created_at, 1, 10) = ?",
-                (today,),
+                "SELECT COALESCE(SUM(cost_usd), 0) AS total FROM runs WHERE created_at >= ? AND created_at < ?",
+                (start, end),
             ).fetchone()
         return float(row["total"])
 

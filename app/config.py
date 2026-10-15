@@ -6,6 +6,8 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 
+LOCAL_ZONE = "America/Chicago"  # Arlington, Texas: the owner's days (History, Spent today, the daily cost cap)
+
 
 FROM_DOTENV: set[str] = set()  # variable names whose value came from .env
 

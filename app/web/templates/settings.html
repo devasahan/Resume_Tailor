@@ -22,7 +22,7 @@
 
 <div class="panel"><h2>Limits and privacy</h2>
   <div class="grid2">
-    <div><label for="daily_cost_cap_usd">Daily cost cap, USD <span class="opt">(0 = none; soft cap)</span></label><input type="number" id="daily_cost_cap_usd" min="0" step="0.5"></div>
+    <div><label for="daily_cost_cap_usd">Daily cost cap, USD <span class="opt">(0 = none; soft cap; the day starts at midnight Texas time)</span></label><input type="number" id="daily_cost_cap_usd" min="0" step="0.5"></div>
     <div><label for="retention_days">Delete tailored runs after, days <span class="opt">(and their download history; 0 = keep; uploaded resumes stay until their owner deletes them)</span></label><input type="number" id="retention_days" min="0" max="3650"></div>
     <div><label for="paper_size">Paper size</label><select id="paper_size"><option>Letter</option><option>A4</option></select></div>
     <div><label for="metrics_mode">Numbers in bullets</label><select id="metrics_mode">
@@ -77,7 +77,7 @@ async function init() {
   field('fallbacks').replaceChildren(...models.filter(x => x.available).map(x => el('label', {}, el('input', { type: 'checkbox', value: x.id, checked: st.fallback_models.includes(x.id) }), x.label)));
   field('daily_cost_cap_usd').value = st.daily_cost_cap_usd; field('retention_days').value = st.retention_days; field('paper_size').value = st.paper_size; field('metrics_mode').value = st.metrics_mode;
   field('regions').replaceChildren(...regions.map(r => el('label', {}, el('input', { type: 'checkbox', value: r, checked: st.allowed_regions.includes(r) }), r)));
-  field('spent').textContent = `Spent today: ${money(s.cost_today)}.`;
+  field('spent').textContent = `Spent today (since midnight Texas time): ${money(s.cost_today)}.`;
   field('check-list').replaceChildren(...models.filter(x => x.available && !x.demo).map(x => el('label', {}, el('input', { type: 'checkbox', value: x.id }), x.label)));
   if (!models.some(x => x.available && !x.demo)) field('check-list').replaceChildren(el('span', { class: 'muted small', text: 'No real models are available yet (no API keys set).' }));
 }

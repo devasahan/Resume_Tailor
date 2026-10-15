@@ -21,6 +21,7 @@ dependencies = [
     "pdfplumber>=0.11",
     "python-multipart>=0.0.9",
     "a2wsgi>=1.10",
+    "tzdata>=2024.1; sys_platform == 'win32'",
 ]
 
 [project.optional-dependencies]

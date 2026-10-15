@@ -411,6 +411,7 @@ def create_app(db: Database | None = None, registry: Registry | None = None, rou
     app.mount("/static", StaticFiles(directory=WEB / "static"), name="static")
     templates = Jinja2Templates(directory=WEB / "templates")
     templates.env.globals["asset_version"] = asset_version(WEB / "static")
+    templates.env.globals["local_zone"] = config.LOCAL_ZONE  # History's days are the same days as the cost cap's
 
     def page(request: Request, name: str, active: str, **ctx):
         user = getattr(request.state, "user", None)

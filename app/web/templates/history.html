@@ -22,7 +22,7 @@ const LIMIT = 1000;  // the most the server sends at once
 let accountsShown = false;
 
 // Days and times in Arlington, Texas (US Central time, with daylight saving), whatever the viewer's computer uses.
-const ZONE = 'America/Chicago';
+const ZONE = {{ local_zone | tojson }};
 const dayKey = new Intl.DateTimeFormat('en-CA', { timeZone: ZONE, year: 'numeric', month: '2-digit', day: '2-digit' });
 const dayName = new Intl.DateTimeFormat('en-US', { timeZone: ZONE, weekday: 'short', year: 'numeric', month: 'short', day: 'numeric' });
 const timeName = new Intl.DateTimeFormat('en-US', { timeZone: ZONE, hour: 'numeric', minute: '2-digit', timeZoneName: 'short' });
@@ -84,7 +84,7 @@ async function load() {
   const query = new URLSearchParams({ limit: LIMIT });
   if (chosen) query.set('user_id', chosen);
   const data = await api('/api/downloads?' + query);
-  $('#spent').textContent = `Spent today (all tailoring, downloaded or not): ${money(data.cost_today)}. History is deleted after the retention period set in Settings.`;
+  $('#spent').textContent = `Spent today (since midnight Texas time; all tailoring, downloaded or not): ${money(data.cost_today)}. History is deleted after the retention period set in Settings.`;
   if (!accountsShown) {
     $('#account').append(...data.accounts.map(a => el('option', { value: a.user_id, text: `${a.email} (${a.downloads})` })));
     accountsShown = true;
