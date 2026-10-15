@@ -3,48 +3,99 @@
 {% block content %}
 <div class="page-head">
   <h1>History</h1>
-  <p class="sub" id="sub">Every click on a Download button, by every account. Previews are not counted.</p>
+  <p class="sub" id="sub">Every click on a Download button, by every account, grouped by day in Texas time (Arlington). Previews are not counted.</p>
 </div>
 <div class="panel">
-  <div class="row" style="margin-bottom:10px">
+  <div class="row">
     <label for="account" style="margin:0">Account</label>
     <select id="account" style="width:auto"><option value="">All accounts</option></select>
     <span class="small muted" id="spent"></span>
   </div>
-  <div class="table-wrap"><table class="wide"><thead><tr>
-    <th>When (UTC)</th><th>Account</th><th>Resume of</th><th>Company</th><th>Role</th><th>File</th><th>Model</th><th>Cost</th><th></th>
-  </tr></thead><tbody id="rows"></tbody></table></div>
 </div>
+<div id="days"></div>
+<p class="small muted" id="more"></p>
 {% endblock %}
 {% block scripts %}
 <script>
 const FILES = { resume: 'Resume', cover_letter: 'Cover letter' };
+const LIMIT = 1000;  // the most the server sends at once
 let accountsShown = false;
+
+// Days and times in Arlington, Texas (US Central time, with daylight saving), whatever the viewer's computer uses.
+const ZONE = 'America/Chicago';
+const dayKey = new Intl.DateTimeFormat('en-CA', { timeZone: ZONE, year: 'numeric', month: '2-digit', day: '2-digit' });
+const dayName = new Intl.DateTimeFormat('en-US', { timeZone: ZONE, weekday: 'short', year: 'numeric', month: 'short', day: 'numeric' });
+const timeName = new Intl.DateTimeFormat('en-US', { timeZone: ZONE, hour: 'numeric', minute: '2-digit', timeZoneName: 'short' });
+
+function keyBefore(key) {  // '2026-03-01' -> '2026-02-28', exact on daylight-saving days too
+  const [y, m, d] = key.split('-').map(Number);
+  return new Date(Date.UTC(y, m - 1, d - 1)).toISOString().slice(0, 10);
+}
+
+function groupByDay(downloads) {  // newest day first, newest download first
+  const days = new Map();
+  for (const d of downloads) {
+    const when = new Date(d.created_at);
+    const key = isNaN(when) ? 'unknown' : dayKey.format(when);
+    if (!days.has(key)) days.set(key, { key, label: isNaN(when) ? 'Unknown date' : dayName.format(when), items: [] });
+    days.get(key).items.push(d);
+  }
+  for (const group of days.values()) group.items.sort((x, y) => (Date.parse(y.created_at) || 0) - (Date.parse(x.created_at) || 0));
+  return [...days.values()].sort((x, y) => (x.key === 'unknown') - (y.key === 'unknown') || y.key.localeCompare(x.key));
+}
+
+function dayCost(items) {  // each row carries its run's whole cost: count every run once, at its latest figure
+  const runs = new Map();
+  for (const d of items) runs.set(d.run_id, Math.max(runs.get(d.run_id) || 0, d.cost_usd || 0));
+  return [...runs.values()].reduce((a, b) => a + b, 0);
+}
+
+function row(d) {
+  const file = d.kind === 'cover_letter' ? 'cover.pdf' : 'resume.pdf';
+  const when = new Date(d.created_at);
+  return el('tr', {},
+    el('td', { class: 'nowrap', text: isNaN(when) ? d.created_at : timeName.format(when) }),
+    el('td', { text: d.email }), el('td', { text: d.candidate || '-' }), el('td', { text: d.company || '-' }),
+    el('td', { text: d.role || '-' }),
+    el('td', {}, chip(`${FILES[d.kind] || d.kind} ${d.format.toUpperCase()}`, d.kind === 'cover_letter' ? 'ok' : ''),
+      el('div', { class: 'small muted', text: d.filename })),
+    el('td', { text: d.model || '-' }), el('td', { text: money(d.cost_usd) }),
+    el('td', {}, d.run_kept
+      ? el('a', { href: `/api/runs/${d.run_id}/${file}`, target: '_blank', rel: 'noopener', text: 'View' })
+      : el('span', { class: 'small muted', text: 'run deleted' })));
+}
+
+function day(group, open, today) {
+  const count = group.items.length;
+  const name = group.key === today ? `Today · ${group.label}` : group.key === keyBefore(today) ? `Yesterday · ${group.label}` : group.label;
+  return el('details', { class: 'panel day', open },
+    el('summary', {},
+      el('span', { class: 'day-name', text: name }),
+      el('span', { class: 'day-meta', title: 'Downloads that day, and what the tailored runs behind them cost',
+        text: `${count} download${count === 1 ? '' : 's'} · ${money(dayCost(group.items))}` })),
+    el('div', { class: 'table-wrap' }, el('table', { class: 'wide' },
+      el('thead', {}, el('tr', {}, ['Time', 'Account', 'Resume of', 'Company', 'Role', 'File', 'Model', 'Cost', ''].map(h => el('th', { text: h })))),
+      el('tbody', {}, group.items.map(row)))));
+}
 
 async function load() {
   const chosen = $('#account').value;
-  const data = await api('/api/downloads' + (chosen ? `?user_id=${encodeURIComponent(chosen)}` : ''));
+  const query = new URLSearchParams({ limit: LIMIT });
+  if (chosen) query.set('user_id', chosen);
+  const data = await api('/api/downloads?' + query);
   $('#spent').textContent = `Spent today (all tailoring, downloaded or not): ${money(data.cost_today)}. History is deleted after the retention period set in Settings.`;
   if (!accountsShown) {
     $('#account').append(...data.accounts.map(a => el('option', { value: a.user_id, text: `${a.email} (${a.downloads})` })));
     accountsShown = true;
   }
-  $('#rows').replaceChildren(...(data.downloads.length ? data.downloads.map(d => {
-    const file = d.kind === 'cover_letter' ? 'cover.pdf' : 'resume.pdf';
-    return el('tr', {},
-      el('td', { text: d.created_at.replace('T', ' ').replace('Z', '') }),
-      el('td', { text: d.email }), el('td', { text: d.candidate || '-' }), el('td', { text: d.company || '-' }),
-      el('td', { text: d.role || '-' }),
-      el('td', {}, chip(`${FILES[d.kind] || d.kind} ${d.format.toUpperCase()}`, d.kind === 'cover_letter' ? 'ok' : ''),
-        el('div', { class: 'small muted', text: d.filename })),
-      el('td', { text: d.model || '-' }), el('td', { text: money(d.cost_usd) }),
-      el('td', {}, d.run_kept
-        ? el('a', { href: `/api/runs/${d.run_id}/${file}`, target: '_blank', rel: 'noopener', text: 'View' })
-        : el('span', { class: 'small muted', text: 'run deleted' })));
-  }) : [el('tr', {}, el('td', { colspan: 9, class: 'muted', text: 'No downloads yet.' }))]));
+  const today = dayKey.format(new Date());
+  const groups = groupByDay(data.downloads);
+  $('#days').replaceChildren(groups.length ? groups.map((g, i) => day(g, i === 0, today))
+    : el('div', { class: 'panel muted', text: 'No downloads yet.' }));
+  $('#more').textContent = data.downloads.length >= LIMIT ? `Showing the newest ${LIMIT} downloads.` : '';
 }
 $('#account').addEventListener('change', () => load().catch(showError));
-function showError(err) { $('#rows').replaceChildren(el('tr', {}, el('td', { colspan: 9 }, notice('bad', err.message)))); }
+function showError(err) { $('#days').replaceChildren(notice('bad', err.message)); }
 load().catch(showError);
 </script>
 {% endblock %}

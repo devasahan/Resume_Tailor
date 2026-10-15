@@ -149,6 +149,19 @@ th { font-size: 12px; text-transform: uppercase; letter-spacing: .05em; color: v
 tbody tr:last-child td { border-bottom: none; }
 tbody tr:hover td { background: var(--row-hover); }
 .panel > .table-wrap:first-child, .panel > table:first-child { margin-top: -4px; }
+td.nowrap { white-space: nowrap; }
+
+/* ------------------------------------------------------------------ history: one card per day, opened by a click */
+details.day { padding: 0; margin-bottom: 10px; overflow: hidden; }
+details.day > summary { list-style: none; cursor: pointer; display: flex; align-items: center; gap: 12px; padding: 14px 18px; font-weight: 600; }
+details.day > summary::-webkit-details-marker { display: none; }
+details.day > summary::before { content: ""; width: 7px; height: 7px; border-right: 2px solid var(--muted); border-bottom: 2px solid var(--muted); transform: rotate(-45deg); transition: transform .15s; flex: none; }
+details.day[open] > summary::before { transform: rotate(45deg); }
+details.day > summary:hover { background: var(--row-hover); }
+details.day > summary:focus-visible { outline-offset: -2px; }
+details.day[open] > summary { border-bottom: 1px solid var(--line); }
+.day-meta { margin-left: auto; color: var(--muted); font-weight: 500; font-size: 13.5px; text-align: right; }
+details.day .table-wrap { padding: 0 8px 4px; }
 
 /* ------------------------------------------------------------------ log in, sign up, account */
 .auth { max-width: 440px; margin: 28px auto; }
