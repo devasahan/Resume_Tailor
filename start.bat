@@ -24,12 +24,15 @@ if not exist ".venv\Scripts\python.exe" (
     if errorlevel 1 goto :fail
 )
 call ".venv\Scripts\activate.bat"
-python -c "import fastapi, fpdf, docx, zoneinfo; zoneinfo.ZoneInfo('America/Chicago')" >nul 2>nul
+python -c "import fastapi, fpdf, docx" >nul 2>nul
 if errorlevel 1 (
     echo Installing libraries...
     python -m pip install --disable-pip-version-check -q -r requirements.txt
     if errorlevel 1 goto :fail
 )
+rem ---- time-zone data for the Texas days (older installs lack it): worth a try, never a reason not to start ----
+python -c "import zoneinfo; zoneinfo.ZoneInfo('America/Chicago')" >nul 2>nul
+if errorlevel 1 python -m pip install --disable-pip-version-check -q --retries 1 --timeout 10 "tzdata>=2024.1" >nul 2>nul
 if not exist ".env" copy ".env.example" ".env" >nul
 
 python -m app.doctor --quiet

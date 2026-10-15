@@ -19,10 +19,13 @@ if [ ! -x .venv/bin/python ]; then
   "$PY" -m venv .venv || { rm -rf .venv; echo "Could not create a virtual environment. On Ubuntu/Debian run: sudo apt install python3-venv"; exit 1; }
 fi
 . .venv/bin/activate
-if ! python -c "import fastapi, fpdf, docx, zoneinfo; zoneinfo.ZoneInfo('America/Chicago')" 2>/dev/null; then
+if ! python -c "import fastapi, fpdf, docx" 2>/dev/null; then
   echo "Installing libraries..."
   python -m pip install --disable-pip-version-check -q -r requirements.txt
 fi
+# Time-zone data for the Texas days (older installs lack it): worth a try, never a reason not to start
+python -c "import zoneinfo; zoneinfo.ZoneInfo('America/Chicago')" 2>/dev/null \
+  || python -m pip install --disable-pip-version-check -q --retries 1 --timeout 10 "tzdata>=2024.1" >/dev/null 2>&1 || true
 [ -f .env ] || cp .env.example .env
 python -m app.doctor --quiet
 exec python -m app
