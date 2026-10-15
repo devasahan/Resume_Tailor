@@ -118,6 +118,20 @@ def check_admin() -> Check:
     return Check("Admin account", True, email)
 
 
+def check_time_zone() -> Check:
+    """Days (History, Spent today, the daily cost cap) are Texas days; Windows needs the tzdata package for that."""
+    from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
+
+    from . import config
+
+    try:
+        ZoneInfo(config.LOCAL_ZONE)
+    except ZoneInfoNotFoundError:
+        return Check("Time zone", False, f"no time-zone data for {config.LOCAL_ZONE}, so days are counted in UTC",
+                     "Run: pip install -r requirements.txt", fatal=False)
+    return Check("Time zone", True, config.LOCAL_ZONE)
+
+
 def port_problem(host: str, port: int) -> str | None:
     """None if the port can be used, otherwise a message that says what to do."""
     probe = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
@@ -150,6 +164,7 @@ def run_checks(host: str = "127.0.0.1", port: int = 8000) -> list[Check]:
         checks.append(check_data_dir())
         checks.extend(check_models())
         checks.append(check_admin())
+        checks.append(check_time_zone())
     checks.append(check_port(host, port))
     return checks
 

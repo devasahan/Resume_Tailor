@@ -19,7 +19,7 @@ if [ ! -x .venv/bin/python ]; then
   "$PY" -m venv .venv || { rm -rf .venv; echo "Could not create a virtual environment. On Ubuntu/Debian run: sudo apt install python3-venv"; exit 1; }
 fi
 . .venv/bin/activate
-if ! python -c "import fastapi, fpdf, docx" 2>/dev/null; then
+if ! python -c "import fastapi, fpdf, docx, zoneinfo; zoneinfo.ZoneInfo('America/Chicago')" 2>/dev/null; then
   echo "Installing libraries..."
   python -m pip install --disable-pip-version-check -q -r requirements.txt
 fi

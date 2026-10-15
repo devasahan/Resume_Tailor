@@ -121,6 +121,21 @@ def test_without_time_zone_data_the_day_is_the_utc_day(db, monkeypatch):
         db_module.local_zone.cache_clear()
 
 
+def test_doctor_says_when_time_zone_data_is_missing(monkeypatch):
+    """Windows has no zone data of its own: an older install without tzdata is told how to fix it."""
+    import zoneinfo
+
+    from app import doctor
+
+    def missing(name):
+        raise ZoneInfoNotFoundError(name)
+
+    assert doctor.check_time_zone().ok
+    monkeypatch.setattr(zoneinfo, "ZoneInfo", missing)
+    check = doctor.check_time_zone()
+    assert not check.ok and not check.fatal and "UTC" in check.detail and "requirements.txt" in check.fix
+
+
 def test_history_uses_the_same_zone_as_the_server(client):
     assert 'const ZONE = "America/Chicago";' in client.get("/history").text
 

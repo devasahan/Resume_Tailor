@@ -662,6 +662,7 @@ def create_app(db: Database | None = None, registry: Registry | None = None, rou
     @app.get("/api/downloads", dependencies=[Depends(admin_user)])
     def api_downloads(user_id: int | None = None, limit: int = 200):
         return {"downloads": db.list_downloads(user_id=user_id, limit=max(1, min(limit, 1000))),
+                "totals": db.download_totals(user_id=user_id),
                 "accounts": db.download_accounts(), "cost_today": round(db.cost_today(), 4)}
 
     # ------------------------------------------------------------------ models + settings (admin)

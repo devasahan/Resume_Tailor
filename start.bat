@@ -24,7 +24,7 @@ if not exist ".venv\Scripts\python.exe" (
     if errorlevel 1 goto :fail
 )
 call ".venv\Scripts\activate.bat"
-python -c "import fastapi, fpdf, docx" >nul 2>nul
+python -c "import fastapi, fpdf, docx, zoneinfo; zoneinfo.ZoneInfo('America/Chicago')" >nul 2>nul
 if errorlevel 1 (
     echo Installing libraries...
     python -m pip install --disable-pip-version-check -q -r requirements.txt

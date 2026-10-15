@@ -269,6 +269,24 @@ def test_history_filters_by_account_and_outlives_its_runs(client, user_client):
     assert [r["run_kept"] for r in kept if r["email"] == "user@example.com"] == [0]
 
 
+def test_history_counts_resumes_and_cover_letters_once_per_tailored_job(client, user_client):
+    save_profile(user_client)
+    save_profile(client)
+    first, second = (tailor(user_client).json()["run_id"] for _ in range(2))
+    user_client.post(f"/api/runs/{first}/cover-letter", json={})
+    for path in ("resume.pdf", "resume.pdf", "resume.docx", "cover.pdf", "cover.docx"):  # one job, clicked five times
+        user_client.get(f"/api/runs/{first}/{path}?download=1")
+    user_client.get(f"/api/runs/{second}/resume.pdf?download=1")
+    admin_run = tailor(client).json()["run_id"]
+    client.get(f"/api/runs/{admin_run}/resume.pdf?download=1")
+    user_id = user_id_of(client, "user@example.com")
+    assert client.get(f"/api/downloads?user_id={user_id}").json()["totals"] == {"resume": 2, "cover_letter": 1}
+    assert client.get("/api/downloads").json()["totals"] == {"resume": 3, "cover_letter": 1}
+    client.app.state.db.delete_user(user_id)  # the history rows outlive the runs, and so do the counts
+    assert client.get(f"/api/downloads?user_id={user_id}").json()["totals"] == {"resume": 2, "cover_letter": 1}
+    assert client.get(f"/api/downloads?user_id={user_id + 99}").json()["totals"] == {"resume": 0, "cover_letter": 0}
+
+
 def test_delete_all_data_keeps_accounts(client, user_client):
     save_profile(user_client)
     run_id = tailor(user_client).json()["run_id"]

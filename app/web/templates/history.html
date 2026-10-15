@@ -11,6 +11,7 @@
     <select id="account" style="width:auto"><option value="">All accounts</option></select>
     <span class="small muted" id="spent"></span>
   </div>
+  <p class="totals" id="totals"></p>
 </div>
 <div id="days"></div>
 <p class="small muted" id="more"></p>
@@ -50,6 +51,13 @@ function dayCost(items) {  // each row carries its run's whole cost: count every
   return [...runs.values()].reduce((a, b) => a + b, 0);
 }
 
+function jobs(items) {  // resumes and cover letters, each tailored job counted once however often it was downloaded
+  const seen = { resume: new Set(), cover_letter: new Set() };
+  for (const d of items) if (seen[d.kind]) seen[d.kind].add(d.run_id);
+  return { resume: seen.resume.size, cover_letter: seen.cover_letter.size };
+}
+function counted(n, word, more = '') { return `${n}${more} ${word}${n === 1 && !more ? '' : 's'}`; }
+
 function row(d) {
   const file = d.kind === 'cover_letter' ? 'cover.pdf' : 'resume.pdf';
   const when = new Date(d.created_at);
@@ -66,13 +74,13 @@ function row(d) {
 }
 
 function day(group, open, today, partial) {  // partial: older downloads of this day were not loaded
-  const count = group.items.length;
+  const count = jobs(group.items), more = partial ? '+' : '';
   const name = group.key === today ? `Today · ${group.label}` : group.key === keyBefore(today) ? `Yesterday · ${group.label}` : group.label;
   return el('details', { class: 'panel day', open },
     el('summary', {},
       el('span', { class: 'day-name', text: name }),
-      el('span', { class: 'day-meta', title: 'Downloads that day, and what the tailored runs behind them cost',
-        text: `${count}${partial ? '+' : ''} download${count === 1 && !partial ? '' : 's'} · ${money(dayCost(group.items))}`
+      el('span', { class: 'day-meta', title: 'Each tailored job counted once, however often it was downloaded; and what those jobs cost',
+        text: `${counted(count.resume, 'resume', more)} · ${counted(count.cover_letter, 'cover letter', more)} · ${money(dayCost(group.items))}`
           + (partial ? ' (older ones not shown)' : '') })),
     el('div', { class: 'table-wrap' }, el('table', { class: 'wide' },
       el('thead', {}, el('tr', {}, ['Time', 'Account', 'Resume of', 'Company', 'Role', 'File', 'Model', 'Cost', ''].map(h => el('th', { text: h })))),
@@ -90,6 +98,9 @@ async function load() {
     accountsShown = true;
   }
   const today = dayKey.format(new Date());
+  $('#totals').replaceChildren(el('strong', { text: 'Total: ' }),
+    `${counted(data.totals.resume, 'resume')} · ${counted(data.totals.cover_letter, 'cover letter')}`,
+    el('span', { class: 'small muted', text: ' (each tailored job counted once, however often it was downloaded)' }));
   const groups = groupByDay(data.downloads);
   const total = data.accounts.filter(a => !chosen || String(a.user_id) === chosen).reduce((n, a) => n + a.downloads, 0);
   const cut = data.downloads.length >= LIMIT && total > data.downloads.length;  // the newest LIMIT only: the oldest day is cut
@@ -98,7 +109,7 @@ async function load() {
   $('#more').textContent = cut ? `Showing the newest ${data.downloads.length} of ${total} downloads. The oldest day shown is not complete.` : '';
 }
 $('#account').addEventListener('change', () => load().catch(showError));
-function showError(err) { $('#days').replaceChildren(notice('bad', err.message)); $('#more').textContent = ''; }
+function showError(err) { $('#days').replaceChildren(notice('bad', err.message)); $('#more').textContent = ''; $('#totals').textContent = ''; }
 load().catch(showError);
 </script>
 {% endblock %}

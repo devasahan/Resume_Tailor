@@ -530,6 +530,15 @@ class Database:
             ).fetchall()
         return [dict(row) for row in rows]
 
+    def download_totals(self, *, user_id: int | None = None) -> dict[str, int]:
+        """Resumes and cover letters downloaded, each tailored job counted once however often it was downloaded."""
+        with self._conn() as conn:
+            rows = conn.execute(
+                "SELECT kind, COUNT(DISTINCT run_id) AS jobs FROM downloads WHERE (? IS NULL OR user_id = ?) GROUP BY kind",
+                (user_id, user_id),
+            ).fetchall()
+        return {"resume": 0, "cover_letter": 0} | {row["kind"]: row["jobs"] for row in rows}
+
     def download_accounts(self) -> list[dict]:
         """Accounts that appear in the download history, for the History filter."""
         with self._conn() as conn:

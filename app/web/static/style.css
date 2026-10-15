@@ -160,6 +160,8 @@ details.day[open] > summary::before { transform: rotate(45deg); }
 details.day > summary:hover { background: var(--row-hover); }
 details.day > summary:focus-visible { outline-offset: -2px; }
 details.day[open] > summary { border-bottom: 1px solid var(--line); }
+.totals { margin: 14px 0 0; font-size: 15px; }
+.totals:empty { display: none; }
 .day-meta { margin-left: auto; color: var(--muted); font-weight: 500; font-size: 13.5px; text-align: right; }
 details.day .table-wrap { padding: 0 8px 4px; }
 
