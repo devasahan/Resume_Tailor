@@ -26,11 +26,12 @@
         <button class="primary btn-lg" id="create" type="button" disabled><span class="icon i-spark" aria-hidden="true"></span>Create resume &amp; cover letter</button>
         <button class="link-btn" id="resume-only" type="button" disabled>Resume only</button>
       </div>
-      <ol class="steps hidden" id="steps" aria-live="polite">
-        <li data-step="resume"><span class="dot" aria-hidden="true"></span><span class="label">Tailoring your resume</span><span class="state"></span></li>
-        <li data-step="cover"><span class="dot" aria-hidden="true"></span><span class="label">Writing the cover letter</span><span class="state"></span></li>
-        <li data-step="ready"><span class="dot" aria-hidden="true"></span><span class="label">Ready to download</span><span class="state"></span></li>
+      <ol class="steps hidden" id="steps">
+        <li data-step="resume"><span class="dot" aria-hidden="true"></span><span class="label">Tailoring your resume</span><span class="sr-only"></span><span class="state"></span></li>
+        <li data-step="cover"><span class="dot" aria-hidden="true"></span><span class="label">Writing the cover letter</span><span class="sr-only"></span><span class="state"></span></li>
+        <li data-step="ready"><span class="dot" aria-hidden="true"></span><span class="label">Ready to download</span><span class="sr-only"></span><span class="state"></span></li>
       </ol>
+      <p class="sr-only" id="announce" aria-live="polite"></p>
       <p class="status small muted" id="status" aria-live="polite"></p>
       <div id="messages"></div>
       <p class="small muted" id="models-note" style="margin-bottom:0"></p>
@@ -49,9 +50,12 @@
         <div class="metrics" id="chips"></div>
       </div>
       <div class="downloads" id="downloads"></div>
-      <div class="tabs hidden" id="toggles" role="group" aria-label="Preview">
-        <button id="show-resume" type="button">Resume</button>
-        <button id="show-cover" type="button">Cover letter</button>
+      <div class="preview-bar hidden" id="toggles">
+        <div class="tabs" role="group" aria-label="Preview">
+          <button id="show-resume" type="button">Resume</button>
+          <button id="show-cover" type="button">Cover letter</button>
+        </div>
+        <button class="link-btn small" id="rewrite-cover" type="button"><span class="icon i-redo" aria-hidden="true"></span>Rewrite cover letter</button>
       </div>
       <iframe class="pdf" id="pdf" title="PDF preview"></iframe>
     </section>
@@ -68,16 +72,19 @@ function remember(id) { rememberValue('resumeId', id); }
 function chosenId() { return Number($('#resume').value) || null; }
 function busy(on, text = '') {
   working = on;
-  for (const button of [$('#create'), $('#resume-only'), $('#add-cover')]) {
+  for (const button of [$('#create'), $('#resume-only'), $('#add-cover'), $('#rewrite-cover')]) {
     if (button) button.disabled = on || !resumes.length;
   }
-  $('#status').textContent = text;
+  if ($('#status').textContent !== text) $('#status').textContent = text;  // a live region: only real changes are read out
 }
+function say(text) { $('#announce').textContent = text; }  // for screen readers: each new step, never the clock
 
 // The progress list: waiting (its number), working (spinner and the time so far), done, skipped or failed.
+const SAID = { working: ', in progress', done: ', done', failed: ', failed' };  // the dot shows these only by look
 function step(name) { return $(`#steps [data-step="${name}"]`); }
 function stepState(name, state, note = '') {
   step(name).className = state;
+  $('.sr-only', step(name)).textContent = SAID[state] || '';
   $('.state', step(name)).textContent = note;
 }
 function clock(ms) { const s = Math.floor(ms / 1000); return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, '0')}`; }
@@ -85,6 +92,7 @@ function startStep(name) {  // a slow AI service should not look stuck: the work
   stopClock();
   const started = Date.now();
   stepState(name, 'working', '0:00');
+  say(`${$('.label', step(name)).textContent}...`);
   ticking = setInterval(() => { $('.state', step(name)).textContent = clock(Date.now() - started); }, 1000);
 }
 function stopClock() { clearInterval(ticking); ticking = null; }
@@ -161,8 +169,8 @@ async function tailorNow(jd) {
   return run;
 }
 
-// One click: the resume, then (unless "Resume only") the cover letter. "Add cover letter" keeps the resume made for
-// this same job and base resume.
+// One click: the resume, then (unless "Resume only") the cover letter. "Add cover letter" and "Rewrite cover letter"
+// keep the resume made for this same job and base resume.
 async function create(withLetter, keepResume = false) {
   const jd = readJd();
   if (!jd) return;
@@ -198,7 +206,7 @@ async function create(withLetter, keepResume = false) {
   } catch (err) {
     endStep(now, 'failed');
     letterComing = false;
-    busy(false);
+    busy(false, now === 'cover' && current ? 'The cover letter failed. Your resume is still ready.' : 'Tailoring failed.');
     if (current) showResult(current.run);  // a failed cover letter keeps the finished resume, with "Add cover letter"
     $('#messages').replaceChildren(notice('bad', err.message));
   }
@@ -206,6 +214,7 @@ async function create(withLetter, keepResume = false) {
 
 $('#create').addEventListener('click', () => create(true));
 $('#resume-only').addEventListener('click', () => create(false));
+$('#rewrite-cover').addEventListener('click', () => create(true, true));  // a new letter for the same resume
 $('#resume').addEventListener('change', () => { remember(chosenId()); resumeNote(); });
 $('#show-resume').addEventListener('click', () => preview('resume'));
 $('#show-cover').addEventListener('click', () => preview('cover'));
