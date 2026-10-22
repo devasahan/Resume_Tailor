@@ -63,15 +63,13 @@ def _absorb(total: Outcome, other: Outcome) -> None:
 
 def draft_text(resume: Resume) -> str:
     """The editable sections of a draft as plain text, so a fix request can show the model what to revise. Bullets
-    are numbered from 0 within each employer: a fix names the bullets it changes by these numbers. Each employer
-    ends with its tech line, which a fix can replace as a whole."""
+    are numbered from 0 within each employer: a fix names the bullets it changes by these numbers."""
     lines = [f"Headline: {resume.headline}", f"Summary: {resume.summary}", "Skills:"]
     lines += [f"- {g.category}: {', '.join(g.skills)}" for g in resume.skills]
     for exp in resume.experience:
         company = resume.profile.companies[exp.company_index].name
         lines.append(f"company_index {exp.company_index} ({company}): {exp.job_title}")
         lines += [f"[{index}] {b}" for index, b in enumerate(exp.bullets)]
-        lines.append(f"Tech: {', '.join(exp.tech) if exp.tech else '(none)'}")
     return "\n".join(lines)
 
 
@@ -85,8 +83,8 @@ def coverage_feedback(resume: Resume, analysis: JDAnalysis) -> str | None:
         parts.append("These must-have phrases from the job description are not in the summary or any bullet yet: "
                      + ", ".join(f'"{t}"' for t in absent) + ".")
     if listed_only:
-        parts.append("These are only listed (in the skills, headline, titles or tech lines) but not shown in the "
-                     "summary or a bullet: " + ", ".join(f'"{t}"' for t in listed_only) + ".")
+        parts.append("These are only listed (in the skills, headline or titles) but not shown in the summary or a "
+                     "bullet: " + ", ".join(f'"{t}"' for t in listed_only) + ".")
     return " ".join(parts) + (
         " Put each one in word for word, in the summary or in one existing bullet of the employer where it fits "
         "best (usually the most recent role), replacing weaker words so each bullet stays 20-32 words and the "
@@ -253,10 +251,9 @@ async def run_tailor(
             qualities = validate.quality_skill_problems(value[1])
             if qualities:
                 feedback.append(
-                    "The skills list or a tech line contains qualities, not skills: "
-                    + ", ".join(f"'{s}'" for s in qualities[:6]) + ". Replace them with real tools, platforms or "
-                    "methods related to the JD (through skill_changes or tech_changes), and show those qualities in "
-                    "the bullets instead."
+                    "The skills list contains qualities, not skills: " + ", ".join(f"'{s}'" for s in qualities[:6])
+                    + ". Replace them with real tools, platforms or methods related to the JD, and show those "
+                    "qualities in the bullets instead."
                 )
             plain = validate.plain_word_problems(value[1])
             if len(plain) >= validate.MIN_PLAIN_PROBLEMS_FOR_RETRY:
@@ -268,10 +265,9 @@ async def run_tailor(
             era = validate.era_problems(value[1])
             if era:
                 feedback.append(
-                    "Some bullets or tech lines mention tools that job could not really have used: " + " ".join(era)
+                    "Some bullets mention tools that job could not really have used: " + " ".join(era)
                     + " Move each one to a later job where it was common (AI tools only to the one or two most recent "
-                    "jobs), or replace it with a tool of that time (a tech line through tech_changes); keep the same "
-                    "number of bullets per employer."
+                    "jobs), or replace it with a tool of that time; keep the same number of bullets per employer."
                 )
             titles = validate.title_growth_problems(value[1])
             if titles:

@@ -27,8 +27,6 @@ RESUME_LINE = 1.27  # line height as a multiple of the font size
 BULLET_X = 4.0  # points from the left margin to the bullet glyph
 TEXT_X = 13.0  # points from the left margin to bullet text (hanging indent)
 ROW_GAP = 10.0  # minimum space between the left text and the right-aligned dates
-TECH_LABEL = "Tech:"  # the line under a job's bullets: "Tech: Python, FastAPI, PostgreSQL"
-TECH_GAP = 1.5  # points between a job's last bullet and its tech line
 
 
 def display_url(url: str) -> str:
@@ -238,11 +236,11 @@ class Sheet:
             self.y += height
         self.y += after
 
-    def bullet(self, text: str, after: float = 1.0, keep: float = 0.0) -> None:
-        """A whole bullet on one page; `keep` reserves room for what must follow it (a job's tech line)."""
+    def bullet(self, text: str, after: float = 1.0) -> None:
+        """A whole bullet on one page (the gap after it is space, not content, so it is not reserved)."""
         height = self.size * self.line
         lines = self.wrap([Run(text)], self.width - TEXT_X, self.size)
-        self.keep(len(lines) * height + (after + keep if keep else 0.0))
+        self.keep(len(lines) * height)
         for index, line in enumerate(lines):
             self._ensure(height)
             if index == 0:
@@ -300,12 +298,6 @@ class Sheet:
 
 
 # ---------------------------------------------------------------------- resume
-def tech_runs(tech: list[str]) -> list[Run]:
-    """'Tech: Python, FastAPI, AWS (ECS, SQS)': the label bold, the tools in plain text, commas only (no pipes or
-    dots, which an ATS could read as a new bullet). Nothing for a job without a tech line (older runs)."""
-    return [Run(TECH_LABEL, True), Run(" " + ", ".join(tech))] if tech else []
-
-
 def render_resume_pdf(resume: Resume, style: FitStyle) -> tuple[bytes, int]:
     """Return (pdf bytes, page count)."""
     return _resume_sheet(resume, style).finish()
@@ -338,27 +330,21 @@ def _resume_sheet(resume: Resume, style: FitStyle) -> Sheet:
     for group in resume.skills:
         sheet.para([Run(f"{group.category}:", True), Run(" " + ", ".join(group.skills))], after=1)
 
-    jobs = []  # (row text, dates, bullets, tech line, tech height, height that must stay with the row)
+    jobs = []  # (row text, dates, bullets, height that must stay with the row: the row and the first bullet)
     for exp in resume.experience:
         company = p.companies[exp.company_index]
         details = " | ".join(x for x in (company.name, company.location, company.mode) if x)
-        left, dates, tech = [Run(exp.job_title, True), Run(f" | {details}")], fmt_dates(company.start, company.end), tech_runs(exp.tech)
-        tech_h = TECH_GAP + sheet.para_height(tech, x=TEXT_X) if tech else 0.0
+        left, dates = [Run(exp.job_title, True), Run(f" | {details}")], fmt_dates(company.start, company.end)
         first = sheet.bullet_height(exp.bullets[0], after=0.0) if exp.bullets else 0.0
-        with_tech = tech_h + (1.0 if exp.bullets else 0.0) if tech and len(exp.bullets) <= 1 else 0.0
-        start = sheet.row_height(left, dates) + 1.5 + first + with_tech
-        jobs.append((left, dates, exp.bullets, tech, tech_h, start))
-    sheet.heading("EXPERIENCE", keep=jobs[0][5] if jobs else 0.0)
-    for index, (left, dates, bullets, tech, tech_h, start) in enumerate(jobs):
+        jobs.append((left, dates, exp.bullets, sheet.row_height(left, dates) + 1.5 + first))
+    sheet.heading("EXPERIENCE", keep=jobs[0][3] if jobs else 0.0)
+    for index, (left, dates, bullets, start) in enumerate(jobs):
         sheet.space(4 if index else 0)
         sheet.keep(start)  # a job title never sits alone at the bottom of a page
         sheet.row(left, dates)
         sheet.space(1.5)
-        for number, bullet in enumerate(bullets):
-            sheet.bullet(bullet, keep=tech_h if number == len(bullets) - 1 else 0.0)
-        if tech:
-            sheet.space(TECH_GAP)
-            sheet.para(tech, x=TEXT_X)
+        for bullet in bullets:
+            sheet.bullet(bullet)
 
     if p.education:
         entries = []

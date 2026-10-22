@@ -1,6 +1,9 @@
 """Must-have JD terms covered automatically, flagged for review, and a career path that shows growth."""
 import asyncio
+import io
 from datetime import date
+
+from pypdf import PdfReader
 
 from app.llm.base import LLMClient
 from app.llm.fake_client import FakeClient
@@ -19,6 +22,7 @@ from app.pipeline.tailor import (
     run_tailor,
 )
 from app.prompts import RETRY_MARKER, tailor_system
+from app.render.pdf import render_resume_pdf
 from app.schemas import Company, TailorResult
 
 from .test_validate import make_output
@@ -33,9 +37,10 @@ def test_long_stays_get_bullets_before_short_recent_ones():
     order = extra_order(profile, bullet_caps(profile.companies, TODAY), TODAY)
     assert order.index((2, 3)) < order.index((1, 3))  # Orbital Education (3 yrs 1 mo) before Acquire.com (8 mo)
     assert bullet_budget(profile, today=TODAY) == [5, 3, 5, 4, 3]  # two pages hold every cap
-    older = [Company(name=f"Old {i}", start=f"Jun {2016 - 2 * i}", end=f"May {2018 - 2 * i}") for i in range(5)]
-    long = profile.model_copy(update={"companies": profile.companies + older})
-    assert bullet_budget(long, today=TODAY) == [5, 3, 5, 4, 3, 3, 3, 2, 2, 2]  # full pages: the oldest give way
+    older = [Company(name=f"Old {i}", start=f"Jun {2016 - 2 * i}", end=f"May {2018 - 2 * i}") for i in range(10)]
+    long = profile.model_copy(update={"companies": profile.companies + older})  # 15 jobs: two pages run out
+    assert bullet_budget(long, today=TODAY) == [4, 2, 3, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2]
+    # the long stay at Orbital Education keeps more than the newer 8-month job at Acquire.com
 
 
 def test_stay_and_experience_before_are_computed_with_overlaps_counted_once():
@@ -266,7 +271,7 @@ def test_the_career_plan_is_written_before_the_sections():
     assert list(schema["properties"]) == ["jd_analysis", "career_plan", "sections"]
     assert "career_plan" in schema["required"]
     step = schema["properties"]["career_plan"]["items"]
-    assert step["required"] == ["company_index", "focus", "scope"]
+    assert step["required"] == ["company_index", "product", "focus", "scope"]  # the product is decided first
 
 
 def test_runs_keep_the_plan_and_old_runs_still_load(router, db, profile, jd):
@@ -351,3 +356,46 @@ def test_prompt_states_the_career_flow_rules():
     assert "CAREER FLOW" in text and "career_plan" in text and "stepping stones" in text
     assert "Only what was really in common use" in text and "never decreases toward the present" in text
     assert "one or two most recent employers" in text and "agentic development from 2025" in text
+
+
+# ------------------------------------------------------------------ each job is about its company's main product
+def test_the_prompt_builds_each_job_around_the_companys_main_product():
+    text = tailor_system("estimate")
+    assert "`product`: decide it first" in text and "during that job's dates" in text
+    assert "every bullet of a job describes work on that job's `product`" in text
+    assert 'Write "" when you do not know the company' in text and "Never invent product names, features" in text
+    assert "tech line" not in text and "TECH STACK" not in text  # no tech line under the jobs
+
+
+def test_the_fix_round_sees_each_jobs_product(profile):
+    from app.prompts import revise_user
+    from app.schemas import CareerStep
+
+    plan = [CareerStep(company_index=0, product="Northwind Labs' freight-tracking app", focus=["Python"], scope="owned"),
+            CareerStep(company_index=1, focus=["SQL"], scope="built")]  # a plan saved before the product field
+    text = revise_user("jd", profile.companies, "", "facts", analysis=make_output().jd_analysis, plan=plan,
+                       draft="draft", problems="x")
+    assert "company_index 0: Northwind Labs' freight-tracking app | owned | Python" in text
+    assert "company_index 1: product not known | built | SQL" in text
+
+
+def test_runs_saved_with_a_tech_line_or_without_a_product_still_load(router, db, profile, jd):
+    result = asyncio.run(run_tailor(router, db, profile=profile, profile_id=None, jd=jd, model_id="demo-concise"))
+    old = result.model_dump()
+    for exp in old["resume"]["experience"]:
+        exp["tech"] = ["Python", "dbt"]  # the short-lived tech line: ignored, never drawn
+    for step in old["career_plan"]:
+        del step["product"]
+    loaded = TailorResult.model_validate(old)
+    assert [s.product for s in loaded.career_plan] == ["", "", ""]
+    pdf = render_resume_pdf(loaded.resume, loaded.style)[0]
+    assert "Tech:" not in "".join(page.extract_text() for page in PdfReader(io.BytesIO(pdf)).pages)
+
+
+def test_the_demo_bullets_only_name_tools_of_each_jobs_time(router, db, profile):
+    jd = "Senior Platform Engineer. Kubernetes, Terraform and GitHub Actions on AWS, with Python."
+    old = profile.model_copy(update={"companies": [*profile.companies[:2],
+                                                    profile.companies[2].model_copy(update={"end": "Dec 2016"})]})
+    result = asyncio.run(run_tailor(router, db, profile=old, profile_id=None, jd=jd, model_id="demo-concise"))
+    assert result.status == "ok" and result.attempts == 1 and validate.era_problems(result.resume) == []
+    assert not any("Kubernetes" in b or "GitHub Actions" in b for b in result.resume.experience[2].bullets)

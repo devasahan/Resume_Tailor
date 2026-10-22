@@ -82,7 +82,7 @@ def test_full_flow_pdf_docx_and_edit(client):
     assert pdf.headers["content-type"] == "application/pdf" and len(reader.pages) == run["pages"]
     text = "\n".join(page.extract_text() for page in reader.pages)
     assert "Jordan Rivera" in text and "Northwind Labs" in text and "SUMMARY" in text and "EXPERIENCE" in text
-    assert "Tech: Python" in text  # every job ends with its tech line
+    assert "Tech:" not in text  # no tech line under the jobs: the tools are in the bullets and the skills
 
     docx = client.get(f"/api/runs/{run_id}/resume.docx")
     assert "Jordan Rivera" in "\n".join(p.text for p in Document(io.BytesIO(docx.content)).paragraphs)
@@ -99,11 +99,6 @@ def test_full_flow_pdf_docx_and_edit(client):
     assert edited["resume"]["headline"] == "Data Engineer | Python"
     assert edited["resume"]["profile"]["name"] == "Jordan Rivera"
     assert all(len(e["bullets"]) == 2 for e in edited["resume"]["experience"])
-    saved = [e["tech"] for e in run["resume"]["experience"]]
-    assert [e["tech"] for e in edited["resume"]["experience"]] == saved and all(saved)  # left out of the edit: kept
-    edit["experience"][0]["tech"] = ["Python", "dbt"]
-    edited = client.put(f"/api/runs/{run_id}/resume", json=edit).json()
-    assert [e["tech"] for e in edited["resume"]["experience"]] == [["Python", "dbt"], *saved[1:]]
     assert client.get(f"/api/runs/{run_id}").json()["resume"]["summary"] == "Edited summary text."
 
     bad = dict(edit, experience=edit["experience"][:1])

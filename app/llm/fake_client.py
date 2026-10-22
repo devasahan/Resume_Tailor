@@ -2,8 +2,8 @@
 
 It builds generic but structurally valid output from the job description so the whole app (compare
 mode, review, fit-to-two-pages, export, history) can be tried before any API key exists. Its text
-is template-based and is NOT a measure of what real models write. Each job gets a tech line of the job
-description's tools plus a few related ones, only those in common use during that job's dates.
+is template-based and is NOT a measure of what real models write. Its bullets name only tools that each job
+could have used during its dates.
 
 Styles:  concise | detailed (too many long bullets, includes one invented number so the check can flag it)
          flaky (returns invalid JSON until the retry feedback appears in the prompt)
@@ -35,19 +35,6 @@ VOCAB = [
     "Pandas", "TensorFlow", "PyTorch", "Hadoop", "Looker", "HubSpot", "Zendesk", "QuickBooks", "GAAP",
     "SEO", "Copywriting",
 ]
-NOT_TOOLS = {  # VOCAB words that are practices or fields, never put in a tech line
-    "CI/CD", "REST APIs", "Agile", "Scrum", "Machine Learning", "Data Modeling", "ETL", "Stakeholder Management",
-    "Project Management", "Budgeting", "Forecasting", "Compliance", "Customer Success", "Product Roadmap",
-    "A/B Testing", "Analytics", "Communication", "Leadership", "Mentoring", "Testing", "Automation", "Security",
-    "Cloud", "DevOps", "API Design", "Microservices", "GAAP", "SEO", "Copywriting", "NoSQL",
-}
-RELATED = {  # what a job using the tool would normally also have used
-    "Python": ["FastAPI", "Pandas", "pytest"], "AWS": ["Amazon S3", "AWS Lambda"], "Docker": ["Docker Compose"],
-    "Kubernetes": ["Helm"], "React": ["Redux", "Jest"], "TypeScript": ["ESLint"], "Node.js": ["Express"],
-    "PostgreSQL": ["SQLAlchemy"], "Spark": ["PySpark"], "Kafka": ["Kafka Connect"], "Terraform": ["Terragrunt"],
-    "Snowflake": ["Snowpipe"], "Airflow": ["Celery"], "Java": ["Spring Boot", "JUnit"], "Git": ["GitHub"],
-    "SQL": ["dbt"], "Tableau": ["Tableau Prep"], "Azure": ["Azure DevOps"], "GCP": ["BigQuery"],
-}
 GENERIC = ["Communication", "Problem Solving", "Collaboration", "Documentation", "Process Improvement",
            "Stakeholder Management", "Planning", "Reporting"]
 STOP = {"The", "And", "With", "You", "Our", "We", "This", "That", "Will", "Have", "For", "Are", "Your",
@@ -168,16 +155,6 @@ def fits_era(term: str, index: int, end: str) -> bool:
     return not any(year > probe[0] and validate._mentions_tool(term, t) for t, year in years.items())
 
 
-def tech_line(keywords: list[str], index: int, end: str, limit: int = 8) -> list[str]:
-    """The job description's tools and a few related ones, minus any that job could not have used."""
-    tools = [k for k in keywords if k in VOCAB and k not in NOT_TOOLS and k not in GENERIC]
-    line: list[str] = []
-    for tool in tools + [extra for known in tools for extra in RELATED.get(known, [])]:
-        if fits_era(tool, index, end) and tool not in line:
-            line.append(tool)
-    return line[:limit]
-
-
 def _title_ladder(prefix: str, base: str, count: int) -> list[str]:
     top = LEVELS.index(prefix) if prefix in LEVELS else 2
     titles = []
@@ -220,13 +197,11 @@ class FakeClient(LLMClient):
         """What differs between the draft in the context and this model's own clean sections."""
         clean, draft = self._tailor(ctx)["sections"], ctx.get("draft") or {}
         own = {e["company_index"]: e for e in clean["experience"]}
-        titles, bullets, tech = [], [], []
+        titles, bullets = [], []
         for exp in draft.get("experience", []):
             mine = own.get(exp["company_index"])
             if mine is None:
                 continue
-            if mine["tech"] != exp.get("tech", []):
-                tech.append({"company_index": exp["company_index"], "tech": mine["tech"]})
             if mine["job_title"] != exp["job_title"]:
                 titles.append({"company_index": exp["company_index"], "job_title": mine["job_title"]})
             for index, (theirs, ours) in enumerate(zip(exp["bullets"], mine["bullets"])):
@@ -240,7 +215,7 @@ class FakeClient(LLMClient):
         return {
             "headline": clean["headline"] if clean["headline"] != draft.get("headline") else "",
             "summary": clean["summary"] if clean["summary"] != draft.get("summary") else "",
-            "titles": titles, "bullets": bullets, "skill_changes": changes, "tech_changes": tech,
+            "titles": titles, "bullets": bullets, "skill_changes": changes,
         }
 
     def _tailor(self, ctx: dict) -> dict:
@@ -275,8 +250,7 @@ class FakeClient(LLMClient):
                 template = now if present else past
                 bullets.append(template.format(k1=mine[j % len(mine)], k2=mine[(j + 1) % len(mine)],
                                                k3=mine[(j + 2) % len(mine)]))
-            experience.append({"company_index": index, "job_title": titles[index], "bullets": bullets,
-                               "tech": tech_line(keywords, index, end)})
+            experience.append({"company_index": index, "job_title": titles[index], "bullets": bullets})
 
         groups = [
             {"category": "Core Skills", "skills": k[:6]},
@@ -295,7 +269,8 @@ class FakeClient(LLMClient):
                 "key_responsibilities": ["Deliver reliable work", "Collaborate across teams", "Communicate progress clearly"],
             },
             "career_plan": [  # recent jobs show more of the JD, with more scope
-                {"company_index": i, "focus": k[: max(2, 6 - 2 * i)], "scope": SCOPES[max(0, len(SCOPES) - 2 - i)]}
+                {"company_index": i, "product": "", "focus": k[: max(2, 6 - 2 * i)],  # it knows no companies
+                 "scope": SCOPES[max(0, len(SCOPES) - 2 - i)]}
                 for i in range(len(companies))
             ],
             "sections": {

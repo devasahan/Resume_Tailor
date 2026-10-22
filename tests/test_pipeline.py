@@ -21,7 +21,7 @@ def test_demo_run_is_ok_within_two_pages_and_keeps_fixed_facts(router, db, profi
     result = tailor(router, db, profile, jd)
     assert result.status == "ok" and result.fits and result.pages == 2 and result.style.font_pt == 10.5
     assert [len(e.bullets) for e in result.resume.experience] == [8, 6, 5]  # the recent roles get the most detail
-    assert all(e.tech for e in result.resume.experience)  # each job has its tech line
+    assert [s.product for s in result.career_plan] == ["", "", ""]  # the demo knows no companies: generic context
     assert result.resume.profile == profile  # name, contact, companies, dates, education untouched
     assert [e.company_index for e in result.resume.experience] == [0, 1, 2]
     assert result.analysis.target_role.startswith("Senior Data Engineer")
@@ -37,7 +37,7 @@ def test_titles_form_a_career_path(router, db, profile, jd):
 
 def test_long_text_is_brought_to_two_pages(router, db, profile, jd):
     result = tailor(router, db, profile, jd, model="demo-detailed")
-    assert result.status == "ok" and result.pages == 2 and result.fits
+    assert result.status == "ok" and result.pages <= 2 and result.fits
     assert result.notes  # something had to be done (smaller font, shorter bullets or trimming)
     assert any(f.level == "verify" and "23.4%" in f.reason for f in result.flags)  # invented number is flagged
 

@@ -10,7 +10,7 @@ from app.pipeline.fit import MAX_PAGES, trim_to_fit, try_styles
 from app.render import pdf as pdf_module
 from app.render.docx import cover_docx, resume_docx
 from app.render.pdf import (
-    BULLET_X, TECH_LABEL, TEXT_X, Run, Sheet, contact_line, fmt_dates, render_cover_pdf, render_resume_pdf,
+    BULLET_X, TEXT_X, Run, Sheet, contact_line, fmt_dates, render_cover_pdf, render_resume_pdf,
 )
 from app.schemas import (
     Contact, CoverLetter, ExperienceOut, FitStyle, SkillGroup, TailoredSections, TailorOutput,
@@ -81,7 +81,7 @@ def test_paper_sizes(resume, paper, size):
     assert (round(float(box.width)), round(float(box.height))) == size and pages == 1
 
 
-def long_resume(profile, bullets=12, tech=()) -> "object":
+def long_resume(profile, bullets=12) -> "object":
     sentence = "Designed and operated reliable data pipelines with Python and SQL for several product teams, documenting every decision clearly."
     out = TailorOutput(
         jd_analysis=make_output().jd_analysis,
@@ -89,8 +89,7 @@ def long_resume(profile, bullets=12, tech=()) -> "object":
             headline="Senior Data Engineer | Python | SQL", summary="Senior Data Engineer. " * 5,
             skills=[SkillGroup(category="Core", skills=["Python", "SQL", "Airflow"])],
             experience=[
-                ExperienceOut(company_index=i, job_title="Data Engineer", bullets=[f"{sentence} Item {j}." for j in range(bullets)],
-                              tech=list(tech))
+                ExperienceOut(company_index=i, job_title="Data Engineer", bullets=[f"{sentence} Item {j}." for j in range(bullets)])
                 for i in range(len(profile.companies))
             ],
         ),
@@ -168,7 +167,7 @@ def _lines_by_page(resume, style):
 @pytest.mark.parametrize("seed", range(12))
 def test_page_breaks_never_split_a_bullet_or_leave_a_job_title_alone(profile, seed):
     rng = random.Random(seed)
-    resume = long_resume(profile, bullets=rng.randint(6, 9), tech=["Python", "SQL", "Airflow", "AWS (S3, Glue)"])
+    resume = long_resume(profile, bullets=rng.randint(8, 12))
     for exp in resume.experience:  # bullets of different lengths move the break around
         exp.bullets = [b + " Extra detail." * rng.randint(0, 4) for b in exp.bullets]
     pages, drawn = _lines_by_page(resume, FitStyle(font_pt=rng.choice([10.5, 10.0, 9.5])))
@@ -182,30 +181,15 @@ def test_page_breaks_never_split_a_bullet_or_leave_a_job_title_alone(profile, se
         top = [(x, t) for p, y, x, t in drawn if p == page + 1 and y == top_y]
         xs = {x for x, _t in top}
         assert not (TEXT_X in xs and BULLET_X not in xs), top  # the next page never starts mid-bullet
-        assert not any(t.startswith(TECH_LABEL) for _x, t in top), top  # nor with a job's tech line
 
 
-def test_the_tech_line_follows_each_jobs_bullets_in_pdf_and_docx(profile):
-    resume = long_resume(profile, bullets=2, tech=["Python", "AWS (ECS, SQS)", ".NET", "C#"])
-    text = text_of(render_resume_pdf(resume, FitStyle())[0])
-    lines = text.splitlines()
-    tech_lines = [i for i, line in enumerate(lines) if line.startswith("Tech: ")]
-    assert len(tech_lines) == 3 and lines[tech_lines[0]] == "Tech: Python, AWS (ECS, SQS), .NET, C#"
-    assert "Item 1." in lines[tech_lines[0] - 1]  # right after the job's last bullet
-    doc = Document(io.BytesIO(resume_docx(resume, FitStyle())))
+def test_docx_keeps_job_titles_with_their_bullets(profile):
+    doc = Document(io.BytesIO(resume_docx(long_resume(profile, bullets=2), FitStyle())))
     paragraphs = doc.paragraphs
-    tech = [p for p in paragraphs if p.text.startswith("Tech: ")]
-    assert len(tech) == 3 and tech[0].text == "Tech: Python, AWS (ECS, SQS), .NET, C#"
-    assert tech[0].style.name != "List Bullet" and tech[0].runs[0].bold and tech[0].runs[0].text == "Tech: "
-    first = paragraphs.index(tech[0])
-    assert paragraphs[first - 1].style.name == "List Bullet" and paragraphs[first - 1].paragraph_format.keep_with_next
     rows = [p for p in paragraphs if p.text.startswith("Data Engineer")]
-    assert all(p.paragraph_format.keep_with_next for p in rows)  # a job title stays with its first bullet
+    assert len(rows) == 3 and all(p.paragraph_format.keep_with_next for p in rows)  # a title stays with its bullet
     assert all(p.paragraph_format.keep_together for p in paragraphs if p.style.name == "List Bullet")
-    assert not doc.tables
-    old = long_resume(profile, bullets=2)  # runs saved before the tech line: no empty "Tech:" anywhere
-    assert "Tech:" not in text_of(render_resume_pdf(old, FitStyle())[0])
-    assert not any(p.text.startswith("Tech") for p in Document(io.BytesIO(resume_docx(old, FitStyle()))).paragraphs)
+    assert not any(p.text.startswith("Tech") for p in paragraphs) and not doc.tables
 
 
 def test_a_block_taller_than_a_page_does_not_leave_a_blank_page():

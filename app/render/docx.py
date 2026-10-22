@@ -12,15 +12,7 @@ from docx.oxml.ns import qn
 from docx.shared import Inches, Pt
 
 from ..schemas import CoverLetter, FitStyle, Resume
-from .pdf import (
-    TECH_GAP,
-    TECH_LABEL,
-    contact_line,
-    fmt_dates,
-    letter_date,
-    person_name,
-    recipient_lines,
-)
+from .pdf import contact_line, fmt_dates, letter_date, person_name, recipient_lines
 
 PAPER = {"Letter": (Inches(8.5), Inches(11)), "A4": (Inches(8.27), Inches(11.69))}
 
@@ -124,18 +116,10 @@ def resume_docx(resume: Resume, style: FitStyle) -> bytes:
         row = _row(doc, exp.job_title, rest, fmt_dates(company.start, company.end), text_width,
                    space_before=4 if index else 0)
         row.paragraph_format.keep_with_next = True  # a job title stays with its first bullet
-        for number, bullet in enumerate(exp.bullets):
+        for bullet in exp.bullets:
             para = doc.add_paragraph(bullet, style="List Bullet")
             para.paragraph_format.space_after = Pt(1)
             para.paragraph_format.keep_together = True
-            para.paragraph_format.keep_with_next = bool(exp.tech) and number == len(exp.bullets) - 1
-        if exp.tech:  # a plain paragraph, not a bullet, lined up with the bullet text
-            tech = doc.add_paragraph()
-            tech.paragraph_format.left_indent = Inches(0.25)
-            tech.paragraph_format.space_before = Pt(TECH_GAP)
-            tech.paragraph_format.keep_together = True
-            tech.add_run(f"{TECH_LABEL} ").bold = True
-            tech.add_run(", ".join(exp.tech))
 
     if p.education:
         _heading(doc, "EDUCATION", style.font_pt)

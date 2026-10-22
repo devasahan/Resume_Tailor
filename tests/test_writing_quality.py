@@ -57,25 +57,23 @@ def test_budget_gives_recent_roles_the_most_and_fits_two_pages_at_full_length():
         budget = bullet_budget(five_jobs(n), today=TODAY)
         assert len(budget) == n and all(b >= 2 for b in budget)
         assert budget[0] == max(budget)
-        # a draft with every bullet (and tech line) at full length fits without asking the model to shorten anything
+        # a draft with every bullet at full length fits without asking the model to shorten anything
         found = try_styles(_plan_resume(five_jobs(n), budget))
         assert found is not None and found[1] <= MAX_PAGES
     assert bullet_budget(five_jobs(1), today=TODAY) == [5]  # a short career is not padded out
     assert try_styles(_plan_resume(five_jobs(1), [5]))[1] == 1
     assert bullet_budget(five_jobs(4), today=TODAY) == [5, 3, 5, 4]
-    assert bullet_budget(five_jobs(4), today=TODAY, max_pages=1) == [4, 3, 3, 2]  # one page holds far less
+    assert bullet_budget(five_jobs(4), today=TODAY, max_pages=1) == [5, 3, 4, 2]  # one page holds less
 
 
 def test_budget_holds_for_the_longest_text_the_rules_allow():
-    """32-word bullets, an 89-word summary, five skill groups and long tech lines still fit on two pages."""
+    """32-word bullets, an 89-word summary and five skill groups still fit on two pages."""
     from app.pipeline.fit import _PLAN_SUMMARY
     from app.schemas import Resume, ResumeExperience, SkillGroup
 
     bullet = ("Architected the webhook ingestion and retry pipeline for third-party marketplace integrations on AWS "
               "Lambda and SQS with idempotency keys, so partner order updates arrived reliably and support stopped "
               "re-running failed syncs")
-    tech = ["Go", "TypeScript", "PostgreSQL", "Redis", "AWS (ECS, Lambda, SQS)", "Terraform", "GitHub Actions",
-            "Datadog", "Docker", "Algolia"]
     summary = _PLAN_SUMMARY + " Brings end-to-end ownership and close partnership with product teams."
     skills = [SkillGroup(category=c, skills=s.split(", ")) for c, s in [
         ("Languages and Frameworks", "Go, TypeScript, React, Next.js, Tailwind CSS, SQL"),
@@ -90,7 +88,7 @@ def test_budget_holds_for_the_longest_text_the_rules_allow():
         resume = Resume(profile=profile, headline="Senior Full-Stack Engineer | Go | React | TypeScript | AWS",
                         summary=summary, skills=skills,
                         experience=[ResumeExperience(company_index=i, job_title="Senior Full-Stack Engineer",
-                                                     bullets=[bullet] * k, tech=tech) for i, k in enumerate(budget)])
+                                                     bullets=[bullet] * k) for i, k in enumerate(budget)])
         assert try_styles(resume) is not None, (n, budget)
 
 
@@ -113,8 +111,8 @@ def test_rules_ask_for_specific_bullets_and_a_full_summary():
     text = tailor_system("estimate")
     assert "write exactly the number of bullets given for each employer" in text
     assert "20-32 words" in text and "WHAT, specifically" in text and "HOW" in text and "RESULT" in text
-    assert "at most two pages" in text and "Name the stack in detail" in text and "TECH STACK:" in text
-    assert "a must-have listed only in SKILLS or in a tech line does not count" in text
+    assert "at most two pages" in text and "Name the stack in detail" in text and "TECH STACK" not in text
+    assert "a must-have listed only in SKILLS does not count" in text and "tech line" not in text
     assert "24-32 items" in text and "Do NOT invent client or product names, certifications" in text
     assert '"Build and maintain"' in text and "Weak:" in text and "Strong:" in text
     assert "Never write a string of short fragments" in text
@@ -183,7 +181,7 @@ def test_machine_sounding_words_and_ing_chains_are_found(profile):
         "Spearheaded a seamless move of nightly jobs to Airflow in order to cut manual reruns",
         "Rebuilt the loaders, ensuring fresh data, enabling faster reports, and reducing support tickets",
     ]
-    out.sections.experience[0].tech = ["Robust Toolkit"]  # tool names are never read
+    out.sections.skills[0].skills.append("Robust Toolkit")  # skills are tool names and are never read
     problems = validate.plain_word_problems(validate.build_resume(profile, out))
     assert problems == ["'leveraged' (summary)", "'robust' (summary)", "'Spearheaded' (Northwind Labs)",
                         "'seamless' (Northwind Labs)", "'in order to' (Northwind Labs)",

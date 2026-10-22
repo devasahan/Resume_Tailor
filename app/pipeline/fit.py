@@ -25,8 +25,7 @@ def styles(paper: str) -> list[FitStyle]:
     return [FitStyle(font_pt=f, margin_in=m, paper=paper) for f, m in LADDER]  # type: ignore[arg-type]
 
 
-# Placeholder text at the full length the prompt asks for (32-word bullets, an 85-word summary, 32 skills, a
-# 10-item tech line per job).
+# Placeholder text at the full length the prompt asks for (32-word bullets, an 85-word summary, 32 skills).
 BUDGET_STYLE = 3  # plan at 9.75 pt, keeping the last ladder step (9.5 pt) as headroom for the longest allowed text
 _PLAN_BULLET = (
     "Designed and rolled out the event-driven order service behind the public REST API, adding retries, idempotency "
@@ -46,8 +45,6 @@ _PLAN_SKILLS = [
         ("Engineering Practices", "CI/CD, Observability, Code Review, Unit Testing, Agile, System Design, TDD, DDD"),
     ]
 ]
-_PLAN_TECH = ["Python", "FastAPI", "PostgreSQL", "Redis", "Celery", "Docker", "Kubernetes", "AWS (ECS, SQS, Lambda)",
-              "Terraform", "GitHub Actions"]
 
 
 def _plan_resume(profile: Profile, counts: list[int]) -> Resume:
@@ -55,8 +52,7 @@ def _plan_resume(profile: Profile, counts: list[int]) -> Resume:
         profile=profile.model_copy(deep=True), headline="Senior Full-Stack Engineer | TypeScript | React | AWS",
         summary=_PLAN_SUMMARY, skills=_PLAN_SKILLS,
         experience=[
-            ResumeExperience(company_index=i, job_title="Senior Full-Stack Engineer", bullets=[_PLAN_BULLET] * n,
-                             tech=list(_PLAN_TECH))
+            ResumeExperience(company_index=i, job_title="Senior Full-Stack Engineer", bullets=[_PLAN_BULLET] * n)
             for i, n in enumerate(counts)
         ],
     )

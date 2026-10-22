@@ -65,15 +65,11 @@ class TailorRequest(BaseModel):
     hiring_manager: str = Field(default="", max_length=120)
 
 
-class EditedExperience(ExperienceOut):
-    tech: list[str] | None = None  # left out: keep the saved tech line (an older page or client never sends it)
-
-
 class EditRequest(BaseModel):
     headline: str
     summary: str
     skills: list[SkillGroup]
-    experience: list[EditedExperience]
+    experience: list[ExperienceOut]
     cover_greeting: str | None = None
     cover_paragraphs: list[str] | None = None
     cover_closing: str | None = None
@@ -850,19 +846,13 @@ def create_app(db: Database | None = None, registry: Registry | None = None, rou
         result = load_run(run_id, user, write=True)
         if result.resume is None or result.analysis is None:
             raise HTTPException(409, "This run has no resume to edit.")
-        saved_tech = {exp.company_index: exp.tech for exp in result.resume.experience}
-        experience = [
-            ExperienceOut(company_index=e.company_index, job_title=e.job_title, bullets=e.bullets,
-                          tech=saved_tech.get(e.company_index, []) if e.tech is None else e.tech)
-            for e in body.experience
-        ]
         try:
             merged = validate.build_resume(
                 result.resume.profile,  # fixed facts always come from the stored profile, never from the request
                 TailorOutput(
                     jd_analysis=result.analysis,
                     sections=TailoredSections(
-                        headline=body.headline, summary=body.summary, skills=body.skills, experience=experience
+                        headline=body.headline, summary=body.summary, skills=body.skills, experience=body.experience
                     ),
                 ),
             )

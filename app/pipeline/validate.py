@@ -54,37 +54,6 @@ def word_count(text: str) -> int:
 
 
 # ------------------------------------------------------------------ merge
-MAX_TECH_ITEMS = 12  # one or two lines under a job
-_TECH_LABEL = re.compile(r"^\s*(?:tech(?:nolog(?:y|ies))?(?:\s+stack)?|stack|tools)\s*:\s*", re.IGNORECASE)
-
-
-def _top_level_split(text: str) -> list[str]:
-    """'Python, AWS (ECS, SQS); Docker' -> ['Python', 'AWS (ECS, SQS)', 'Docker']: commas inside brackets stay."""
-    parts, depth, current = [], 0, ""
-    for char in text:
-        depth += {"(": 1, "[": 1, ")": -1, "]": -1}.get(char, 0)
-        if char in ",;" and depth <= 0:
-            parts.append(current)
-            current = ""
-        else:
-            current += char
-    return [*parts, current]
-
-
-def clean_tech(items: list[str]) -> list[str]:
-    """A job's tech line as the model wrote it -> clean, unique tool names: a copied "Tech:" label goes, a whole
-    comma-joined line in one item is split, and the line stays short."""
-    tech: list[str] = []
-    seen: set[str] = set()
-    for item in items:
-        for part in _top_level_split(_TECH_LABEL.sub("", clean_text(item))):
-            name = clean_text(part).rstrip(". ")  # a closing full stop goes; ".NET" keeps its dot
-            if name and name.lower() not in seen and len(tech) < MAX_TECH_ITEMS:
-                seen.add(name.lower())
-                tech.append(name)
-    return tech
-
-
 def build_resume(profile: Profile, out: TailorOutput) -> Resume:
     """Raise ValueError (retried by the pipeline with this message) if the output cannot be used."""
     sections = out.sections
@@ -122,8 +91,7 @@ def build_resume(profile: Profile, out: TailorOutput) -> Resume:
             raise ValueError(f"Job title for company_index {entry.company_index} is empty or too long.")
         if not bullets:
             raise ValueError(f"company_index {entry.company_index} has no bullets.")
-        experience.append(ResumeExperience(company_index=entry.company_index, job_title=title, bullets=bullets,
-                                           tech=clean_tech(entry.tech)))
+        experience.append(ResumeExperience(company_index=entry.company_index, job_title=title, bullets=bullets))
 
     resume = Resume(
         profile=profile.model_copy(deep=True), headline=headline, summary=summary, skills=skills, experience=experience
@@ -151,15 +119,6 @@ def apply_revision(out: TailorOutput, draft: Resume, rev: TailorRevision) -> Tai
     analysis, the career plan and the number of bullets stay as they are. Raises ValueError for an edit that
     cannot be applied as meant, so the caller keeps the first draft. Neither input is changed."""
     bullets = {exp.company_index: list(exp.bullets) for exp in draft.experience}
-    tech = {exp.company_index: list(exp.tech) for exp in draft.experience}
-    changed: set[int] = set()
-    for change in rev.tech_changes:  # an entry replaces the whole line ([] removes it); one left out stays
-        if change.company_index not in tech:
-            raise ValueError(f"tech_changes: there is no company_index {change.company_index}.")
-        if change.company_index in changed:
-            raise ValueError(f"tech_changes: company_index {change.company_index} is changed twice.")
-        changed.add(change.company_index)
-        tech[change.company_index] = clean_tech(change.tech)
     originals = {index: list(items) for index, items in bullets.items()}
     titles = {exp.company_index: exp.job_title for exp in draft.experience}
     for change in rev.titles:
@@ -196,8 +155,7 @@ def apply_revision(out: TailorOutput, draft: Resume, rev: TailorRevision) -> Tai
         headline=_FIELD_LABEL.sub("", rev.headline).strip() or draft.headline,
         summary=_FIELD_LABEL.sub("", rev.summary).strip() or draft.summary,
         skills=skills,
-        experience=[ExperienceOut(company_index=i, job_title=titles[i], bullets=bullets[i], tech=tech[i])
-                    for i in sorted(bullets)],
+        experience=[ExperienceOut(company_index=i, job_title=titles[i], bullets=bullets[i]) for i in sorted(bullets)],
     )
     return out.model_copy(update={"sections": sections})
 
@@ -218,7 +176,6 @@ def resume_text(resume: Resume) -> str:
     for exp in resume.experience:
         parts.append(exp.job_title)
         parts.extend(exp.bullets)
-        parts.extend(exp.tech)  # an ATS reads the tech lines too (but they never prove a must-have: evidence_text)
     return "\n".join(parts)
 
 
@@ -381,11 +338,9 @@ _QUALITY_WORDS = re.compile(
 
 
 def quality_skill_problems(resume: Resume) -> list[str]:
-    """Skills-list and tech-line items that are qualities or outcomes ('High-Quality Code', 'Scalable and
-    Maintainable Applications') rather than something a person uses or does."""
-    items = [skill for group in resume.skills for skill in group.skills]
-    items += [tool for exp in resume.experience for tool in exp.tech]
-    return [item for item in items if _QUALITY_WORDS.search(item)]
+    """Skills-list items that are qualities or outcomes ('High-Quality Code', 'Scalable and Maintainable
+    Applications') rather than something a person uses or does."""
+    return [skill for group in resume.skills for skill in group.skills if _QUALITY_WORDS.search(skill)]
 
 
 # Words that make a resume read as machine-written or as marketing copy (the prompt's PLAIN WORDS rule). Words
@@ -404,7 +359,7 @@ MIN_PLAIN_PROBLEMS_FOR_RETRY = 2  # one stray word is only noted; it is not wort
 
 def plain_word_problems(resume: Resume) -> list[str]:
     """Machine-sounding wording in the summary and the bullets: buzzwords, and bullets that chain three or more
-    '-ing' clauses. Skills and tech lines are lists of tool names and are not read."""
+    '-ing' clauses. Skills are a list of tool names and are not read."""
     places = [("summary", resume.summary)] + [
         (resume.profile.companies[exp.company_index].name, bullet) for exp in resume.experience for bullet in exp.bullets
     ]
@@ -573,7 +528,7 @@ def era_problems(resume: Resume) -> list[str]:
     problems: list[str] = []
     for index, exp in enumerate(resume.experience):  # most recent first
         company = resume.profile.companies[exp.company_index]
-        text = "\n".join([exp.job_title, *exp.bullets, *exp.tech])
+        text = "\n".join([exp.job_title, *exp.bullets])
         when = f"{company.name} ({company.start or '?'} - {company.end or 'Present'})"
         if index >= AI_RECENT_JOBS:
             for term in AI_TOOLS:
@@ -722,13 +677,6 @@ def metric_density_problems(resume: Resume) -> list[str]:
     return problems
 
 
-def _tool_known(tool: str, jd: str, hints: str) -> bool:
-    """'AWS (ECS, SQS)' is known only if the job description or the hints name AWS, ECS and SQS, each as a whole
-    term ('Go' is not in 'good', 'Java' is not in 'JavaScript')."""
-    parts = [part.strip() for part in re.split(r"[(),/]", tool) if part.strip()]
-    return all(mentions(jd, part) or mentions(hints, part) for part in parts)
-
-
 def claim_flags(resume: Resume, jd: str, hints: str) -> list[Flag]:
     """Things the user did not provide and should confirm before sending the resume."""
     flags: list[Flag] = []
@@ -753,13 +701,6 @@ def claim_flags(resume: Resume, jd: str, hints: str) -> list[Flag]:
         )
         for bullet in exp.bullets:
             check_numbers(f"experience:{exp.company_index}", bullet)
-        added = [tool for tool in exp.tech if not _tool_known(tool, jd, hints)]  # never number-checked: S3, EC2
-        if added:
-            flags.append(
-                Flag(section=f"experience:{exp.company_index}", text="Tech: " + ", ".join(exp.tech), level="info",
-                     reason=f"Tools added at {company} that the job description does not name ({', '.join(added)}). "
-                            "Keep only the ones you really used there.")
-            )
     for group in resume.skills:
         for item in group.skills:
             if item.lower() not in jd_l and item.lower() not in hints_l:
