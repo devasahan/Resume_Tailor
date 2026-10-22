@@ -186,7 +186,7 @@ def test_the_demo_model_answers_a_clean_draft_with_an_empty_fix(registry, profil
     fix = asyncio.run(client.generate_structured(
         system="", user="", schema={}, schema_name="tailor_revision", max_tokens=10,
         context={**context, "draft": draft.model_dump(exclude={"profile"})})).data
-    assert fix == {"headline": "", "summary": "", "titles": [], "bullets": [], "skill_changes": []}
+    assert fix == {"headline": "", "summary": "", "titles": [], "bullets": [], "skill_changes": [], "tech_changes": []}
 
 
 def test_titles_the_fix_leaves_out_stay_as_the_model_was_shown_them(profile, first):

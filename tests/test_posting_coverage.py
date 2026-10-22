@@ -5,8 +5,13 @@ from datetime import date
 from app.llm.base import LLMClient
 from app.llm.fake_client import FakeClient
 from app.pipeline import validate
-from app.pipeline.facts import experience_before, months_phrase, stay_months
-from app.pipeline.fit import bullet_budget
+from app.pipeline.facts import (
+    bullet_caps,
+    experience_before,
+    months_phrase,
+    stay_months,
+)
+from app.pipeline.fit import bullet_budget, extra_order
 from app.pipeline.tailor import (
     MIN_UNCOVERED_FOR_RETRY,
     coverage_feedback,
@@ -24,9 +29,13 @@ TODAY = date(2026, 10, 12)
 
 # ------------------------------------------------------------------ career path
 def test_long_stays_get_bullets_before_short_recent_ones():
-    # Orbital Education (3 yrs 1 mo) now gets its 3rd bullet before Acquire.com (8 mo)
-    assert bullet_budget(five_jobs(5), today=TODAY) == [4, 2, 3, 2, 2]
-    assert bullet_budget(five_jobs(4), today=TODAY) == [5, 3, 3, 3]
+    profile = five_jobs(5)
+    order = extra_order(profile, bullet_caps(profile.companies, TODAY), TODAY)
+    assert order.index((2, 3)) < order.index((1, 3))  # Orbital Education (3 yrs 1 mo) before Acquire.com (8 mo)
+    assert bullet_budget(profile, today=TODAY) == [5, 3, 5, 4, 3]  # two pages hold every cap
+    older = [Company(name=f"Old {i}", start=f"Jun {2016 - 2 * i}", end=f"May {2018 - 2 * i}") for i in range(5)]
+    long = profile.model_copy(update={"companies": profile.companies + older})
+    assert bullet_budget(long, today=TODAY) == [5, 3, 5, 4, 3, 3, 3, 2, 2, 2]  # full pages: the oldest give way
 
 
 def test_stay_and_experience_before_are_computed_with_overlaps_counted_once():

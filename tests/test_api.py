@@ -74,14 +74,15 @@ def test_profile_validation(client):
 def test_full_flow_pdf_docx_and_edit(client):
     save_profile(client)
     run = tailor(client, cover_letter=True, company_name="Acme").json()
-    assert run["status"] == "ok" and run["fits"] and run["pages"] == 1
+    assert run["status"] == "ok" and run["fits"] and run["pages"] == 2  # three long-stay jobs: a full two pages
     run_id = run["run_id"]
 
     pdf = client.get(f"/api/runs/{run_id}/resume.pdf")
     reader = PdfReader(io.BytesIO(pdf.content))
-    assert pdf.headers["content-type"] == "application/pdf" and len(reader.pages) == 1
-    text = reader.pages[0].extract_text()
+    assert pdf.headers["content-type"] == "application/pdf" and len(reader.pages) == run["pages"]
+    text = "\n".join(page.extract_text() for page in reader.pages)
     assert "Jordan Rivera" in text and "Northwind Labs" in text and "SUMMARY" in text and "EXPERIENCE" in text
+    assert "Tech: Python" in text  # every job ends with its tech line
 
     docx = client.get(f"/api/runs/{run_id}/resume.docx")
     assert "Jordan Rivera" in "\n".join(p.text for p in Document(io.BytesIO(docx.content)).paragraphs)
@@ -98,6 +99,11 @@ def test_full_flow_pdf_docx_and_edit(client):
     assert edited["resume"]["headline"] == "Data Engineer | Python"
     assert edited["resume"]["profile"]["name"] == "Jordan Rivera"
     assert all(len(e["bullets"]) == 2 for e in edited["resume"]["experience"])
+    saved = [e["tech"] for e in run["resume"]["experience"]]
+    assert [e["tech"] for e in edited["resume"]["experience"]] == saved and all(saved)  # left out of the edit: kept
+    edit["experience"][0]["tech"] = ["Python", "dbt"]
+    edited = client.put(f"/api/runs/{run_id}/resume", json=edit).json()
+    assert [e["tech"] for e in edited["resume"]["experience"]] == [["Python", "dbt"], *saved[1:]]
     assert client.get(f"/api/runs/{run_id}").json()["resume"]["summary"] == "Edited summary text."
 
     bad = dict(edit, experience=edit["experience"][:1])

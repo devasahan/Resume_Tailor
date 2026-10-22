@@ -54,14 +54,18 @@ def stay_months(company: Company, today: date | None = None) -> int | None:
     return _index(end) - _index(start) + 1
 
 
+RECENCY_CAPS = (8, 6, 5, 4)  # the most recent employer first; 3 for every older one
+
+
 def bullet_caps(companies: list[Company], today: date | None = None) -> list[int]:
-    """Most bullets each employer deserves: 5 / 4 / 3 by recency, 3 for a stay under a year, 2 under 6 months."""
+    """Most bullets each employer deserves on a resume of up to two pages: 8 / 6 / 5 / 4 / 3 by recency, and by the
+    length of the stay: 2 under 6 months, 3 under a year, 5 under two years. A short career is not padded out."""
     caps = []
     for index, company in enumerate(companies):
-        cap = 5 if index == 0 else 4 if index == 1 else 3
+        cap = RECENCY_CAPS[index] if index < len(RECENCY_CAPS) else 3
         months = stay_months(company, today)
         if months is not None:
-            cap = min(cap, 2 if months < 6 else 3 if months < 12 else cap)
+            cap = min(cap, 2 if months < 6 else 3 if months < 12 else 5 if months < 24 else cap)
         caps.append(cap)
     return caps
 

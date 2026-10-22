@@ -11,17 +11,17 @@ from pathlib import Path
 from ..pipeline.facts import bullet_caps, experience_before, months_phrase, stay_months
 from ..schemas import CareerStep, Company, JDAnalysis, Resume
 
-PROMPT_VERSION = "v14"
+PROMPT_VERSION = "v15"
 RETRY_MARKER = "Your previous answer was rejected"
 
 _DIR = Path(__file__).parent
 _TOKEN = re.compile(r"\{\{(\w+)\}\}")
 
 SHORTEN_NOTE = (
-    " The previous draft did not fit on one page, so some employers above now get one bullet fewer. Keep every "
-    "bullet at most 24 words and the summary at 60-75 words, but keep the same quality: each bullet still says "
-    "what was done, how, and what changed, and every must-have phrase from the job description still appears word "
-    "for word in the summary or a bullet."
+    " The previous draft did not fit on two pages, so some employers above now get one bullet fewer. Keep every "
+    "bullet at most 28 words, every tech line at most 8 items and the summary at 60-75 words, but keep the same "
+    "quality: each bullet still says what was done, how, and what changed, and every must-have phrase from the job "
+    "description still appears word for word in the summary or a bullet."
 )
 
 
@@ -43,7 +43,7 @@ def describe_companies(
 ) -> str:
     """One line per employer: dates, work mode, how long the stay was and how much experience came before it
     (computed, so the model never does date arithmetic when choosing titles), and how many bullets to write
-    (computed so the page fits)."""
+    (computed so the resume fits on two pages at most)."""
     bullets = bullets or bullet_caps(companies, today)
     lines = []
     for index, c in enumerate(companies):
@@ -56,7 +56,7 @@ def describe_companies(
         if stay:
             history = "first job" if before == 0 else f"{months_phrase(before)} of experience before it"
             parts.append(f"{stay} stay, {history}")
-        parts.append(f"write exactly {bullets[index]} bullets")
+        parts.append(f"write exactly {bullets[index]} bullets and a tech line")
         lines.append(f"{index}: " + " | ".join(parts))
     return "\n".join(lines) or "(none)"
 

@@ -1,10 +1,11 @@
 """Offline demo provider. No network, no key, no cost.
 
 It builds generic but structurally valid output from the job description so the whole app (compare
-mode, review, fit-to-one-page, export, history) can be tried before any API key exists. Its text
-is template-based and is NOT a measure of what real models write.
+mode, review, fit-to-two-pages, export, history) can be tried before any API key exists. Its text
+is template-based and is NOT a measure of what real models write. Each job gets a tech line of the job
+description's tools plus a few related ones, only those in common use during that job's dates.
 
-Styles:  concise | detailed (long bullets, includes one invented number so the check can flag it)
+Styles:  concise | detailed (too many long bullets, includes one invented number so the check can flag it)
          flaky (returns invalid JSON until the retry feedback appears in the prompt)
 
 A fix request (schema "tailor_revision") is answered like a real model should: only the parts of the draft that
@@ -34,6 +35,19 @@ VOCAB = [
     "Pandas", "TensorFlow", "PyTorch", "Hadoop", "Looker", "HubSpot", "Zendesk", "QuickBooks", "GAAP",
     "SEO", "Copywriting",
 ]
+NOT_TOOLS = {  # VOCAB words that are practices or fields, never put in a tech line
+    "CI/CD", "REST APIs", "Agile", "Scrum", "Machine Learning", "Data Modeling", "ETL", "Stakeholder Management",
+    "Project Management", "Budgeting", "Forecasting", "Compliance", "Customer Success", "Product Roadmap",
+    "A/B Testing", "Analytics", "Communication", "Leadership", "Mentoring", "Testing", "Automation", "Security",
+    "Cloud", "DevOps", "API Design", "Microservices", "GAAP", "SEO", "Copywriting", "NoSQL",
+}
+RELATED = {  # what a job using the tool would normally also have used
+    "Python": ["FastAPI", "Pandas", "pytest"], "AWS": ["Amazon S3", "AWS Lambda"], "Docker": ["Docker Compose"],
+    "Kubernetes": ["Helm"], "React": ["Redux", "Jest"], "TypeScript": ["ESLint"], "Node.js": ["Express"],
+    "PostgreSQL": ["SQLAlchemy"], "Spark": ["PySpark"], "Kafka": ["Kafka Connect"], "Terraform": ["Terragrunt"],
+    "Snowflake": ["Snowpipe"], "Airflow": ["Celery"], "Java": ["Spring Boot", "JUnit"], "Git": ["GitHub"],
+    "SQL": ["dbt"], "Tableau": ["Tableau Prep"], "Azure": ["Azure DevOps"], "GCP": ["BigQuery"],
+}
 GENERIC = ["Communication", "Problem Solving", "Collaboration", "Documentation", "Process Improvement",
            "Stakeholder Management", "Planning", "Reporting"]
 STOP = {"The", "And", "With", "You", "Our", "We", "This", "That", "Will", "Have", "For", "Are", "Your",
@@ -52,6 +66,10 @@ COMPANY_RE = re.compile(
 )
 
 CONCISE = [
+    ("Migrated legacy {k1} jobs to a cleaner, versioned setup, running old and new side by side until the results matched so the switch caused no downtime for users.",
+     "Migrate legacy {k1} jobs to a cleaner, versioned setup, running old and new side by side until the results match so each switch causes no downtime for users."),
+    ("Streamlined {k3} reporting by replacing spreadsheet hand-offs with a shared, automated pipeline, so managers saw current numbers each morning instead of weekly exports.",
+     "Streamline {k3} reporting by replacing spreadsheet hand-offs with a shared, automated pipeline, so managers see current numbers each morning instead of weekly exports."),
     ("Designed {k1} components for the core customer workflow, choosing simple, testable interfaces so cross-functional teams could ship changes with fewer regressions.",
      "Design {k1} components for the core customer workflow, choosing simple, testable interfaces so cross-functional teams can ship changes with fewer regressions."),
     ("Built {k2} automation for recurring operational work, replacing manual hand-offs and giving the team reliable, repeatable runs it no longer had to babysit.",
@@ -64,8 +82,16 @@ CONCISE = [
      "Rework {k3} processes that cause repeated rework, tracing failure points with the owning teams and rolling out fixes that keep issues from coming back."),
     ("Introduced {k2} monitoring and alerting for customer-facing services, catching problems before users reported them and feeding post-incident lessons into planning.",
      "Introduce {k2} monitoring and alerting for customer-facing services, catching problems before users report them and feeding post-incident lessons into planning."),
+    ("Hardened {k2} deployments with staged rollouts, health checks and quick rollback steps, letting the team release during working hours without late-night follow-ups.",
+     "Harden {k2} deployments with staged rollouts, health checks and quick rollback steps, letting the team release during working hours without late-night follow-ups."),
+    ("Standardized how {k1} and {k3} work was reviewed and tested, writing checklists and examples that cut back-and-forth in reviews as the team grew.",
+     "Standardize how {k1} and {k3} work is reviewed and tested, writing checklists and examples that cut back-and-forth in reviews as the team grows."),
 ]
 DETAILED = [
+    ("Migrated a set of legacy {k1} jobs to a versioned, documented setup, running both side by side with the owning teams until every output matched, so the cut-over caused no downtime or data loss.",
+     "Migrate legacy {k1} jobs to a versioned, documented setup, running both side by side with the owning teams until every output matches, so each cut-over causes no downtime or data loss."),
+    ("Streamlined recurring {k3} reporting by replacing manual spreadsheet hand-offs with a shared automated pipeline and clear ownership, so managers saw current numbers every morning instead of stale weekly exports.",
+     "Streamline recurring {k3} reporting by replacing manual spreadsheet hand-offs with a shared automated pipeline and clear ownership, so managers see current numbers every morning instead of stale weekly exports."),
     ("Increased delivery speed by 23.4% by redesigning {k1} workflows across several teams, aligning technical decisions with business goals, documenting trade-offs for stakeholders, and keeping every release predictable and well tested.",
      "Increase delivery speed by 23.4% by redesigning {k1} workflows across several teams, aligning technical decisions with business goals, documenting trade-offs for stakeholders, and keeping every release predictable and well tested."),
     ("Owned the day-to-day execution of {k2} initiatives from intake to hand-off, coordinating with product, operations and customer-facing teams, tracking risks openly, and communicating status in plain language to leadership.",
@@ -78,6 +104,10 @@ DETAILED = [
      "Improve {k3} processes by identifying recurring failure points, proposing practical fixes, and following up with owners until the changes are adopted and measured."),
     ("Monitored {k2} health with simple dashboards and alerts, triaged issues quickly, and wrote post-incident notes that fed back into the team's planning.",
      "Monitor {k2} health with simple dashboards and alerts, triage issues quickly, and write post-incident notes that feed back into the team's planning."),
+    ("Hardened {k2} deployments with staged rollouts, automated health checks and one-step rollbacks agreed with operations, letting the team release during working hours without late-night follow-ups.",
+     "Harden {k2} deployments with staged rollouts, automated health checks and one-step rollbacks agreed with operations, letting the team release during working hours without late-night follow-ups."),
+    ("Standardized how {k1} and {k3} work was reviewed and tested across the group, writing short checklists and worked examples that cut back-and-forth in reviews as the team doubled.",
+     "Standardize how {k1} and {k3} work is reviewed and tested across the group, writing short checklists and worked examples that cut back-and-forth in reviews as the team grows."),
 ]
 
 
@@ -124,6 +154,27 @@ def guess_company(jd: str) -> str:
     return ""
 
 
+def tech_line(keywords: list[str], index: int, end: str, limit: int = 8) -> list[str]:
+    """The job description's tools and a few related ones, minus any that job could not have used: a tool that
+    became common after the job ended, or an AI tool outside the most recent jobs (the rules era_problems checks)."""
+    from ..pipeline import validate  # late: the pipeline imports the LLM clients
+
+    tools = [k for k in keywords if k in VOCAB and k not in NOT_TOOLS and k not in GENERIC]
+    candidates = tools + [extra for tool in tools for extra in RELATED.get(tool, [])]
+    probe = validate.parse_point(end, is_end=True)
+    ended = None if probe is None or end.strip().lower() in validate._CURRENT else probe[0]
+    line: list[str] = []
+    for tool in candidates:
+        years = {**validate.COMMON_YEAR, **validate.AI_TOOLS}
+        if index >= validate.AI_RECENT_JOBS and any(validate._mentions_tool(tool, t) for t in validate.AI_TOOLS):
+            continue
+        if ended is not None and any(year > ended and validate._mentions_tool(tool, t) for t, year in years.items()):
+            continue
+        if tool not in line:
+            line.append(tool)
+    return line[:limit]
+
+
 def _title_ladder(prefix: str, base: str, count: int) -> list[str]:
     top = LEVELS.index(prefix) if prefix in LEVELS else 2
     titles = []
@@ -166,11 +217,13 @@ class FakeClient(LLMClient):
         """What differs between the draft in the context and this model's own clean sections."""
         clean, draft = self._tailor(ctx)["sections"], ctx.get("draft") or {}
         own = {e["company_index"]: e for e in clean["experience"]}
-        titles, bullets = [], []
+        titles, bullets, tech = [], [], []
         for exp in draft.get("experience", []):
             mine = own.get(exp["company_index"])
             if mine is None:
                 continue
+            if mine["tech"] != exp.get("tech", []):
+                tech.append({"company_index": exp["company_index"], "tech": mine["tech"]})
             if mine["job_title"] != exp["job_title"]:
                 titles.append({"company_index": exp["company_index"], "job_title": mine["job_title"]})
             for index, (theirs, ours) in enumerate(zip(exp["bullets"], mine["bullets"])):
@@ -184,7 +237,7 @@ class FakeClient(LLMClient):
         return {
             "headline": clean["headline"] if clean["headline"] != draft.get("headline") else "",
             "summary": clean["summary"] if clean["summary"] != draft.get("summary") else "",
-            "titles": titles, "bullets": bullets, "skill_changes": changes,
+            "titles": titles, "bullets": bullets, "skill_changes": changes, "tech_changes": tech,
         }
 
     def _tailor(self, ctx: dict) -> dict:
@@ -197,8 +250,8 @@ class FakeClient(LLMClient):
         k = (keywords + GENERIC)[:12]
         titles = _title_ladder(prefix, base, len(companies))
         bank = DETAILED if self.style == "detailed" else CONCISE
-        if self.style == "detailed":  # deliberately too long, to exercise the fit-to-one-page steps
-            counts = [6, 5, 4] if not ctx.get("shorten") else [4, 3, 2]
+        if self.style == "detailed":  # deliberately too long, to exercise the fit-to-two-pages steps
+            counts = [24, 22, 20] if not ctx.get("shorten") else [8, 6, 5]
         else:  # follows the bullet budget in the prompt, like a real model
             counts = ctx.get("bullets") or [4, 3, 3]
 
@@ -211,7 +264,8 @@ class FakeClient(LLMClient):
                 past, now = bank[(index * 2 + j) % len(bank)]
                 template = now if present else past
                 bullets.append(template.format(k1=k[(j) % len(k)], k2=k[(j + 1) % len(k)], k3=k[(j + 2) % len(k)]))
-            experience.append({"company_index": index, "job_title": titles[index], "bullets": bullets})
+            experience.append({"company_index": index, "job_title": titles[index], "bullets": bullets,
+                               "tech": tech_line(keywords, index, str(company.get("end", "")))})
 
         groups = [
             {"category": "Core Skills", "skills": k[:6]},

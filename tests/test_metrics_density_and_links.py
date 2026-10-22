@@ -1,5 +1,6 @@
 import asyncio
 import io
+import itertools
 
 import pytest
 from docx import Document
@@ -75,11 +76,11 @@ class Dense(LLMClient):
     async def generate_structured(self, **kwargs):
         self.calls += 1
         result = await self.inner.generate_structured(**kwargs)
-        figures = iter(["23.4%", "17.8%", "38", "21%", "1.7TB", "12.6%", "47", "8.3%", "19%", "26.1%", "13.7%",
-                        "29", "6.4%", "31.2%", "44", "16.9%"])
+        figures = itertools.cycle(["23.4%", "17.8%", "38", "21%", "1.7TB", "12.6%", "47", "8.3%", "19%", "26.1%",
+                                   "13.7%", "29", "6.4%", "31.2%", "44", "16.9%", "27.3%", "33", "14.2%", "9.6%"])
 
         def bullet(i):
-            return (f"Improved delivery of reporting stream {'abcdefgh'[i]} by {next(figures)} by reworking its "
+            return (f"Improved delivery of reporting stream {'abcdefghijklmnopqrstuvwxyz'[i]} by {next(figures)} by reworking its "
                     "batch schedule and adding checks to every load")
 
         if kwargs["schema_name"] == "tailor_revision":  # the fix keeps a figure only in each first bullet

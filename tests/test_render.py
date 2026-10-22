@@ -6,9 +6,12 @@ from docx import Document
 from pypdf import PdfReader
 
 from app.pipeline import validate
-from app.pipeline.fit import trim_to_fit, try_styles
+from app.pipeline.fit import MAX_PAGES, trim_to_fit, try_styles
+from app.render import pdf as pdf_module
 from app.render.docx import cover_docx, resume_docx
-from app.render.pdf import Run, Sheet, contact_line, fmt_dates, render_cover_pdf, render_resume_pdf
+from app.render.pdf import (
+    BULLET_X, TECH_LABEL, TEXT_X, Run, Sheet, contact_line, fmt_dates, render_cover_pdf, render_resume_pdf,
+)
 from app.schemas import (
     Contact, CoverLetter, ExperienceOut, FitStyle, SkillGroup, TailoredSections, TailorOutput,
 )
@@ -78,7 +81,7 @@ def test_paper_sizes(resume, paper, size):
     assert (round(float(box.width)), round(float(box.height))) == size and pages == 1
 
 
-def long_resume(profile, bullets=12) -> "object":
+def long_resume(profile, bullets=12, tech=()) -> "object":
     sentence = "Designed and operated reliable data pipelines with Python and SQL for several product teams, documenting every decision clearly."
     out = TailorOutput(
         jd_analysis=make_output().jd_analysis,
@@ -86,7 +89,8 @@ def long_resume(profile, bullets=12) -> "object":
             headline="Senior Data Engineer | Python | SQL", summary="Senior Data Engineer. " * 5,
             skills=[SkillGroup(category="Core", skills=["Python", "SQL", "Airflow"])],
             experience=[
-                ExperienceOut(company_index=i, job_title="Data Engineer", bullets=[f"{sentence} Item {'abcdefghijkl'[j]}." for j in range(bullets)])
+                ExperienceOut(company_index=i, job_title="Data Engineer", bullets=[f"{sentence} Item {j}." for j in range(bullets)],
+                              tech=list(tech))
                 for i in range(len(profile.companies))
             ],
         ),
@@ -95,23 +99,103 @@ def long_resume(profile, bullets=12) -> "object":
 
 
 def test_overflow_makes_more_pages_and_the_fit_steps_repair_it(profile):
-    resume = long_resume(profile)
+    resume = long_resume(profile, bullets=20)
     _, pages = render_resume_pdf(resume, FitStyle())
-    assert pages > 1
+    assert pages == 3
     assert try_styles(resume) is None  # shrinking alone cannot save this much text
     trimmed, style, pages, _pdf, notes = trim_to_fit(resume)
-    assert pages == 1 and style.font_pt == 9.5
+    assert pages <= MAX_PAGES and render_resume_pdf(trimmed, style)[1] == pages
     assert all(len(e.bullets) >= 2 for e in trimmed.experience)
     assert any("Removed" in n for n in notes)
     assert sum(len(e.bullets) for e in trimmed.experience) < sum(len(e.bullets) for e in resume.experience)
 
 
 def test_moderate_overflow_is_fixed_by_shrinking_only(profile):
-    resume = long_resume(profile, bullets=6)
+    resume = long_resume(profile, bullets=14)
     _, pages = render_resume_pdf(resume, FitStyle())
     found = try_styles(resume)
-    assert pages == 2 and found is not None and found[1] == 1 and found[0].font_pt < 10.5
-    assert any("Font reduced" in n for n in found[3])
+    assert pages == 3 and found is not None and found[1] == 2 and found[0].font_pt == 10.0
+    assert any("Font reduced" in n and "two pages" in n for n in found[3])
+
+
+def test_a_full_second_page_keeps_the_largest_font(profile):
+    found = try_styles(long_resume(profile, bullets=10))  # page 2 about half full at 10.5 pt
+    assert found[1] == 2 and found[0].font_pt == 10.5 and found[3] == []
+
+
+def test_a_nearly_empty_second_page_becomes_one_page_at_a_smaller_font(profile):
+    resume = long_resume(profile, bullets=6)  # page 2 would hold a few lines at 10.5 pt
+    assert render_resume_pdf(resume, FitStyle())[1] == 2
+    found = try_styles(resume)
+    assert found[1] == 1 and found[0].font_pt < 10.5 and any("one page" in n for n in found[3])
+    nothing_fits_on_one = long_resume(profile, bullets=7)  # no step reaches one page: the largest font, two pages
+    found = try_styles(nothing_fits_on_one)
+    assert found[1] == 2 and found[0].font_pt == 10.5
+
+
+def _lines_by_page(resume, style):
+    drawn = []
+    original = pdf_module.Sheet._draw
+
+    def spy(self, line, x, y, size, height):
+        drawn.append((self.pdf.page, y, round(x - self.margin, 2), "".join(p.text for p in line)))
+        return original(self, line, x, y, size, height)
+
+    pdf_module.Sheet._draw = spy
+    try:
+        pages = render_resume_pdf(resume, style)[1]
+    finally:
+        pdf_module.Sheet._draw = original
+    return pages, drawn
+
+
+@pytest.mark.parametrize("seed", range(12))
+def test_page_breaks_never_split_a_bullet_or_leave_a_job_title_alone(profile, seed):
+    rng = random.Random(seed)
+    resume = long_resume(profile, bullets=rng.randint(6, 9), tech=["Python", "SQL", "Airflow", "AWS (S3, Glue)"])
+    for exp in resume.experience:  # bullets of different lengths move the break around
+        exp.bullets = [b + " Extra detail." * rng.randint(0, 4) for b in exp.bullets]
+    pages, drawn = _lines_by_page(resume, FitStyle(font_pt=rng.choice([10.5, 10.0, 9.5])))
+    assert pages >= 2
+    for page in range(1, pages):
+        bottom_y = max(y for p, y, _x, _t in drawn if p == page)
+        bottom = [t for p, y, _x, t in drawn if p == page and y == bottom_y]
+        assert not any(t.startswith("Data Engineer") or t in ("SUMMARY", "SKILLS", "EXPERIENCE", "EDUCATION")
+                       for t in bottom), bottom
+        top_y = min(y for p, y, _x, _t in drawn if p == page + 1)
+        top = [(x, t) for p, y, x, t in drawn if p == page + 1 and y == top_y]
+        xs = {x for x, _t in top}
+        assert not (TEXT_X in xs and BULLET_X not in xs), top  # the next page never starts mid-bullet
+        assert not any(t.startswith(TECH_LABEL) for _x, t in top), top  # nor with a job's tech line
+
+
+def test_the_tech_line_follows_each_jobs_bullets_in_pdf_and_docx(profile):
+    resume = long_resume(profile, bullets=2, tech=["Python", "AWS (ECS, SQS)", ".NET", "C#"])
+    text = text_of(render_resume_pdf(resume, FitStyle())[0])
+    lines = text.splitlines()
+    tech_lines = [i for i, line in enumerate(lines) if line.startswith("Tech: ")]
+    assert len(tech_lines) == 3 and lines[tech_lines[0]] == "Tech: Python, AWS (ECS, SQS), .NET, C#"
+    assert "Item 1." in lines[tech_lines[0] - 1]  # right after the job's last bullet
+    doc = Document(io.BytesIO(resume_docx(resume, FitStyle())))
+    paragraphs = doc.paragraphs
+    tech = [p for p in paragraphs if p.text.startswith("Tech: ")]
+    assert len(tech) == 3 and tech[0].text == "Tech: Python, AWS (ECS, SQS), .NET, C#"
+    assert tech[0].style.name != "List Bullet" and tech[0].runs[0].bold and tech[0].runs[0].text == "Tech: "
+    first = paragraphs.index(tech[0])
+    assert paragraphs[first - 1].style.name == "List Bullet" and paragraphs[first - 1].paragraph_format.keep_with_next
+    rows = [p for p in paragraphs if p.text.startswith("Data Engineer")]
+    assert all(p.paragraph_format.keep_with_next for p in rows)  # a job title stays with its first bullet
+    assert all(p.paragraph_format.keep_together for p in paragraphs if p.style.name == "List Bullet")
+    assert not doc.tables
+    old = long_resume(profile, bullets=2)  # runs saved before the tech line: no empty "Tech:" anywhere
+    assert "Tech:" not in text_of(render_resume_pdf(old, FitStyle())[0])
+    assert not any(p.text.startswith("Tech") for p in Document(io.BytesIO(resume_docx(old, FitStyle()))).paragraphs)
+
+
+def test_a_block_taller_than_a_page_does_not_leave_a_blank_page():
+    sheet = Sheet("Letter", 36, 10.5, 1.27, "t", "a")
+    sheet.keep(10_000)
+    assert sheet.pdf.page == 1  # nothing would fit better on a new page
 
 
 def test_accented_and_non_latin1_names_render_and_extract(profile):

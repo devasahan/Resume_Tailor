@@ -1,4 +1,5 @@
-"""DOCX export (editable copy). Plain paragraphs, tab stops and the built-in bullet style: no tables or text boxes."""
+"""DOCX export (editable copy). Plain paragraphs, tab stops and the built-in bullet style: no tables or text boxes.
+Word paginates the resume itself; keep-with-next and keep-together ask it to break pages the way the PDF does."""
 from __future__ import annotations
 
 from datetime import UTC, datetime
@@ -11,7 +12,15 @@ from docx.oxml.ns import qn
 from docx.shared import Inches, Pt
 
 from ..schemas import CoverLetter, FitStyle, Resume
-from .pdf import contact_line, fmt_dates, letter_date, person_name, recipient_lines
+from .pdf import (
+    TECH_GAP,
+    TECH_LABEL,
+    contact_line,
+    fmt_dates,
+    letter_date,
+    person_name,
+    recipient_lines,
+)
 
 PAPER = {"Letter": (Inches(8.5), Inches(11)), "A4": (Inches(8.27), Inches(11.69))}
 
@@ -50,6 +59,7 @@ def _heading(doc: Document, text: str, font_pt: float) -> None:
     p = doc.add_paragraph()
     p.paragraph_format.space_before = Pt(8)
     p.paragraph_format.space_after = Pt(3)
+    p.paragraph_format.keep_with_next = True  # never alone at the bottom of a page
     run = p.add_run(text)
     run.bold = True
     run.font.size = Pt(font_pt + 0.5)
@@ -59,6 +69,7 @@ def _heading(doc: Document, text: str, font_pt: float) -> None:
 def _row(doc: Document, left_bold: str, left_rest: str, right: str, text_width, space_before: float = 0):
     p = doc.add_paragraph()
     p.paragraph_format.space_before = Pt(space_before)
+    p.paragraph_format.keep_together = True
     p.paragraph_format.tab_stops.add_tab_stop(text_width, WD_TAB_ALIGNMENT.RIGHT)
     p.add_run(left_bold).bold = True
     if left_rest:
@@ -72,6 +83,9 @@ def resume_docx(resume: Resume, style: FitStyle) -> bytes:
     p = resume.profile
     doc = _setup(style, style.margin_in, style.font_pt, author=p.name, title=f"{p.name} - Resume")
     text_width = PAPER[style.paper][0] - Inches(style.margin_in * 2)
+    normal = doc.styles["Normal"].paragraph_format
+    normal.line_spacing = 1.04  # the PDF's line height (1.27 x the font size), so Word keeps the same page count
+    normal.widow_control = True
 
     name = doc.add_paragraph()
     name.alignment = WD_ALIGN_PARAGRAPH.CENTER
@@ -107,19 +121,31 @@ def resume_docx(resume: Resume, style: FitStyle) -> bytes:
             rest += f" | {company.location}"
         if company.mode:
             rest += f" | {company.mode}"
-        _row(doc, exp.job_title, rest, fmt_dates(company.start, company.end), text_width, space_before=4 if index else 0)
-        for bullet in exp.bullets:
+        row = _row(doc, exp.job_title, rest, fmt_dates(company.start, company.end), text_width,
+                   space_before=4 if index else 0)
+        row.paragraph_format.keep_with_next = True  # a job title stays with its first bullet
+        for number, bullet in enumerate(exp.bullets):
             para = doc.add_paragraph(bullet, style="List Bullet")
             para.paragraph_format.space_after = Pt(1)
+            para.paragraph_format.keep_together = True
+            para.paragraph_format.keep_with_next = bool(exp.tech) and number == len(exp.bullets) - 1
+        if exp.tech:  # a plain paragraph, not a bullet, lined up with the bullet text
+            tech = doc.add_paragraph()
+            tech.paragraph_format.left_indent = Inches(0.25)
+            tech.paragraph_format.space_before = Pt(TECH_GAP)
+            tech.paragraph_format.keep_together = True
+            tech.add_run(f"{TECH_LABEL} ").bold = True
+            tech.add_run(", ".join(exp.tech))
 
     if p.education:
         _heading(doc, "EDUCATION", style.font_pt)
         for edu in p.education:
             main = ", ".join(x for x in (edu.degree, edu.field) if x)
             if main:
-                _row(doc, main, f" | {edu.school}", fmt_dates(edu.start, edu.end), text_width)
+                row = _row(doc, main, f" | {edu.school}", fmt_dates(edu.start, edu.end), text_width)
             else:
-                _row(doc, edu.school, "", fmt_dates(edu.start, edu.end), text_width)
+                row = _row(doc, edu.school, "", fmt_dates(edu.start, edu.end), text_width)
+            row.paragraph_format.keep_with_next = bool(edu.details)
             if edu.details:
                 doc.add_paragraph(edu.details)
 

@@ -5,7 +5,8 @@ Linux. One bundled font (Carlito, metrically compatible with Calibri), single co
 tables, images or icons: the layout ATS parsers read best.
 
 The code is a small typesetter: measure text, wrap it into lines, draw the lines top to bottom.
-Drawing in reading order also gives a clean text layer for ATS extraction.
+Drawing in reading order also gives a clean text layer for ATS extraction. A page break never splits a bullet,
+and never leaves a section heading or a job title alone at the bottom of a page.
 """
 from __future__ import annotations
 
@@ -26,6 +27,8 @@ RESUME_LINE = 1.27  # line height as a multiple of the font size
 BULLET_X = 4.0  # points from the left margin to the bullet glyph
 TEXT_X = 13.0  # points from the left margin to bullet text (hanging indent)
 ROW_GAP = 10.0  # minimum space between the left text and the right-aligned dates
+TECH_LABEL = "Tech:"  # the line under a job's bullets: "Tech: Python, FastAPI, PostgreSQL"
+TECH_GAP = 1.5  # points between a job's last bullet and its tech line
 
 
 def display_url(url: str) -> str:
@@ -117,6 +120,7 @@ class Sheet:
         self.width = pdf.w - 2 * margin
         self.bottom = pdf.h - margin
         self.y = margin
+        self._wraps: dict[tuple, list[Line]] = {}  # the keep rules measure a block before drawing it
 
     # ------------------------------------------------------------------ measuring and wrapping
     def measure(self, text: str, bold: bool, size: float) -> float:
@@ -130,6 +134,12 @@ class Sheet:
         return size
 
     def wrap(self, runs: list[Run], width: float, size: float) -> list[Line]:
+        key = (tuple((run.text, run.bold) for run in runs), round(width, 3), size)
+        if key not in self._wraps:
+            self._wraps[key] = self._wrap(runs, width, size)
+        return self._wraps[key]
+
+    def _wrap(self, runs: list[Run], width: float, size: float) -> list[Line]:
         tokens: list[tuple[str, bool, bool]] = []
         for run in runs:
             for part in re.split(r"(\s+)", run.text):
@@ -176,11 +186,28 @@ class Sheet:
         flush()
         return lines
 
+    def para_height(self, runs: list[Run], size: float | None = None, x: float = 0.0) -> float:
+        size = size or self.size
+        return len(self.wrap(runs, self.width - x, size)) * size * self.line
+
+    def bullet_height(self, text: str, after: float = 1.0) -> float:
+        return len(self.wrap([Run(text)], self.width - TEXT_X, self.size)) * self.size * self.line + after
+
+    def row_height(self, left: list[Run], right: str) -> float:
+        right_w = self.measure(right, False, self.size) if right else 0.0
+        lines = self.wrap(left, self.width - (right_w + ROW_GAP if right else 0.0), self.size)
+        return max(len(lines), 1) * self.size * self.line
+
     # ------------------------------------------------------------------ drawing
     def _ensure(self, height: float) -> None:
         if self.y + height > self.bottom + 0.01:
             self.pdf.add_page()
             self.y = self.margin
+
+    def keep(self, height: float) -> None:
+        """Start a new page unless the next `height` points fit on this one (never more than a page body, so a
+        block taller than a page cannot cause an empty page)."""
+        self._ensure(min(height, self.bottom - self.margin))
 
     def _draw(self, line: Line, x: float, y: float, size: float, height: float) -> None:
         merged: list[list] = []  # neighbours in the same style become one text string
@@ -211,9 +238,11 @@ class Sheet:
             self.y += height
         self.y += after
 
-    def bullet(self, text: str, after: float = 1.0) -> None:
+    def bullet(self, text: str, after: float = 1.0, keep: float = 0.0) -> None:
+        """A whole bullet on one page; `keep` reserves room for what must follow it (a job's tech line)."""
         height = self.size * self.line
         lines = self.wrap([Run(text)], self.width - TEXT_X, self.size)
+        self.keep(len(lines) * height + after + keep)
         for index, line in enumerate(lines):
             self._ensure(height)
             if index == 0:
@@ -250,24 +279,45 @@ class Sheet:
         self.pdf.line(self.margin, self.y + width / 2, self.margin + self.width, self.y + width / 2)
         self.y += width + after
 
-    def heading(self, text: str) -> None:
+    def heading(self, text: str, keep: float = 0.0) -> None:
+        """A section heading, kept on the page of its first entry (`keep` is that entry's height)."""
         size = self.size + 0.5
         height = size * self.line
         self.y += 8
-        self._ensure(height + 5)
+        self.keep(height + 5 + keep)
         self._draw([Piece(text, True, self.measure(text, True, size))], self.margin, self.y, size, height)
         self.y += height + 1
         self.pdf.set_line_width(0.75)
         self.pdf.line(self.margin, self.y + 0.375, self.margin + self.width, self.y + 0.375)
         self.y += 0.75 + 3
 
+    def last_page_fill(self) -> float:
+        """How full the last page is, 0..1: a second page holding a few lines is worth avoiding."""
+        return max(0.0, min(1.0, (self.y - self.margin) / (self.bottom - self.margin)))
+
     def finish(self) -> tuple[bytes, int]:
         return bytes(self.pdf.output()), self.pdf.page
 
 
 # ---------------------------------------------------------------------- resume
+def tech_runs(tech: list[str]) -> list[Run]:
+    """'Tech: Python, FastAPI, AWS (ECS, SQS)': the label bold, the tools in plain text, commas only (no pipes or
+    dots, which an ATS could read as a new bullet). Nothing for a job without a tech line (older runs)."""
+    return [Run(TECH_LABEL, True), Run(" " + ", ".join(tech))] if tech else []
+
+
 def render_resume_pdf(resume: Resume, style: FitStyle) -> tuple[bytes, int]:
     """Return (pdf bytes, page count)."""
+    return _resume_sheet(resume, style).finish()
+
+
+def resume_layout(resume: Resume, style: FitStyle) -> tuple[int, float]:
+    """(page count, how full the last page is), without building the PDF file."""
+    sheet = _resume_sheet(resume, style)
+    return sheet.pdf.page, sheet.last_page_fill()
+
+
+def _resume_sheet(resume: Resume, style: FitStyle) -> Sheet:
     p = resume.profile
     sheet = Sheet(style.paper, style.margin_in * 72, style.font_pt, RESUME_LINE, f"{p.name} - Resume", p.name)
     size = sheet.size
@@ -288,25 +338,41 @@ def render_resume_pdf(resume: Resume, style: FitStyle) -> tuple[bytes, int]:
     for group in resume.skills:
         sheet.para([Run(f"{group.category}:", True), Run(" " + ", ".join(group.skills))], after=1)
 
-    sheet.heading("EXPERIENCE")
-    for index, exp in enumerate(resume.experience):
+    jobs = []  # (row text, dates, bullets, tech line, tech height, height that must stay with the row)
+    for exp in resume.experience:
         company = p.companies[exp.company_index]
         details = " | ".join(x for x in (company.name, company.location, company.mode) if x)
+        left, dates, tech = [Run(exp.job_title, True), Run(f" | {details}")], fmt_dates(company.start, company.end), tech_runs(exp.tech)
+        tech_h = TECH_GAP + sheet.para_height(tech, x=TEXT_X) if tech else 0.0
+        first = sheet.bullet_height(exp.bullets[0]) if exp.bullets else 0.0
+        start = sheet.row_height(left, dates) + 1.5 + first + (tech_h if len(exp.bullets) <= 1 else 0.0)
+        jobs.append((left, dates, exp.bullets, tech, tech_h, start))
+    sheet.heading("EXPERIENCE", keep=jobs[0][5] if jobs else 0.0)
+    for index, (left, dates, bullets, tech, tech_h, start) in enumerate(jobs):
         sheet.space(4 if index else 0)
-        sheet.row([Run(exp.job_title, True), Run(f" | {details}")], fmt_dates(company.start, company.end))
+        sheet.keep(start)  # a job title never sits alone at the bottom of a page
+        sheet.row(left, dates)
         sheet.space(1.5)
-        for bullet in exp.bullets:
-            sheet.bullet(bullet)
+        for number, bullet in enumerate(bullets):
+            sheet.bullet(bullet, keep=tech_h if number == len(bullets) - 1 else 0.0)
+        if tech:
+            sheet.space(TECH_GAP)
+            sheet.para(tech, x=TEXT_X)
 
     if p.education:
-        sheet.heading("EDUCATION")
+        entries = []
         for edu in p.education:
             main = ", ".join(x for x in (edu.degree, edu.field) if x)
             left = [Run(main, True), Run(f" | {edu.school}")] if main else [Run(edu.school, True)]
-            sheet.row(left, fmt_dates(edu.start, edu.end))
-            if edu.details:
-                sheet.para([Run(edu.details)])
-    return sheet.finish()
+            dates, extra = fmt_dates(edu.start, edu.end), [Run(edu.details)] if edu.details else []
+            entries.append((left, dates, extra, sheet.row_height(left, dates) + (sheet.para_height(extra) if extra else 0.0)))
+        sheet.heading("EDUCATION", keep=entries[0][3])
+        for left, dates, extra, height in entries:
+            sheet.keep(height)
+            sheet.row(left, dates)
+            if extra:
+                sheet.para(extra)
+    return sheet
 
 
 # ---------------------------------------------------------------------- cover letter

@@ -1,4 +1,4 @@
-"""The whole run for one model: prompt -> validate -> merge locked fields -> fit one page -> checks -> save."""
+"""The whole run for one model: prompt -> validate -> merge locked fields -> fit two pages -> checks -> save."""
 from __future__ import annotations
 
 import asyncio
@@ -32,7 +32,14 @@ from ..schemas import (
 from ..storage.db import Database
 from . import validate
 from .facts import candidate_facts
-from .fit import bullet_budget, render_smallest, smaller_budget, trim_to_fit, try_styles
+from .fit import (
+    MAX_PAGES,
+    bullet_budget,
+    render_smallest,
+    smaller_budget,
+    trim_to_fit,
+    try_styles,
+)
 from .generate import Ask, GenerationFailed, Outcome, generate_validated
 
 log = logging.getLogger(__name__)
@@ -56,13 +63,15 @@ def _absorb(total: Outcome, other: Outcome) -> None:
 
 def draft_text(resume: Resume) -> str:
     """The editable sections of a draft as plain text, so a fix request can show the model what to revise. Bullets
-    are numbered from 0 within each employer: a fix names the bullets it changes by these numbers."""
+    are numbered from 0 within each employer: a fix names the bullets it changes by these numbers. Each employer
+    ends with its tech line, which a fix can replace as a whole."""
     lines = [f"Headline: {resume.headline}", f"Summary: {resume.summary}", "Skills:"]
     lines += [f"- {g.category}: {', '.join(g.skills)}" for g in resume.skills]
     for exp in resume.experience:
         company = resume.profile.companies[exp.company_index].name
         lines.append(f"company_index {exp.company_index} ({company}): {exp.job_title}")
         lines += [f"[{index}] {b}" for index, b in enumerate(exp.bullets)]
+        lines.append(f"Tech: {', '.join(exp.tech) if exp.tech else '(none)'}")
     return "\n".join(lines)
 
 
@@ -76,11 +85,11 @@ def coverage_feedback(resume: Resume, analysis: JDAnalysis) -> str | None:
         parts.append("These must-have phrases from the job description are not in the summary or any bullet yet: "
                      + ", ".join(f'"{t}"' for t in absent) + ".")
     if listed_only:
-        parts.append("These are only listed (in the skills, headline or titles) but not shown in the summary or a "
-                     "bullet: " + ", ".join(f'"{t}"' for t in listed_only) + ".")
+        parts.append("These are only listed (in the skills, headline, titles or tech lines) but not shown in the "
+                     "summary or a bullet: " + ", ".join(f'"{t}"' for t in listed_only) + ".")
     return " ".join(parts) + (
         " Put each one in word for word, in the summary or in one existing bullet of the employer where it fits "
-        "best (usually the most recent role), replacing weaker words so each bullet stays 18-28 words and the "
+        "best (usually the most recent role), replacing weaker words so each bullet stays 20-32 words and the "
         "summary 60-85 words. Do not add or remove bullets: each employer keeps exactly the number given in "
         "<employers>. Use at most two of these phrases per bullet, never as a list."
     )
@@ -133,7 +142,7 @@ async def fit_report(resume: Resume, paper: str) -> tuple[FitStyle, int, bool, l
         style, pages, _pdf, notes = found
         return style, pages, True, notes
     style, pages, _pdf = await asyncio.to_thread(render_smallest, resume, paper)
-    return style, pages, False, [f"Still {pages} pages at the smallest font. Shorten the text."]
+    return style, pages, False, [f"Still {pages} pages at the smallest font (the limit is two). Shorten the text."]
 
 
 async def run_tailor(
@@ -210,7 +219,7 @@ async def run_tailor(
             if thin:
                 feedback.append(
                     "The draft is too thin: " + "; ".join(thin) + ". Rewrite the summary as 3-4 flowing sentences "
-                    "of 60-85 words, and every weak bullet as 18-28 words that say specifically what was done, how, "
+                    "of 60-85 words, and every weak bullet as 20-32 words that say specifically what was done, how, "
                     "and what changed, following the SUMMARY and BULLETS rules."
                 )
             coverage = coverage_feedback(value[1], value[0].jd_analysis)
@@ -239,16 +248,18 @@ async def run_tailor(
             qualities = validate.quality_skill_problems(value[1])
             if qualities:
                 feedback.append(
-                    "The skills list contains qualities, not skills: " + ", ".join(f"'{s}'" for s in qualities[:6])
-                    + ". Replace them with real tools, platforms or methods related to the JD, and show those "
-                    "qualities in the bullets instead."
+                    "The skills list or a tech line contains qualities, not skills: "
+                    + ", ".join(f"'{s}'" for s in qualities[:6]) + ". Replace them with real tools, platforms or "
+                    "methods related to the JD (through skill_changes or tech_changes), and show those qualities in "
+                    "the bullets instead."
                 )
             era = validate.era_problems(value[1])
             if era:
                 feedback.append(
-                    "Some bullets mention tools that job could not really have used: " + " ".join(era)
+                    "Some bullets or tech lines mention tools that job could not really have used: " + " ".join(era)
                     + " Move each one to a later job where it was common (AI tools only to the one or two most recent "
-                    "jobs), or replace it with a tool of that time; keep the same number of bullets per employer."
+                    "jobs), or replace it with a tool of that time (a tech line through tech_changes); keep the same "
+                    "number of bullets per employer."
                 )
             titles = validate.title_growth_problems(value[1])
             if titles:
@@ -286,7 +297,7 @@ async def run_tailor(
         )
         output, resume, title_notes = outcome.value  # type: ignore[misc]
 
-        # --- fit to one page: shrink style -> ask once more with a smaller bullet budget -> trim bullets
+        # --- fit two pages at most: pick the style -> ask once more with a smaller bullet budget -> trim bullets
         fit = await asyncio.to_thread(try_styles, resume, paper)
         if fit is None:
             second = Outcome()
@@ -304,7 +315,7 @@ async def run_tailor(
                 fit = await asyncio.to_thread(try_styles, short_resume, paper)
                 if fit:
                     output, resume, title_notes = short_output, short_resume, short_title_notes
-                    notes.append("The model shortened the bullets to fit one page.")
+                    notes.append("The model shortened the bullets to fit two pages.")
             except GenerationFailed as exc:
                 _absorb(outcome, exc.outcome)
                 notes.append("Asking the model for shorter bullets failed, so the text was trimmed instead.")
@@ -315,7 +326,7 @@ async def run_tailor(
         else:
             resume, style, pages, _pdf, trim_notes = await asyncio.to_thread(trim_to_fit, resume, paper)
             notes += trim_notes
-            fits = pages == 1
+            fits = pages <= MAX_PAGES
 
         if outcome.input_tokens == 0 and outcome.output_tokens == 0:
             try:

@@ -34,4 +34,5 @@ Revise the previous draft to fix only these problems. The job description analys
 - titles: one entry (company_index, job_title) for each job title you change; [] when every title stays.
 - bullets: one entry for each bullet you change: its company_index, its bullet_index (the number in [brackets] before it in the draft, counting from 0 within each employer) and the complete new bullet without the [number]. Leave out every bullet that stays the same; never add, remove or reorder bullets.
 - skill_changes: one entry for each skill you replace: "old" exactly as the draft lists it and "new" (or "" to remove it); [] when the skills stay.
+- tech_changes: one entry (company_index and the complete new tech list) for each employer's "Tech:" line you change; [] when every tech line stays.
 Every sentence you rewrite must still follow the rules for its section, keep the must-have phrases it already shows, and keep the candidate's own figures exactly. Return one JSON object that follows the schema exactly.

@@ -3,8 +3,9 @@
 Three groups:
   * Profile and friends: the FIXED facts from the base resume. The AI never writes these.
   * TailorOutput and friends: what the model returns (all fields required, no defaults, so the
-    JSON schema is strict and works across providers). TailorRevision is the answer to a fix request: only
-    what changes. Its defaults only mean "keep" when a key is left out; the schema still requires every field.
+    JSON schema is strict and works across providers; a default, as on `tech`, only serves hand-built outputs and
+    old saved runs). TailorRevision is the answer to a fix request: only what changes. Its defaults only mean
+    "keep" when a key is left out; the schema still requires every field.
   * Resume / TailorResult: the merged document and the full record of one run.
 """
 from __future__ import annotations
@@ -68,6 +69,10 @@ class ExperienceOut(BaseModel):
     company_index: int
     job_title: str
     bullets: list[str]
+    # After the bullets, so the model sums up what they say. The default serves hand-built outputs and old data.
+    tech: list[str] = Field(default_factory=list, description=(
+        "the tools, frameworks and libraries used in this job, most important first (the job description's own "
+        "spelling for the ones it asks for), one per item and without a 'Tech:' label; [] for a non-technical role"))
 
 
 class TailoredSections(BaseModel):
@@ -104,6 +109,11 @@ class BulletChange(BaseModel):
     text: str = Field(description="the complete new bullet, without the [number]")
 
 
+class TechChange(BaseModel):
+    company_index: int
+    tech: list[str] = Field(description="the complete new tech line for that employer, one tool per item")
+
+
 class SkillChange(BaseModel):
     old: str = Field(description="a skill exactly as the draft lists it")
     new: str = Field(description='what replaces it, or "" to remove it')
@@ -116,6 +126,7 @@ class TailorRevision(BaseModel):
     titles: list[TitleChange] = Field(default_factory=list, description="only the job titles that change")
     bullets: list[BulletChange] = Field(default_factory=list, description="only the bullets that change")
     skill_changes: list[SkillChange] = Field(default_factory=list, description="only the skills that are replaced")
+    tech_changes: list[TechChange] = Field(default_factory=list, description="only the tech lines that change")
 
 
 class CoverLetterOut(BaseModel):
@@ -129,6 +140,7 @@ class ResumeExperience(BaseModel):
     company_index: int  # index into Resume.profile.companies
     job_title: str
     bullets: list[str]
+    tech: list[str] = Field(default_factory=list)  # the "Tech:" line under the bullets; [] in runs saved before it
 
 
 class Resume(BaseModel):
