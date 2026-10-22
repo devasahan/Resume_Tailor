@@ -388,6 +388,34 @@ def quality_skill_problems(resume: Resume) -> list[str]:
     return [item for item in items if _QUALITY_WORDS.search(item)]
 
 
+# Words that make a resume read as machine-written or as marketing copy (the prompt's PLAIN WORDS rule). Words
+# with an everyday technical meaning stay allowed: orchestration (Kubernetes), dynamic (pricing), enhance.
+_BUZZ = re.compile(
+    r"\b(?:leverag(?:e|ed|es|ing)|utiliz(?:e|ed|es|ing|ation)|spearhead(?:ed|s|ing)?|seamless(?:ly)?|robust(?:ly|ness)?"
+    r"|cutting[\s-]edge|state[\s-]of[\s-]the[\s-]art|synerg(?:y|ies|istic)|holistic(?:ally)?|innovative|transformative"
+    r"|pivotal|paradigm|best[\s-]in[\s-]class|world[\s-]class|game[\s-]chang(?:er|ing)|delv(?:e|ed|es|ing)"
+    r"|foster(?:ed|s|ing)?|empower(?:ed|s|ing|ment)?|meticulous(?:ly)?|plethora|myriad|in order to|a wide range of)\b",
+    re.IGNORECASE,
+)
+_ING_CLAUSE = re.compile(r",\s+(?:and\s+)?(?!during\b)[a-z]{4,}ing\b")  # ", ensuring ...", ", and enabling ..."
+MAX_ING_CLAUSES = 2  # a third in one bullet reads as a template
+MIN_PLAIN_PROBLEMS_FOR_RETRY = 2  # one stray word is only noted; it is not worth a model call
+
+
+def plain_word_problems(resume: Resume) -> list[str]:
+    """Machine-sounding wording in the summary and the bullets: buzzwords, and bullets that chain three or more
+    '-ing' clauses. Skills and tech lines are lists of tool names and are not read."""
+    places = [("summary", resume.summary)] + [
+        (resume.profile.companies[exp.company_index].name, bullet) for exp in resume.experience for bullet in exp.bullets
+    ]
+    problems: list[str] = []
+    for where, text in places:
+        problems += [f"'{match.group(0)}' ({where})" for match in _BUZZ.finditer(text)]
+        if len(_ING_CLAUSE.findall(text)) > MAX_ING_CLAUSES:
+            problems.append(f"a chain of '-ing' clauses ({where}: '{' '.join(text.split()[:8])} ...')")
+    return problems
+
+
 _WORD = re.compile(r"[A-Za-z][\w+#]*(?:-[\w+#]+)*")
 _REAL_DOUBLES = {"had", "that"}  # 'what it had had', 'said that that': correct English
 # 'a plug-in in Java', 'an add-on on Shopify', 'a follow-up up front': a hyphenated word ending in one of these

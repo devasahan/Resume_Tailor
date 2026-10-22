@@ -109,6 +109,10 @@ def run_checks(result: TailorResult, jd_text: str) -> None:
     result.coverage = validate.keyword_coverage(result.resume, result.analysis)
     result.ats_warnings = validate.ats_lint(result.resume)
     result.ats_warnings += validate.era_problems(result.resume)
+    plain = validate.plain_word_problems(result.resume)
+    if plain:
+        result.ats_warnings.append("Wording that can sound machine-written: " + "; ".join(plain[:6])
+                                   + ". Plain words read as your own.")
     absent, listed_only = validate.unshown_must_haves(result.resume, result.analysis)
     if absent or listed_only:
         result.ats_warnings.append(
@@ -196,7 +200,8 @@ async def run_tailor(
         def refine(value) -> Ask | None:
             """Ask once to fix the draft if it uses too many figures, round guesses, thin text, leaves must-have
             JD terms out of the summary and bullets, copies the posting's voice, repeats its phrases, repeats a word
-            by mistake, lists qualities as skills, or has job titles that do not read as a career path. The model
+            by mistake, lists qualities as skills, sounds machine-written, names tools a job could not have used,
+            or has job titles that do not read as a career path. The model
             gets the numbered draft and returns only what it changes (a TailorRevision): far less to write than a
             whole new draft, and everything that was fine stays word for word."""
             feedback = []
@@ -252,6 +257,13 @@ async def run_tailor(
                     + ", ".join(f"'{s}'" for s in qualities[:6]) + ". Replace them with real tools, platforms or "
                     "methods related to the JD (through skill_changes or tech_changes), and show those qualities in "
                     "the bullets instead."
+                )
+            plain = validate.plain_word_problems(value[1])
+            if len(plain) >= validate.MIN_PLAIN_PROBLEMS_FOR_RETRY:
+                feedback.append(
+                    "These words or patterns sound machine-written: " + "; ".join(plain[:8]) + ". Rewrite those "
+                    "sentences in plain, everyday words, following the PLAIN WORDS rule, and keep what they say, the "
+                    "must-have phrases they show and the number of bullets."
                 )
             era = validate.era_problems(value[1])
             if era:

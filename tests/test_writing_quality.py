@@ -2,6 +2,8 @@
 import asyncio
 from datetime import date
 
+import pytest
+
 from app.llm.base import LLMClient
 from app.llm.fake_client import FakeClient
 from app.pipeline import validate
@@ -171,3 +173,62 @@ def test_demo_run_follows_the_budget_without_shortening(router, db, profile, jd)
     assert result.status == "ok" and result.fits and result.retries == 0
     assert [len(e.bullets) for e in result.resume.experience] == bullet_budget(profile, "Letter")
     assert not any("shortened" in n or "Removed" in n for n in result.notes)
+
+
+# ------------------------------------------------------------------ plain words, not machine-written ones
+def test_machine_sounding_words_and_ing_chains_are_found(profile):
+    out = make_output()
+    out.sections.summary = "Data Engineer who leveraged Spark to deliver robust pipelines for analysts."
+    out.sections.experience[0].bullets = [
+        "Spearheaded a seamless move of nightly jobs to Airflow in order to cut manual reruns",
+        "Rebuilt the loaders, ensuring fresh data, enabling faster reports, and reducing support tickets",
+    ]
+    out.sections.experience[0].tech = ["Robust Toolkit"]  # tool names are never read
+    problems = validate.plain_word_problems(validate.build_resume(profile, out))
+    assert problems == ["'leveraged' (summary)", "'robust' (summary)", "'Spearheaded' (Northwind Labs)",
+                        "'seamless' (Northwind Labs)", "'in order to' (Northwind Labs)",
+                        "a chain of '-ing' clauses (Northwind Labs: 'Rebuilt the loaders, ensuring fresh data, enabling faster ...')"]
+
+
+def test_everyday_technical_words_are_plain(profile):
+    out = make_output()
+    out.sections.summary = "Data Engineer who runs Kubernetes orchestration and dynamic pricing jobs."
+    out.sections.experience[0].bullets = [
+        "Moved the billing jobs to Airflow during the migration, keeping reports on time, so finance closed the month early"]
+    assert validate.plain_word_problems(validate.build_resume(profile, out)) == []
+
+
+class Buzzy(LLMClient):
+    """Writes buzzwords into the first draft; the fix comes back in plain words."""
+
+    def __init__(self, inner, words: int):
+        self.inner, self.calls, self.words = inner, 0, words
+
+    async def generate_structured(self, **kwargs):
+        self.calls += 1
+        result = await self.inner.generate_structured(**kwargs)
+        if kwargs["schema_name"] == "tailor_output":
+            bullets = result.data["sections"]["experience"][0]["bullets"]
+            bullets[0] = ("Leveraged Python and SQL to build a seamless reporting flow for the product teams, so "
+                          "managers saw current numbers every morning")
+            if self.words == 1:
+                bullets[0] = bullets[0].replace("a seamless", "a simple")
+        return result
+
+
+@pytest.mark.parametrize("words,calls", [(2, 2), (1, 1)])
+def test_machine_sounding_drafts_are_rewritten_in_plain_words(router, db, registry, profile, jd, words, calls):
+    client = Buzzy(FakeClient(registry.get("demo-concise")), words)
+    router.overrides["demo-concise"] = client
+    result = asyncio.run(run_tailor(router, db, profile=profile, profile_id=None, jd=jd, model_id="demo-concise"))
+    assert result.status == "ok" and client.calls == calls  # one stray word is not worth a model call
+    remaining = validate.plain_word_problems(result.resume)
+    assert remaining == ([] if words == 2 else ["'Leveraged' (Northwind Labs)"])
+    assert any("machine-written" in w for w in result.ats_warnings) == (words == 1)  # still shown to the user
+
+
+def test_the_prompt_asks_for_plain_words():
+    text = tailor_system("estimate")
+    assert "PLAIN WORDS" in text and "the way a person would explain the work to a colleague" in text
+    assert "leverage, utilize, spearhead, seamless, robust" in text and '"in order to"' in text
+    assert "Do not chain \"-ing\" clauses" in text and "Architected" not in text
