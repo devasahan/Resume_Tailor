@@ -161,21 +161,57 @@ def render_smallest(resume: Resume, paper: str = "Letter") -> tuple[FitStyle, in
     return style, pages, pdf
 
 
-def trim_to_fit(resume: Resume, paper: str = "Letter") -> tuple[Resume, FitStyle, int, bytes, list[str]]:
-    """Remove bullets until the resume fits on MAX_PAGES pages (or nothing more can be removed). Works on a copy."""
+def _removal_order(resume: Resume) -> list[int]:
+    """Positions in resume.experience, one per bullet trim_to_fit may remove, in order: always the last bullet of
+    the oldest among the employers with the most bullets, keeping 2 each. Needs no layout."""
+    counts = [len(e.bullets) for e in resume.experience]
+    order = []
+    while any(n > 2 for n in counts):
+        most = max(counts)
+        position = max(i for i, n in enumerate(counts) if n == most)
+        counts[position] -= 1
+        order.append(position)
+    return order
+
+
+def _without(resume: Resume, order: list[int], k: int) -> Resume:
     work = resume.model_copy(deep=True)
-    removed: list[str] = []
-    while True:
-        pages, _fill = resume_layout(work, styles(paper)[-1])
-        if pages <= MAX_PAGES:
-            break
-        candidates = [e for e in work.experience if len(e.bullets) > 2]
-        if not candidates:
-            break
-        most = max(len(e.bullets) for e in candidates)
-        target = [e for e in candidates if len(e.bullets) == most][-1]  # the oldest among the longest
-        company = work.profile.companies[target.company_index].name
-        removed.append(f"{company}: {target.bullets.pop()}")
+    for position in order[:k]:
+        work.experience[position].bullets.pop()
+    return work
+
+
+MAX_REMOVED_IN_NOTE = 5
+
+
+def trim_to_fit(resume: Resume, paper: str = "Letter") -> tuple[Resume, FitStyle, int, bytes, list[str]]:
+    """Remove bullets until the resume fits on MAX_PAGES pages (or nothing more can be removed). Works on a copy.
+    Fewer bullets never take more room, so the fewest removals that fit are found by halving (a few layouts, not
+    one per removed bullet)."""
+    order, smallest, seen = _removal_order(resume), styles(paper)[-1], {}
+
+    def fits(k: int) -> bool:
+        if k not in seen:
+            seen[k] = resume_layout(_without(resume, order, k), smallest)[0] <= MAX_PAGES
+        return seen[k]
+
+    low, high = 0, 1  # look at 1, 2, 4, 8 ... removals (a small overflow costs few layouts), then halve
+    if fits(0):
+        high = 0
+    else:
+        while high < len(order) and not fits(high):
+            low, high = high, min(len(order), high * 2)
+        while high - low > 1 and fits(high):  # not fits(low), fits(high)
+            middle = (low + high) // 2
+            low, high = (low, middle) if fits(middle) else (middle, high)
+    k = min(high, len(order))
+    work = _without(resume, order, k)
+    removed, popped = [], {}
+    for position in order[:k]:  # what each removal took, in order: the last bullet left at that employer
+        exp = resume.experience[position]
+        popped[position] = popped.get(position, 0) + 1
+        company = resume.profile.companies[exp.company_index].name
+        removed.append(f"{company}: {exp.bullets[len(exp.bullets) - popped[position]]}")
     found = try_styles(work, paper)  # after trimming, the largest font that fits
     if found:
         style, pages, pdf, _notes = found
@@ -183,8 +219,9 @@ def trim_to_fit(resume: Resume, paper: str = "Letter") -> tuple[Resume, FitStyle
         style, pages, pdf = render_smallest(work, paper)
     notes = [f"Font reduced to {style.font_pt:g} pt and margins to {style.margin_in:g} in."] if style != styles(paper)[0] else []
     if removed:
-        notes.append(f"Removed {len(removed)} bullet(s) to fit {_pages_note(MAX_PAGES)}: "
-                     + " / ".join(r[:60] + "..." for r in removed))
+        shown = " / ".join(r[:60] + "..." for r in removed[:MAX_REMOVED_IN_NOTE])
+        more = f" and {len(removed) - MAX_REMOVED_IN_NOTE} more" if len(removed) > MAX_REMOVED_IN_NOTE else ""
+        notes.append(f"Removed {len(removed)} bullet(s) to fit {_pages_note(MAX_PAGES)}: {shown}{more}")
     if pages > MAX_PAGES:
         notes.append(f"Still more than {_pages_note(MAX_PAGES)} after trimming. Shorten the text in the editor.")
     return work, style, pages, pdf, notes

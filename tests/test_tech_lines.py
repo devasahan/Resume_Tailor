@@ -70,9 +70,9 @@ def test_a_fix_keeps_the_tech_lines_it_does_not_change(profile):
         summary="A new summary about Python and SQL work.", tech_changes=[TechChange(company_index=1, tech=["Scala"])]))
     resume = validate.build_resume(profile, revised)
     assert [e.tech for e in resume.experience] == [["Python", "dbt"], ["Scala"], ["SQL"]]
-    kept = validate.build_resume(profile, validate.apply_revision(
-        out, draft, TailorRevision(tech_changes=[TechChange(company_index=0, tech=[])])))  # [] keeps the line
-    assert kept.experience[0].tech == ["Python", "dbt"]
+    cleared = validate.build_resume(profile, validate.apply_revision(
+        out, draft, TailorRevision(tech_changes=[TechChange(company_index=0, tech=[])])))  # [] removes that line
+    assert [e.tech for e in cleared.experience] == [[], ["Java"], ["SQL"]]
 
 
 @pytest.mark.parametrize("changes,message", [
@@ -133,6 +133,25 @@ def test_tools_the_posting_does_not_name_are_flagged_once_per_job_and_never_as_f
     assert not any(f.level == "verify" for f in flags)  # 'S3', 'EC2' and '17' are names, not invented numbers
     assert not [f for f in validate.claim_flags(resume, jd="Python, SQL, AWS, S3, EC2, Java 17", hints="")
                 if f.text.startswith("Tech: ")]
+
+
+def test_short_tool_names_are_matched_as_whole_words(profile):
+    """'Go' is not in 'good', 'Java' not in 'JavaScript', 'Rust' not in 'trusted', 'R' not in 'React'."""
+    _out, resume = with_tech(profile, ["Go", "Java", "Rust", "R", "Scala"])
+    jd = "A good, trusted JavaScript and React developer for scalable systems."
+    flag = next(f for f in validate.claim_flags(resume, jd=jd, hints="") if f.text.startswith("Tech: "))
+    assert "(Go, Java, Rust, R, Scala)" in flag.reason
+    assert not [f for f in validate.claim_flags(resume, jd="Go, Java, Rust, R and Scala", hints="")
+                if f.text.startswith("Tech: ")]
+
+
+def test_the_demo_bullets_only_name_tools_of_each_jobs_time(router, db, profile):
+    jd = "Senior Platform Engineer. Kubernetes, Terraform and GitHub Actions on AWS, with Python."
+    old = profile.model_copy(update={"companies": [*profile.companies[:2],
+                                                    profile.companies[2].model_copy(update={"end": "Dec 2016"})]})
+    result = asyncio.run(run_tailor(router, db, profile=old, profile_id=None, jd=jd, model_id="demo-concise"))
+    assert result.status == "ok" and result.attempts == 1 and validate.era_problems(result.resume) == []
+    assert not any("Kubernetes" in b or "GitHub Actions" in b for b in result.resume.experience[2].bullets)
 
 
 def test_the_demo_tech_line_only_has_tools_of_that_time():

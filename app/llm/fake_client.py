@@ -154,23 +154,26 @@ def guess_company(jd: str) -> str:
     return ""
 
 
-def tech_line(keywords: list[str], index: int, end: str, limit: int = 8) -> list[str]:
-    """The job description's tools and a few related ones, minus any that job could not have used: a tool that
-    became common after the job ended, or an AI tool outside the most recent jobs (the rules era_problems checks)."""
+def fits_era(term: str, index: int, end: str) -> bool:
+    """Whether a job (the index-th most recent, ending `end`) could have used the term: not a tool that became
+    common after the job ended, nor an AI tool outside the most recent jobs (the rules era_problems checks)."""
     from ..pipeline import validate  # late: the pipeline imports the LLM clients
 
-    tools = [k for k in keywords if k in VOCAB and k not in NOT_TOOLS and k not in GENERIC]
-    candidates = tools + [extra for tool in tools for extra in RELATED.get(tool, [])]
+    if index >= validate.AI_RECENT_JOBS and any(validate._mentions_tool(term, t) for t in validate.AI_TOOLS):
+        return False
     probe = validate.parse_point(end, is_end=True)
-    ended = None if probe is None or end.strip().lower() in validate._CURRENT else probe[0]
+    if probe is None or end.strip().lower() in validate._CURRENT:
+        return True
+    years = {**validate.COMMON_YEAR, **validate.AI_TOOLS}
+    return not any(year > probe[0] and validate._mentions_tool(term, t) for t, year in years.items())
+
+
+def tech_line(keywords: list[str], index: int, end: str, limit: int = 8) -> list[str]:
+    """The job description's tools and a few related ones, minus any that job could not have used."""
+    tools = [k for k in keywords if k in VOCAB and k not in NOT_TOOLS and k not in GENERIC]
     line: list[str] = []
-    for tool in candidates:
-        years = {**validate.COMMON_YEAR, **validate.AI_TOOLS}
-        if index >= validate.AI_RECENT_JOBS and any(validate._mentions_tool(tool, t) for t in validate.AI_TOOLS):
-            continue
-        if ended is not None and any(year > ended and validate._mentions_tool(tool, t) for t, year in years.items()):
-            continue
-        if tool not in line:
+    for tool in tools + [extra for known in tools for extra in RELATED.get(known, [])]:
+        if fits_era(tool, index, end) and tool not in line:
             line.append(tool)
     return line[:limit]
 
@@ -250,22 +253,30 @@ class FakeClient(LLMClient):
         k = (keywords + GENERIC)[:12]
         titles = _title_ladder(prefix, base, len(companies))
         bank = DETAILED if self.style == "detailed" else CONCISE
-        if self.style == "detailed":  # deliberately too long, to exercise the fit-to-two-pages steps
-            counts = [24, 22, 20] if not ctx.get("shorten") else [8, 6, 5]
+        if self.style == "detailed":  # deliberately too long, to exercise the fit-to-two-pages steps; asked to
+            # shorten, it follows the smaller budget it is given, as a real model would
+            counts = [24, 22, 20] if not ctx.get("shorten") else (ctx.get("bullets") or [8, 6, 5])
         else:  # follows the bullet budget in the prompt, like a real model
             counts = ctx.get("bullets") or [4, 3, 3]
 
         experience = []
         for index, company in enumerate(companies):
-            present = str(company.get("end", "")).lower() in ("present", "current", "")
+            end = str(company.get("end", ""))
+            present = end.lower() in ("present", "current", "")
             n = counts[min(index, len(counts) - 1)]
+            if len(companies) == 1:  # one job cannot overflow two pages without repeating the whole bank
+                n = min(n, len(bank))
+            mine = [term for term in k if fits_era(term, index, end)] or GENERIC  # only what this job could use
             bullets = []
             for j in range(n):
                 past, now = bank[(index * 2 + j) % len(bank)]
+                if j >= len(bank) and "23.4%" in past:  # the one invented figure: once per job
+                    past, now = bank[(index * 2 + j + 1) % len(bank)]
                 template = now if present else past
-                bullets.append(template.format(k1=k[(j) % len(k)], k2=k[(j + 1) % len(k)], k3=k[(j + 2) % len(k)]))
+                bullets.append(template.format(k1=mine[j % len(mine)], k2=mine[(j + 1) % len(mine)],
+                                               k3=mine[(j + 2) % len(mine)]))
             experience.append({"company_index": index, "job_title": titles[index], "bullets": bullets,
-                               "tech": tech_line(keywords, index, str(company.get("end", "")))})
+                               "tech": tech_line(keywords, index, end)})
 
         groups = [
             {"category": "Core Skills", "skills": k[:6]},

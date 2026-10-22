@@ -11,7 +11,7 @@ from pathlib import Path
 from ..pipeline.facts import bullet_caps, experience_before, months_phrase, stay_months
 from ..schemas import CareerStep, Company, JDAnalysis, Resume
 
-PROMPT_VERSION = "v16"
+PROMPT_VERSION = "v17"
 RETRY_MARKER = "Your previous answer was rejected"
 
 _DIR = Path(__file__).parent
@@ -56,7 +56,7 @@ def describe_companies(
         if stay:
             history = "first job" if before == 0 else f"{months_phrase(before)} of experience before it"
             parts.append(f"{stay} stay, {history}")
-        parts.append(f"write exactly {bullets[index]} bullets and a tech line")
+        parts.append(f"write exactly {bullets[index]} bullets and a tech line ([] if the job used no named tools)")
         lines.append(f"{index}: " + " | ".join(parts))
     return "\n".join(lines) or "(none)"
 

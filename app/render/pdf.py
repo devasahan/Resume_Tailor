@@ -242,7 +242,7 @@ class Sheet:
         """A whole bullet on one page; `keep` reserves room for what must follow it (a job's tech line)."""
         height = self.size * self.line
         lines = self.wrap([Run(text)], self.width - TEXT_X, self.size)
-        self.keep(len(lines) * height + after + keep)
+        self.keep(len(lines) * height + (after + keep if keep else 0.0))
         for index, line in enumerate(lines):
             self._ensure(height)
             if index == 0:
@@ -344,8 +344,9 @@ def _resume_sheet(resume: Resume, style: FitStyle) -> Sheet:
         details = " | ".join(x for x in (company.name, company.location, company.mode) if x)
         left, dates, tech = [Run(exp.job_title, True), Run(f" | {details}")], fmt_dates(company.start, company.end), tech_runs(exp.tech)
         tech_h = TECH_GAP + sheet.para_height(tech, x=TEXT_X) if tech else 0.0
-        first = sheet.bullet_height(exp.bullets[0]) if exp.bullets else 0.0
-        start = sheet.row_height(left, dates) + 1.5 + first + (tech_h if len(exp.bullets) <= 1 else 0.0)
+        first = sheet.bullet_height(exp.bullets[0], after=0.0) if exp.bullets else 0.0
+        with_tech = tech_h + (1.0 if exp.bullets else 0.0) if tech and len(exp.bullets) <= 1 else 0.0
+        start = sheet.row_height(left, dates) + 1.5 + first + with_tech
         jobs.append((left, dates, exp.bullets, tech, tech_h, start))
     sheet.heading("EXPERIENCE", keep=jobs[0][5] if jobs else 0.0)
     for index, (left, dates, bullets, tech, tech_h, start) in enumerate(jobs):

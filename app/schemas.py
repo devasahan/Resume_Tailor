@@ -72,7 +72,8 @@ class ExperienceOut(BaseModel):
     # After the bullets, so the model sums up what they say. The default serves hand-built outputs and old data.
     tech: list[str] = Field(default_factory=list, description=(
         "the tools, frameworks and libraries used in this job, most important first (the job description's own "
-        "spelling for the ones it asks for), one per item and without a 'Tech:' label; [] for a non-technical role"))
+        "spelling for the ones it asks for), one per item and without a 'Tech:' label; [] only if the job used no "
+        "named tools"))
 
 
 class TailoredSections(BaseModel):

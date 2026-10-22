@@ -176,7 +176,7 @@ models:
     data_region: DEMO
     verified: true
     settings: {style: detailed}
-    notes: Offline demo, produces long bullets so the one-page fit logic can be seen at work.
+    notes: Offline demo, produces long bullets so the two-page fit logic can be seen at work.
 
   - id: demo-flaky
     label: Demo (flaky)

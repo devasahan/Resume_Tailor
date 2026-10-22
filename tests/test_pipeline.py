@@ -42,6 +42,29 @@ def test_long_text_is_brought_to_two_pages(router, db, profile, jd):
     assert any(f.level == "verify" and "23.4%" in f.reason for f in result.flags)  # invented number is flagged
 
 
+def test_a_long_career_with_the_long_demo_is_shortened_not_trimmed_one_bullet_at_a_time(router, db, jd):
+    import time
+
+    from app.schemas import Company, Profile
+
+    jobs = Profile(name="Jordan Rivera", companies=[
+        Company(name=f"Employer {i}", start=f"Jan {2023 - 3 * i}", end="Present" if i == 0 else f"Dec {2025 - 3 * i}")
+        for i in range(9)])
+    started = time.perf_counter()
+    result = tailor(router, db, jobs, jd, model="demo-detailed")
+    assert result.status == "ok" and result.fits and result.pages <= 2
+    assert "The model shortened the bullets to fit two pages." in result.notes
+    assert not any(n.startswith("Removed") for n in result.notes) and time.perf_counter() - started < 10
+
+
+def test_the_long_demo_never_repeats_a_bullet_for_a_single_job(router, db, jd):
+    from app.schemas import Company, Profile
+
+    solo = Profile(name="Jordan Rivera", companies=[Company(name="Solo Corp", start="Jan 2019", end="Present")])
+    bullets = tailor(router, db, solo, jd, model="demo-detailed").resume.experience[0].bullets
+    assert len(bullets) == len(set(bullets)) and sum("23.4%" in b for b in bullets) == 1
+
+
 def test_invalid_output_is_retried_with_feedback(router, db, profile, jd):
     result = tailor(router, db, profile, jd, model="demo-flaky")
     assert result.status == "ok" and result.attempts == 2 and result.retries == 1

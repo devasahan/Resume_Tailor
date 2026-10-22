@@ -98,6 +98,22 @@ def long_resume(profile, bullets=12, tech=()) -> "object":
     return validate.build_resume(profile, out)
 
 
+def test_trimming_reports_a_few_removed_bullets_and_how_many_more(profile):
+    _trimmed, _style, pages, _pdf, notes = trim_to_fit(long_resume(profile, bullets=30))
+    note = next(n for n in notes if n.startswith("Removed"))
+    removed = int(note.split()[1])
+    assert pages <= MAX_PAGES and removed > 5 and note.count("...") == 5 and note.endswith(f"and {removed - 5} more")
+
+
+def test_a_bullet_that_fits_at_the_bottom_of_a_page_stays_there():
+    """The 1 pt gap after a bullet is space, not content: it never pushes a bullet that fits to the next page."""
+    sheet = Sheet("Letter", 36, 10.5, 1.27, "t", "a")
+    height = sheet.size * sheet.line
+    sheet.y = sheet.bottom - height  # room for exactly one line
+    sheet.bullet("A one-line bullet.")
+    assert sheet.pdf.page == 1
+
+
 def test_overflow_makes_more_pages_and_the_fit_steps_repair_it(profile):
     resume = long_resume(profile, bullets=20)
     _, pages = render_resume_pdf(resume, FitStyle())

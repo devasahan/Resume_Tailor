@@ -153,13 +153,13 @@ def apply_revision(out: TailorOutput, draft: Resume, rev: TailorRevision) -> Tai
     bullets = {exp.company_index: list(exp.bullets) for exp in draft.experience}
     tech = {exp.company_index: list(exp.tech) for exp in draft.experience}
     changed: set[int] = set()
-    for change in rev.tech_changes:  # an empty list keeps the line, as a blank title keeps the title
+    for change in rev.tech_changes:  # an entry replaces the whole line ([] removes it); one left out stays
         if change.company_index not in tech:
             raise ValueError(f"tech_changes: there is no company_index {change.company_index}.")
         if change.company_index in changed:
             raise ValueError(f"tech_changes: company_index {change.company_index} is changed twice.")
         changed.add(change.company_index)
-        tech[change.company_index] = clean_tech(change.tech) or tech[change.company_index]
+        tech[change.company_index] = clean_tech(change.tech)
     originals = {index: list(items) for index, items in bullets.items()}
     titles = {exp.company_index: exp.job_title for exp in draft.experience}
     for change in rev.titles:
@@ -722,10 +722,11 @@ def metric_density_problems(resume: Resume) -> list[str]:
     return problems
 
 
-def _tool_known(tool: str, jd_l: str, hints_l: str) -> bool:
-    """'AWS (ECS, SQS)' is known only if the job description or the hints name AWS, ECS and SQS."""
-    parts = [part.strip().lower() for part in re.split(r"[(),/]", tool) if part.strip()]
-    return all(part in jd_l or part in hints_l for part in parts)
+def _tool_known(tool: str, jd: str, hints: str) -> bool:
+    """'AWS (ECS, SQS)' is known only if the job description or the hints name AWS, ECS and SQS, each as a whole
+    term ('Go' is not in 'good', 'Java' is not in 'JavaScript')."""
+    parts = [part.strip() for part in re.split(r"[(),/]", tool) if part.strip()]
+    return all(mentions(jd, part) or mentions(hints, part) for part in parts)
 
 
 def claim_flags(resume: Resume, jd: str, hints: str) -> list[Flag]:
@@ -752,7 +753,7 @@ def claim_flags(resume: Resume, jd: str, hints: str) -> list[Flag]:
         )
         for bullet in exp.bullets:
             check_numbers(f"experience:{exp.company_index}", bullet)
-        added = [tool for tool in exp.tech if not _tool_known(tool, jd_l, hints_l)]  # never number-checked: S3, EC2
+        added = [tool for tool in exp.tech if not _tool_known(tool, jd, hints)]  # never number-checked: S3, EC2
         if added:
             flags.append(
                 Flag(section=f"experience:{exp.company_index}", text="Tech: " + ", ".join(exp.tech), level="info",
