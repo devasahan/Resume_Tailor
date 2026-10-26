@@ -107,6 +107,14 @@ def run_checks(result: TailorResult, jd_text: str) -> None:
     result.coverage = validate.keyword_coverage(result.resume, result.analysis)
     result.ats_warnings = validate.ats_lint(result.resume)
     result.ats_warnings += validate.era_problems(result.resume)
+    copied = validate.copied_posting_spans(result.resume, jd_text, result.analysis)
+    if copied:
+        result.ats_warnings.append("Copied word for word from the job description: " + "; ".join(copied[:6])
+                                   + ". Keep the keywords, but say the rest in your own words.")
+    phrases = validate.skill_phrase_problems(result.resume)
+    if phrases:
+        result.ats_warnings.append("Skills written as phrases, not keywords: " + ", ".join(phrases[:6])
+                                   + ". List the keyword itself (for example SQL, AWS).")
     plain = validate.plain_word_problems(result.resume)
     if plain:
         result.ats_warnings.append("Wording that can sound machine-written: " + "; ".join(plain[:6])
@@ -185,7 +193,9 @@ async def run_tailor(
         context = {"profile": profile.model_dump(), "jd": jd, "hints": hints, "bullets": budget}
 
         def build(out: TailorOutput):
-            """(output, resume, notes). Titles that step down are corrected here, on every draft, for free."""
+            """(output, resume, notes). The analysis keeps keywords only, and titles that step down are corrected,
+            on every draft, for free."""
+            validate.clean_analysis(out.jd_analysis)
             resume = validate.build_resume(profile, out)
             notes = validate.fix_title_regressions(resume)
             return out, resume, notes + validate.role_level_fixes(resume, out.jd_analysis)
@@ -198,10 +208,10 @@ async def run_tailor(
         def refine(value) -> Ask | None:
             """Ask once to fix the draft if it uses too many figures, round guesses, thin text, leaves must-have
             JD terms out of the summary and bullets, copies the posting's voice, repeats its phrases, repeats a word
-            by mistake, lists qualities as skills, sounds machine-written, names tools a job could not have used,
-            or has job titles that do not read as a career path. The model
-            gets the numbered draft and returns only what it changes (a TailorRevision): far less to write than a
-            whole new draft, and everything that was fine stays word for word."""
+            by mistake, copies the posting's sentences or lists its phrases as skills, lists qualities as skills,
+            sounds machine-written, names tools a job could not have used, or has job titles that do not read as a
+            career path. The model gets the numbered draft and returns only what it changes (a TailorRevision): far
+            less to write than a whole new draft, and everything that was fine stays word for word."""
             feedback = []
             density = validate.metric_density_problems(value[1])
             if density:
@@ -254,6 +264,20 @@ async def run_tailor(
                     "The skills list contains qualities, not skills: " + ", ".join(f"'{s}'" for s in qualities[:6])
                     + ". Replace them with real tools, platforms or methods related to the JD, and show those "
                     "qualities in the bullets instead."
+                )
+            copied = validate.copied_posting_spans(value[1], jd, value[0].jd_analysis)
+            if len(copied) >= validate.MIN_COPIED_FOR_RETRY:
+                feedback.append(
+                    "These parts copy the job description word for word: " + "; ".join(copied[:8]) + ". Match the "
+                    "keyword, not the sentence: keep any must-have keyword they contain, but say the rest in your own "
+                    "words (what the candidate did there and what changed), keeping the number of bullets."
+                )
+            phrases = validate.skill_phrase_problems(value[1])
+            if phrases:
+                feedback.append(
+                    "These skills are phrases from the job description, not keywords: "
+                    + ", ".join(f"'{s}'" for s in phrases[:8]) + ". Replace each one through skill_changes with the "
+                    "keyword itself, as people list it on a resume (for example 'SQL', 'AWS', 'Copilot')."
                 )
             plain = validate.plain_word_problems(value[1])
             if len(plain) >= validate.MIN_PLAIN_PROBLEMS_FOR_RETRY:

@@ -53,6 +53,99 @@ def word_count(text: str) -> int:
     return len(text.split())
 
 
+# ------------------------------------------------------------------ keywords, not job-description phrases
+# "AI tools like Copilot, Cursor, or Claude Code": the words after the lead are the tools themselves.
+_EXAMPLES_LEAD = re.compile(r"\s*(?<![\w-])(?:like|such as|including|e\.g\.?)(?![\w-])\s*[:,]?\s*", re.IGNORECASE)
+_LIST_SPLIT = re.compile(r"\s*[,;]\s*(?:(?:or|and)\s+)?|\s+(?:or|and)\s+", re.IGNORECASE)  # 'OR-Tools' stays whole
+# The end of a list, not an item: "Python, Go, etc.", "Copilot, Cursor or similar", "AWS or other cloud platforms"
+_LIST_END = re.compile(r"(?:etc|more|others?|similar|the like|so on)\.?$|(?:other|similar) ", re.IGNORECASE)
+_SMALL_WORDS = frozenset({
+    "a", "an", "the", "and", "or", "nor", "but", "of", "to", "in", "on", "for", "with", "by", "at", "from", "as", "into",
+    "onto", "over", "under", "via", "per", "across", "like", "than", "then", "our", "your", "their", "its", "his", "her",
+    "is", "are", "was", "were", "be", "been", "being", "this", "that", "these", "those", "it", "we", "you", "they",
+    "using", "through", "within", "while", "when", "where", "which", "who", "how", "all", "each", "both", "not", "so",
+    "if", "also", "up", "out", "about", "after", "before", "between", "during", "without", "can", "will", "has", "have",
+    "had", "years", "experience",  # '7+ years of experience' opens every summary
+})
+MAX_TERM_WORDS = 4  # meaningful words: a longer "term" is a piece of a sentence, not what an ATS or a recruiter matches
+# Prose around a keyword in a posting ("advanced SQL statements", "AWS-hosted systems", "experience with Kafka"), in
+# lower case or capitalized, so that a name written in capitals stays a keyword ("SOLID")
+_QUALIFIER = re.compile(
+    r"\b(?:[Aa]dvanced|[Bb]asic|[Ss]trong|[Ss]olid|[Pp]roven|[Ee]xcellent|[Dd]eep|[Gg]ood|[Hh]igh-scale|[Ll]arge-scale)\b"
+    r"|\b(?:[Ee]xperience|[Kk]nowledge|[Uu]nderstanding|[Ff]amiliarity|[Pp]roficiency|[Ee]xpertise) (?:of|with|in)\b"
+    r"|\b[Aa]bility to\b|\w-hosted\b"
+)
+# ... but not where such a word is part of a name ("Deep Learning", "Visual Basic", "self-hosted runners")
+_NAMED_TERMS = re.compile(
+    r"\b(?:deep (?:learning|neural|reinforcement|links?|linking|packet inspection)|visual basic|basic auth\w*"
+    r"|strong (?:consistency|customer authentication)|advanced (?:analytics|encryption standard|persistent threats?)"
+    r"|good (?:manufacturing|clinical|laboratory|distribution) practices?|(?:self|github)-hosted|solid\.?js"
+    r"|large-scale scrum)\b",
+    re.IGNORECASE,
+)
+
+
+def _list_parts(text: str, separators: re.Pattern) -> list[str]:
+    """Split at the separators outside brackets: 'AWS (ECS, SQS), Docker' -> ['AWS (ECS, SQS)', 'Docker']."""
+    kept: list[str] = []
+
+    def mask(match: re.Match) -> str:
+        kept.append(match.group(0))
+        return f"\0{len(kept) - 1}\0"
+
+    masked = re.sub(r"\([^()]*\)|\[[^\[\]]*\]", mask, text)
+    return [re.sub(r"\0(\d+)\0", lambda m: kept[int(m.group(1))], part) for part in separators.split(masked)]
+
+
+def _tidy(part: str) -> str:
+    part = part.strip(" ;:").removesuffix(".")  # a leading dot stays: '.NET'
+    if part.endswith(")") and part.count(")") > part.count("("):  # "(like Copilot, Cursor)" leaves "Cursor)"
+        part = part[:-1].rstrip()
+    if part.startswith("(") and part.count("(") > part.count(")"):
+        part = part[1:].lstrip()
+    return part
+
+
+_OR_SPLIT = re.compile(r"\s*[,;]\s*(?:or\s+)?|\s+or\s+", re.IGNORECASE)
+
+
+def _examples_as_items(item: str) -> list[str]:
+    """'AI tools like Copilot, Cursor, or Claude Code' -> ['Copilot', 'Cursor', 'Claude Code']; 'TypeScript or
+    JavaScript' -> both; 'AWS (ECS, SQS)' and anything else as it is."""
+    lead = _EXAMPLES_LEAD.search(item)
+    parts = _list_parts(item[lead.end():], _LIST_SPLIT) if lead else _list_parts(item, _OR_SPLIT)
+    return [part for part in (_tidy(p) for p in parts) if part and not _LIST_END.match(part)]
+
+
+def is_keyword(term: str) -> bool:
+    """A term as people list it on a resume ('SQL', 'AWS (ECS, SQS)', 'Deep Learning'), not a piece of the posting's
+    prose: at most four meaningful words, with no qualifier such as 'advanced', 'AWS-hosted' or 'experience with'.
+    An abbreviation in brackets does not count, as in 'Amazon Web Services (AWS)'."""
+    bare = re.sub(r"\([^)]*\)", "", term)
+    meaningful = [word for word in bare.split() if word.lower() not in _SMALL_WORDS]
+    return 0 < len(meaningful) <= MAX_TERM_WORDS and not _QUALIFIER.search(_NAMED_TERMS.sub("", bare))
+
+
+def clean_terms(items: list[str]) -> list[str]:
+    """Job-description terms as keywords: a list of examples becomes the examples themselves, and a fragment of
+    the posting's prose is dropped, since the coverage rule would otherwise push it into a bullet word for word.
+    Duplicates go."""
+    terms: list[str] = []
+    for item in items:
+        for term in _examples_as_items(clean_text(item)):
+            if is_keyword(term) and term.lower() not in {t.lower() for t in terms}:
+                terms.append(term)
+    return terms
+
+
+def clean_analysis(analysis: JDAnalysis) -> JDAnalysis:
+    """The analysis with keyword lists only (changed in place, and returned)."""
+    analysis.must_have_skills = clean_terms(analysis.must_have_skills)
+    analysis.nice_to_have_skills = clean_terms(analysis.nice_to_have_skills)
+    analysis.keywords = clean_terms(analysis.keywords)
+    return analysis
+
+
 # ------------------------------------------------------------------ merge
 def build_resume(profile: Profile, out: TailorOutput) -> Resume:
     """Raise ValueError (retried by the pipeline with this message) if the output cannot be used."""
@@ -73,11 +166,11 @@ def build_resume(profile: Profile, out: TailorOutput) -> Resume:
     seen: set[str] = set()
     for group in sections.skills:
         cleaned = []
-        for item in group.skills:
-            item = clean_text(item)
-            if item and item.lower() not in seen:
-                seen.add(item.lower())
-                cleaned.append(item)
+        for raw in group.skills:
+            for item in _examples_as_items(clean_text(raw)):  # "AI tools like Copilot, Cursor" -> the tools
+                if item and item.lower() not in seen:
+                    seen.add(item.lower())
+                    cleaned.append(item)
         if cleaned and clean_text(group.category):
             skills.append(SkillGroup(category=clean_text(group.category), skills=cleaned))
     if not skills:
@@ -295,6 +388,67 @@ _POSTING_VOICE = re.compile(
     r"(?:^|(?<=[.!?]\s))(?:You|Your|Yours|Yourself|We|Our|Ours)\b(?!-)"
     r"|(?<![\w-])(?:you|your|yours|yourself|we|our|ours)(?![\w-])"
 )
+
+
+MIN_COPIED_WORDS = 4  # a run of four words shared with the posting is a copied sentence piece, not a keyword
+MIN_COPIED_CONTENT = 3  # ... when at least three of them carry meaning
+MIN_COPIED_PROSE = 2  # ... and at least two of those are not keywords: the JD's keywords are meant to be matched
+MIN_COPIED_FOR_RETRY = 2  # one copied run is only noted; two or more are worth the single fix round
+
+
+def _word_spans(text: str) -> list[tuple[str, int, int]]:
+    """(lowercase word, start, end): hyphen-joined words count as one ('end-to-end', 'browser-server')."""
+    return [(m.group(0).lower(), m.start(), m.end()) for m in _WORD.finditer(text)]
+
+
+def _stem(word: str) -> str:
+    """One form for 'contribute', 'contributes', 'contributed' and 'contributing', so a copy is found in any tense."""
+    for suffix in ("ing", "ed", "es", "e", "s"):
+        if word.endswith(suffix) and len(word) > len(suffix) + 1:
+            word = word[:-len(suffix)]
+            break
+    return word[:-1] if len(word) > 3 and word[-1] == word[-2] else word  # 'debugged' -> 'debugg' -> 'debug'
+
+
+def copied_posting_spans(resume: Resume, jd: str, analysis: JDAnalysis) -> list[str]:
+    """Pieces of the summary and the bullets copied word for word (in any tense) from the job description: runs of
+    4+ words found in it, with at least 3 meaningful words of which at least 2 are not keywords. Keywords (the
+    JD's, the target role and the resume's own skills) may be used as they are, so a run made of them ('TypeScript,
+    React and PostgreSQL', 'Senior Backend Engineer with') is fine. Overlapping runs are reported once."""
+    posting = [_stem(word) for word, _start, _end in _word_spans(clean_text(jd))]
+    n = MIN_COPIED_WORDS
+    shared = {tuple(posting[i:i + n]) for i in range(len(posting) - n + 1)}
+    terms = [*analysis.must_have_skills, *analysis.nice_to_have_skills, *analysis.keywords,
+             *(item for group in resume.skills for item in group.skills)]
+    known = {_stem(word) for term in [*clean_terms(terms), analysis.target_role]
+             for word, _start, _end in _word_spans(term)}
+    places = [("summary", resume.summary)] + [
+        (resume.profile.companies[exp.company_index].name, bullet) for exp in resume.experience for bullet in exp.bullets
+    ]
+    found: list[str] = []
+    for where, text in places:
+        words = _word_spans(text)
+        hits = []
+        for i in range(len(words) - n + 1):
+            window = [word for word, _start, _end in words[i:i + n]]
+            content = {_stem(word) for word in window if word not in _SMALL_WORDS}
+            if (tuple(map(_stem, window)) in shared and len(content) >= MIN_COPIED_CONTENT
+                    and len(content - known) >= MIN_COPIED_PROSE):
+                hits.append(i)
+        runs: list[list[int]] = []
+        for i in hits:  # windows that overlap or touch become one run
+            if runs and i <= runs[-1][1] + 1:
+                runs[-1][1] = i + n - 1
+            else:
+                runs.append([i, i + n - 1])
+        found += [f"'{text[words[first][1]:words[last][2]]}' ({where})" for first, last in runs]
+    return found
+
+
+def skill_phrase_problems(resume: Resume) -> list[str]:
+    """Skills-list items written as a piece of the posting's prose ('advanced SQL statements', 'AWS-hosted
+    systems') rather than as the keyword itself ('SQL', 'AWS'). Lists are already split into their items."""
+    return [item for group in resume.skills for item in group.skills if not is_keyword(item)]
 
 
 def posting_voice_problems(resume: Resume) -> list[str]:
