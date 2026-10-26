@@ -54,11 +54,6 @@ def word_count(text: str) -> int:
 
 
 # ------------------------------------------------------------------ keywords, not job-description phrases
-# "AI tools like Copilot, Cursor, or Claude Code": the words after the lead are the tools themselves.
-_EXAMPLES_LEAD = re.compile(r"\s*(?<![\w-])(?:like|such as|including|e\.g\.?)(?![\w-])\s*[:,]?\s*", re.IGNORECASE)
-_LIST_SPLIT = re.compile(r"\s*[,;]\s*(?:(?:or|and)\s+)?|\s+(?:or|and)\s+", re.IGNORECASE)  # 'OR-Tools' stays whole
-# The end of a list, not an item: "Python, Go, etc.", "Copilot, Cursor or similar", "AWS or other cloud platforms"
-_LIST_END = re.compile(r"(?:etc|more|others?|similar|the like|so on)\.?$|(?:other|similar) ", re.IGNORECASE)
 _SMALL_WORDS = frozenset({
     "a", "an", "the", "and", "or", "nor", "but", "of", "to", "in", "on", "for", "with", "by", "at", "from", "as", "into",
     "onto", "over", "under", "via", "per", "across", "like", "than", "then", "our", "your", "their", "its", "his", "her",
@@ -67,72 +62,168 @@ _SMALL_WORDS = frozenset({
     "if", "also", "up", "out", "about", "after", "before", "between", "during", "without", "can", "will", "has", "have",
     "had", "years", "experience",  # '7+ years of experience' opens every summary
 })
-MAX_TERM_WORDS = 4  # meaningful words: a longer "term" is a piece of a sentence, not what an ATS or a recruiter matches
-# Prose around a keyword in a posting ("advanced SQL statements", "AWS-hosted systems", "experience with Kafka"), in
-# lower case or capitalized, so that a name written in capitals stays a keyword ("SOLID")
-_QUALIFIER = re.compile(
-    r"\b(?:[Aa]dvanced|[Bb]asic|[Ss]trong|[Ss]olid|[Pp]roven|[Ee]xcellent|[Dd]eep|[Gg]ood|[Hh]igh-scale|[Ll]arge-scale)\b"
-    r"|\b(?:[Ee]xperience|[Kk]nowledge|[Uu]nderstanding|[Ff]amiliarity|[Pp]roficiency|[Ee]xpertise) (?:of|with|in)\b"
-    r"|\b[Aa]bility to\b|\w-hosted\b"
-)
+MAX_TERM_WORDS = 4  # meaningful words: a longer phrase is a piece of a sentence, not what an ATS or a recruiter matches
+MAX_NAME_WORDS = 8  # ... but a proper name may be longer: 'Payment Card Industry Data Security Standard (PCI DSS)'
+
+# "AI tools like Copilot, Cursor, or Claude Code": the words after the lead are the tools themselves.
+_EXAMPLES_LEAD = re.compile(r"(?<![\w-])(?:like|such as|including|e\.g\.?)(?![\w-])\s*[:,]?\s*", re.IGNORECASE)
+_BRACKET_LEAD = re.compile(r"\(\s*(?:like|such as|including|e\.g\.?)(?![\w-])\s*[:,]?\s*", re.IGNORECASE)
+_COMMA_SPLIT = re.compile(r"\s*[,;]\s*(?:(?:or|and|&)\s+)?", re.IGNORECASE)  # 'A, B, and C'
+_OR_WORD = re.compile(r"\s+or\s+", re.IGNORECASE)  # 'OR-Tools' stays whole
+_AND_WORD = re.compile(r"\s+(?:and|&)\s+", re.IGNORECASE)
+_LOOSE_JOINER = re.compile(r"^(?:or|and|&)\s+|\s+(?:or|and|&)$", re.IGNORECASE)
+# The end of a list, not an item: "Python, Go, etc.", "Copilot, Cursor or similar", "AWS or other cloud platforms"
+_LIST_END = re.compile(r"(?:etc|more|others?|similar|the like|so on)\.?$|(?:other|similar) ", re.IGNORECASE)
+_BRACKETS = re.compile(r"\([^()]*\)|\[[^\[\]]*\]")
+_SPELLED_OUT = re.compile(r"(.+?)\s*\(([A-Za-z&]{2,})\)")  # 'Extract, Transform, Load (ETL)'
+# In the analysis, a bracket of examples or a list is detail, not the keyword: 'AWS (e.g., EC2, S3)', 'AWS (ECS, SQS)'
+_DETAIL_BRACKET = re.compile(
+    r"\s*\((?:\s*(?:like|such as|including|e\.g\.?)(?![\w-])[^()]*|[^()]*,[^()]*)\)", re.IGNORECASE)
+
+# Prose around a keyword in a posting: "experience with Kafka", "advanced SQL statements", "AWS-hosted systems"
+_PROSE_LEAD = re.compile(
+    r"^.*?\b(?:experience|knowledge|understanding|familiarity|proficiency|expertise|background)\s+"
+    r"(?:of|with|in|using)\s+", re.IGNORECASE)
+_ABILITY = re.compile(r"\bability to\b", re.IGNORECASE)
+_HOSTED = re.compile(r"^(.+?)-hosted\b.*$", re.IGNORECASE)
+_QUALIFIER = re.compile(  # in lower case or capitalized, so that a name in capitals stays: 'SOLID principles'
+    r"\b(?:[Aa]dvanced|[Bb]asic|[Ss]trong|[Ss]olid|[Pp]roven|[Ee]xcellent|[Dd]eep|[Gg]ood|[Hh]igh-scale|[Ll]arge-scale"
+    r"|[Hh]ands-on|[Ee]xtensive)\s+")
+_TOOL_SKILLS = re.compile(r"(\b[A-Z][\w.+#/-]*)\s+skills?$")  # 'Python skills' -> 'Python'; 'people skills' stays
 # ... but not where such a word is part of a name ("Deep Learning", "Visual Basic", "self-hosted runners")
 _NAMED_TERMS = re.compile(
     r"\b(?:deep (?:learning|neural|reinforcement|links?|linking|packet inspection)|visual basic|basic auth\w*"
-    r"|strong (?:consistency|customer authentication)|advanced (?:analytics|encryption standard|persistent threats?)"
-    r"|good (?:manufacturing|clinical|laboratory|distribution) practices?|(?:self|github)-hosted|solid\.?js"
-    r"|large-scale scrum)\b",
+    r"|strong (?:consistency|customer authentication|typing)"
+    r"|advanced (?:analytics|encryption standard|persistent threats?)"
+    r"|good (?:manufacturing|clinical|laboratory|distribution|documentation) practices?"
+    r"|(?:self|github|gitlab|microsoft)-hosted"
+    r"|solid\.?js|large-scale scrum|(?:basic|advanced(?: cardiac| cardiovascular)?|pediatric advanced) life support)\b",
     re.IGNORECASE,
 )
+_ABBREVIATION = re.compile(r"\(\s*[A-Z][A-Z0-9&/+.-]+(?:\s+[A-Z][A-Z0-9&/+.-]+)*\s*\)")  # '(BLS)', '(PCI DSS)'
 
 
-def _list_parts(text: str, separators: re.Pattern) -> list[str]:
-    """Split at the separators outside brackets: 'AWS (ECS, SQS), Docker' -> ['AWS (ECS, SQS)', 'Docker']."""
+def _meaningful(text: str) -> list[str]:
+    """Words that carry meaning: no small words and no lone marks ('-', '&'); a word in capitals counts ('CAN')."""
+    words = [word.strip(",.;:!?\"'") for word in text.split()]
+    return [w for w in words if re.search(r"[A-Za-z0-9]", w) and (w.isupper() or w.lower() not in _SMALL_WORDS)]
+
+
+def _is_name(term: str) -> bool:
+    """A proper name rather than prose: it has an abbreviation in brackets ('Basic Life Support (BLS)') or is written
+    in title case ('Solid Edge', 'Good Documentation Practices', 'SOLID', 'iOS')."""
+    if _ABBREVIATION.search(term):
+        return True
+    words = _meaningful(re.sub(r"\([^)]*\)", "", term))
+    return bool(words) and all(not w[0].isalpha() or any(ch.isupper() for ch in w) for w in words)
+
+
+def _masked(text: str) -> tuple[str, list[str]]:
+    """The text with each bracket (nested ones too) replaced by a placeholder, so lists inside brackets stay whole."""
     kept: list[str] = []
 
     def mask(match: re.Match) -> str:
         kept.append(match.group(0))
         return f"\0{len(kept) - 1}\0"
 
-    masked = re.sub(r"\([^()]*\)|\[[^\[\]]*\]", mask, text)
-    return [re.sub(r"\0(\d+)\0", lambda m: kept[int(m.group(1))], part) for part in separators.split(masked)]
+    text = text.replace("\0", "")
+    while (masked := _BRACKETS.sub(mask, text)) != text:
+        text = masked
+    return text, kept
+
+
+def _unmasked(text: str, kept: list[str]) -> str:
+    while (restored := re.sub(r"\0(\d+)\0", lambda m: kept[int(m.group(1))], text)) != text:
+        text = restored
+    return text
+
+
+def _spelled_out(item: str) -> bool:
+    """A name with commas in it: 'Extract, Transform, Load (ETL)', 'Water, Sanitation and Hygiene (WASH)'. The
+    abbreviation starts with the first word's initial and holds every word's initial, in order."""
+    match = _SPELLED_OUT.fullmatch(item)
+    if not match:
+        return False
+    initials, letters = [word[0].lower() for word in _meaningful(match.group(1))], match.group(2).lower()
+    rest = iter(letters)
+    return bool(initials) and letters[0] == initials[0] and all(initial in rest for initial in initials)
+
+
+def _list_items(text: str, lead: bool) -> list[str]:
+    """Split a list at commas and 'or'; after a lead ('such as AWS and GCP') also at the 'and' before its last item,
+    so names that hold an 'and' stay whole: 'Profit and Loss, Balance Sheet and Cash Flow', 'Research and
+    Development'."""
+    parts = [piece for part in _COMMA_SPLIT.split(text) for piece in _OR_WORD.split(part)]
+    if lead and not _OR_WORD.search(text):
+        parts[-1:] = _AND_WORD.split(parts[-1])
+    return parts
 
 
 def _tidy(part: str) -> str:
-    part = part.strip(" ;:").removesuffix(".")  # a leading dot stays: '.NET'
-    if part.endswith(")") and part.count(")") > part.count("("):  # "(like Copilot, Cursor)" leaves "Cursor)"
+    part = _LOOSE_JOINER.sub("", _BRACKET_LEAD.sub("(", part).strip(" ;:"))  # 'AWS (e.g., EC2, S3)' -> 'AWS (EC2, S3)'
+    if not re.search(r"(?:^|[^A-Za-z])[A-Za-z]\.$", part):  # 'Ph.D.' keeps its dot, 'Node.js.' loses it
+        part = part.rstrip(". ")  # a leading dot stays: '.NET'
+    while part.endswith(")") and part.count(")") > part.count("("):  # "(like Copilot, Cursor)" leaves "Cursor)"
         part = part[:-1].rstrip()
-    if part.startswith("(") and part.count("(") > part.count(")"):
+    while part.startswith("(") and part.count("(") > part.count(")"):
         part = part[1:].lstrip()
     return part
 
 
-_OR_SPLIT = re.compile(r"\s*[,;]\s*(?:or\s+)?|\s+or\s+", re.IGNORECASE)
-
-
 def _examples_as_items(item: str) -> list[str]:
     """'AI tools like Copilot, Cursor, or Claude Code' -> ['Copilot', 'Cursor', 'Claude Code']; 'TypeScript or
-    JavaScript' -> both; 'AWS (ECS, SQS)' and anything else as it is."""
-    lead = _EXAMPLES_LEAD.search(item)
-    parts = _list_parts(item[lead.end():], _LIST_SPLIT) if lead else _list_parts(item, _OR_SPLIT)
-    return [part for part in (_tidy(p) for p in parts) if part and not _LIST_END.match(part)]
+    JavaScript' and 'Python, Go, and Rust' -> each one. A list in brackets stays with its keyword ('AWS (ECS, SQS)'),
+    and so do names with commas in them: 'Extract, Transform, Load (ETL)', 'Microsoft Office: Word, Excel',
+    'Java 8, 11, 17'."""
+    masked, kept = _masked(item)
+    lead = _EXAMPLES_LEAD.search(masked)
+    if lead:
+        head = masked[:lead.start()].rstrip()
+        parts = _list_items(masked[lead.end():], lead=True)
+        if head.endswith(","):  # 'SQL, including window functions': SQL is an item too; 'AI tools like ...' is not
+            parts.insert(0, head[:-1])
+    elif _spelled_out(item) or ":" in masked:
+        parts = [masked]
+    else:
+        parts = _list_items(masked, lead=False)
+    parts = [_tidy(_unmasked(part, kept)) for part in parts]
+    if not lead and not all(re.search(r"[A-Za-z]", part) for part in parts if part):  # '11' is no item
+        parts = [_tidy(item)]
+    return [part for part in parts if _meaningful(part) and not _LIST_END.match(part)
+            and not _EXAMPLES_LEAD.fullmatch(part)]
+
+
+def _keyword_of(term: str) -> str:
+    """The keyword inside a piece of the posting's prose: 'experience with Kafka' -> 'Kafka', 'advanced SQL' -> 'SQL',
+    'AWS-hosted systems' -> 'AWS', 'Strong Python skills' -> 'Python'. A name stays as it is ('Basic Life Support
+    (BLS)', 'Solid Edge', 'Deep Learning'); an 'ability to ...' has no keyword ('')."""
+    if _ABILITY.search(term):
+        return ""
+    term = _PROSE_LEAD.sub("", term)
+    if not _NAMED_TERMS.search(term):
+        term = _HOSTED.sub(r"\1", term)
+        if not _is_name(term):
+            term = _TOOL_SKILLS.sub(r"\1", _QUALIFIER.sub("", term))
+    return term.strip()
 
 
 def is_keyword(term: str) -> bool:
-    """A term as people list it on a resume ('SQL', 'AWS (ECS, SQS)', 'Deep Learning'), not a piece of the posting's
-    prose: at most four meaningful words, with no qualifier such as 'advanced', 'AWS-hosted' or 'experience with'.
-    An abbreviation in brackets does not count, as in 'Amazon Web Services (AWS)'."""
-    bare = re.sub(r"\([^)]*\)", "", term)
-    meaningful = [word for word in bare.split() if word.lower() not in _SMALL_WORDS]
-    return 0 < len(meaningful) <= MAX_TERM_WORDS and not _QUALIFIER.search(_NAMED_TERMS.sub("", bare))
+    """A term as people list it on a resume ('SQL', 'AWS (ECS, SQS)', 'Basic Life Support (BLS)'), not a piece of the
+    posting's prose: nothing around the keyword ('advanced', 'AWS-hosted', 'experience with') and at most four
+    meaningful words, or eight for a proper name. An abbreviation in brackets does not count."""
+    words = _meaningful(re.sub(r"\([^)]*\)", "", term))
+    limit = MAX_NAME_WORDS if _is_name(term) else MAX_TERM_WORDS
+    return 0 < len(words) <= limit and _keyword_of(term) == term.strip()
 
 
 def clean_terms(items: list[str]) -> list[str]:
-    """Job-description terms as keywords: a list of examples becomes the examples themselves, and a fragment of
-    the posting's prose is dropped, since the coverage rule would otherwise push it into a bullet word for word.
-    Duplicates go."""
+    """Job-description terms as keywords: a list of examples becomes the examples themselves, a piece of the posting's
+    prose becomes the keyword in it, or is dropped when it has none, since the coverage rule would otherwise push it
+    into a bullet word for word. Duplicates go."""
     terms: list[str] = []
     for item in items:
-        for term in _examples_as_items(clean_text(item)):
+        for part in _examples_as_items(_DETAIL_BRACKET.sub("", clean_text(item))):
+            term = _keyword_of(part)
             if is_keyword(term) and term.lower() not in {t.lower() for t in terms}:
                 terms.append(term)
     return terms
@@ -396,23 +487,32 @@ MIN_COPIED_PROSE = 2  # ... and at least two of those are not keywords: the JD's
 MIN_COPIED_FOR_RETRY = 2  # one copied run is only noted; two or more are worth the single fix round
 
 
+_WORD_PART = re.compile(r"[A-Za-z][\w+#]*")  # a hyphen splits: 'end-to-end' is matched as 'end to end'
+_VOWEL = re.compile(r"[aeiouy]")
+
+
 def _word_spans(text: str) -> list[tuple[str, int, int]]:
-    """(lowercase word, start, end): hyphen-joined words count as one ('end-to-end', 'browser-server')."""
-    return [(m.group(0).lower(), m.start(), m.end()) for m in _WORD.finditer(text)]
+    """(lowercase word, start, end) for each word, and each part of a hyphenated word."""
+    return [(m.group(0).lower(), m.start(), m.end()) for m in _WORD_PART.finditer(text)]
 
 
 def _stem(word: str) -> str:
-    """One form for 'contribute', 'contributes', 'contributed' and 'contributing', so a copy is found in any tense."""
+    """One form for 'contribute', 'contributes', 'contributed' and 'contributing' (and 'identify', 'identified';
+    'focus', 'focused'; 'need', 'needed'), so a copy is found in any tense."""
+    if len(word) > 4 and word.endswith(("ies", "ied")):
+        return word[:-3] + "y"
     for suffix in ("ing", "ed", "es", "e", "s"):
-        if word.endswith(suffix) and len(word) > len(suffix) + 1:
-            word = word[:-len(suffix)]
+        stem = word[:-len(suffix)]
+        if word.endswith(suffix) and len(stem) >= 2 and _VOWEL.search(stem):
+            if not (suffix == "s" and stem.endswith("u")) and not (suffix == "ed" and stem.endswith("e")):
+                word = stem  # but 'focus' and 'need' are not 'focu' + s and 'ne' + ed
             break
     return word[:-1] if len(word) > 3 and word[-1] == word[-2] else word  # 'debugged' -> 'debugg' -> 'debug'
 
 
 def copied_posting_spans(resume: Resume, jd: str, analysis: JDAnalysis) -> list[str]:
     """Pieces of the summary and the bullets copied word for word (in any tense) from the job description: runs of
-    4+ words found in it, with at least 3 meaningful words of which at least 2 are not keywords. Keywords (the
+    4+ words found in it, holding at least 3 meaningful words of which at least 2 are not keywords. Keywords (the
     JD's, the target role and the resume's own skills) may be used as they are, so a run made of them ('TypeScript,
     React and PostgreSQL', 'Senior Backend Engineer with') is fine. Overlapping runs are reported once."""
     posting = [_stem(word) for word, _start, _end in _word_spans(clean_text(jd))]
@@ -428,20 +528,18 @@ def copied_posting_spans(resume: Resume, jd: str, analysis: JDAnalysis) -> list[
     found: list[str] = []
     for where, text in places:
         words = _word_spans(text)
-        hits = []
-        for i in range(len(words) - n + 1):
-            window = [word for word, _start, _end in words[i:i + n]]
-            content = {_stem(word) for word in window if word not in _SMALL_WORDS}
-            if (tuple(map(_stem, window)) in shared and len(content) >= MIN_COPIED_CONTENT
-                    and len(content - known) >= MIN_COPIED_PROSE):
-                hits.append(i)
+        stems = [_stem(word) for word, _start, _end in words]
         runs: list[list[int]] = []
-        for i in hits:  # windows that overlap or touch become one run
-            if runs and i <= runs[-1][1] + 1:
-                runs[-1][1] = i + n - 1
-            else:
-                runs.append([i, i + n - 1])
-        found += [f"'{text[words[first][1]:words[last][2]]}' ({where})" for first, last in runs]
+        for i in range(len(words) - n + 1):
+            if tuple(stems[i:i + n]) in shared:
+                if runs and i <= runs[-1][1] + 1:  # windows that overlap or touch become one run
+                    runs[-1][1] = i + n - 1
+                else:
+                    runs.append([i, i + n - 1])
+        for first, last in runs:  # judged as a whole: 'Improve the patient experience across all touchpoints'
+            content = {stems[j] for j in range(first, last + 1) if words[j][0] not in _SMALL_WORDS}
+            if len(content) >= MIN_COPIED_CONTENT and len(content - known) >= MIN_COPIED_PROSE:
+                found.append(f"'{text[words[first][1]:words[last][2]]}' ({where})")
     return found
 
 
