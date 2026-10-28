@@ -183,11 +183,14 @@ def test_page_breaks_never_split_a_bullet_or_leave_a_job_title_alone(profile, se
         assert not (TEXT_X in xs and BULLET_X not in xs), top  # the next page never starts mid-bullet
 
 
-def test_docx_keeps_job_titles_with_their_bullets(profile):
-    doc = Document(io.BytesIO(resume_docx(long_resume(profile, bullets=2), FitStyle())))
+@pytest.mark.parametrize("stacked", [False, True])
+def test_docx_keeps_job_titles_with_their_bullets(profile, stacked):
+    doc = Document(io.BytesIO(resume_docx(long_resume(profile, bullets=2), FitStyle(stacked=stacked))))
     paragraphs = doc.paragraphs
-    rows = [p for p in paragraphs if p.text.startswith("Data Engineer")]
-    assert len(rows) == 3 and all(p.paragraph_format.keep_with_next for p in rows)  # a title stays with its bullet
+    names = tuple(company.name for company in profile.companies)
+    rows = [p for p in paragraphs if p.text.startswith(names) or p.text == "Data Engineer"]
+    assert len(rows) == (6 if stacked else 3)  # stacked: the company line, then the title line
+    assert all(p.paragraph_format.keep_with_next for p in rows)  # a job's header stays with its first bullet
     assert all(p.paragraph_format.keep_together for p in paragraphs if p.style.name == "List Bullet")
     assert not any(p.text.startswith("Tech") for p in paragraphs) and not doc.tables
 
@@ -307,7 +310,10 @@ def test_docx_resume_content_and_layout_primitives(resume):
     doc = Document(io.BytesIO(resume_docx(resume, FitStyle())))
     texts = [p.text for p in doc.paragraphs]
     assert resume.headline in texts and "SUMMARY" in texts and "EXPERIENCE" in texts
-    assert any(t.startswith("Engineer 0") and "Northwind Labs" in t and "Mar 2022 - Present" in t for t in texts)
+    assert "Northwind Labs | Engineer 0 | Remote\tMar 2022 - Present" in texts  # the company first, on one line
+    texts = [p.text for p in Document(io.BytesIO(resume_docx(resume, FitStyle(stacked=True)))).paragraphs]
+    row = texts.index("Northwind Labs | Remote\tMar 2022 - Present")
+    assert texts[row + 1] == "Engineer 0"  # stacked: the title on its own line under the company
     assert not doc.tables and not doc.inline_shapes  # ATS-friendly: no tables or images
 
 

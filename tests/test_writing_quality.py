@@ -206,11 +206,11 @@ class Buzzy(LLMClient):
         self.calls += 1
         result = await self.inner.generate_structured(**kwargs)
         if kwargs["schema_name"] == "tailor_output":
-            bullets = result.data["sections"]["experience"][0]["bullets"]
-            bullets[0] = ("Leveraged Python and SQL to build a seamless reporting flow for the product teams, so "
+            bullets = result.data["sections"]["experience"][0]["bullets"]  # not the first: it carries the figures
+            bullets[1] = ("Leveraged Python and SQL to build a seamless reporting flow for the product teams, so "
                           "managers saw current numbers every morning")
             if self.words == 1:
-                bullets[0] = bullets[0].replace("a seamless", "a simple")
+                bullets[1] = bullets[1].replace("a seamless", "a simple")
         return result
 
 

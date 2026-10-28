@@ -18,7 +18,7 @@ from pathlib import Path
 from fpdf import FPDF
 from fpdf.enums import XPos, YPos
 
-from ..schemas import Contact, CoverLetter, FitStyle, Resume
+from ..schemas import Company, Contact, CoverLetter, FitStyle, Resume
 
 FONT_DIR = Path(__file__).parent / "fonts"
 FAMILY = "Carlito"
@@ -27,6 +27,8 @@ RESUME_LINE = 1.27  # line height as a multiple of the font size
 BULLET_X = 4.0  # points from the left margin to the bullet glyph
 TEXT_X = 13.0  # points from the left margin to bullet text (hanging indent)
 ROW_GAP = 10.0  # minimum space between the left text and the right-aligned dates
+HEADLINE_EXTRA = 2.0  # the title line under the name is this many points larger than the body text
+HEADER_GAP = 0.75  # points above and below the title line (its larger size brings its own room)
 
 
 def display_url(url: str) -> str:
@@ -80,6 +82,7 @@ def fmt_dates(start: str, end: str) -> str:
 class Run:
     text: str
     bold: bool = False
+    italic: bool = False
 
 
 @dataclass
@@ -87,6 +90,11 @@ class Piece:
     text: str
     bold: bool
     width: float
+    italic: bool = False
+
+
+def font_style(bold: bool, italic: bool = False) -> str:
+    return ("B" if bold else "") + ("I" if italic else "")
 
 
 Line = list[Piece]
@@ -102,6 +110,7 @@ class Sheet:
         pdf.c_margin = 0  # no inner padding: widths measured here are the widths drawn
         pdf.add_font(FAMILY, "", str(FONT_DIR / "Carlito-Regular.ttf"))
         pdf.add_font(FAMILY, "B", str(FONT_DIR / "Carlito-Bold.ttf"))
+        pdf.add_font(FAMILY, "I", str(FONT_DIR / "Carlito-Italic.ttf"))
         pdf.set_title(title)
         pdf.set_author(author)
         try:
@@ -121,8 +130,8 @@ class Sheet:
         self._wraps: dict[tuple, list[Line]] = {}  # the keep rules measure a block before drawing it
 
     # ------------------------------------------------------------------ measuring and wrapping
-    def measure(self, text: str, bold: bool, size: float) -> float:
-        self.pdf.set_font(FAMILY, "B" if bold else "", size)
+    def measure(self, text: str, bold: bool, size: float, italic: bool = False) -> float:
+        self.pdf.set_font(FAMILY, font_style(bold, italic), size)
         return self.pdf.get_string_width(text)
 
     def fit_size(self, text: str, bold: bool, size: float, width: float, floor: float = 11.0) -> float:
@@ -131,18 +140,23 @@ class Sheet:
             size -= 0.5
         return size
 
+    def headline_size(self, headline: str, body: float) -> float:
+        """The title line's size: HEADLINE_EXTRA above the body text, less only as far as needed to keep it on one
+        line."""
+        return self.fit_size(headline, True, body + HEADLINE_EXTRA, self.width, floor=body)
+
     def wrap(self, runs: list[Run], width: float, size: float) -> list[Line]:
-        key = (tuple((run.text, run.bold) for run in runs), round(width, 3), size)
+        key = (tuple((run.text, run.bold, run.italic) for run in runs), round(width, 3), size)
         if key not in self._wraps:
             self._wraps[key] = self._wrap(runs, width, size)
         return self._wraps[key]
 
     def _wrap(self, runs: list[Run], width: float, size: float) -> list[Line]:
-        tokens: list[tuple[str, bool, bool]] = []
+        tokens: list[tuple[str, bool, bool, bool]] = []
         for run in runs:
             for part in re.split(r"(\s+)", run.text):
                 if part:
-                    tokens.append((" " if part.isspace() else part, run.bold, part.isspace()))
+                    tokens.append((" " if part.isspace() else part, run.bold, run.italic, part.isspace()))
         lines: list[Line] = []
         current: Line = []
         used = 0.0
@@ -155,32 +169,33 @@ class Sheet:
                 lines.append(current)
             current, used = [], 0.0
 
-        for text, bold, is_space in tokens:
-            w = self.measure(text, bold, size)
+        for text, bold, italic, is_space in tokens:
+            w = self.measure(text, bold, size, italic)
             if is_space:
                 if current:  # no leading spaces on a line
-                    current.append(Piece(text, bold, w))
+                    current.append(Piece(text, bold, w, italic))
                     used += w
                 continue
             if used + w <= width + 1e-6:
-                current.append(Piece(text, bold, w))
+                current.append(Piece(text, bold, w, italic))
                 used += w
                 continue
             flush()
             if w <= width:
-                current.append(Piece(text, bold, w))
+                current.append(Piece(text, bold, w, italic))
                 used = w
                 continue
             # one unbreakable token wider than the line (a long URL): split it by characters
             chunk = ""
             for ch in text:
-                if chunk and self.measure(chunk + ch, bold, size) > width:
-                    lines.append([Piece(chunk, bold, self.measure(chunk, bold, size))])
+                if chunk and self.measure(chunk + ch, bold, size, italic) > width:
+                    lines.append([Piece(chunk, bold, self.measure(chunk, bold, size, italic), italic)])
                     chunk = ch
                 else:
                     chunk += ch
             if chunk:
-                current, used = [Piece(chunk, bold, self.measure(chunk, bold, size))], self.measure(chunk, bold, size)
+                used = self.measure(chunk, bold, size, italic)
+                current = [Piece(chunk, bold, used, italic)]
         flush()
         return lines
 
@@ -210,13 +225,14 @@ class Sheet:
     def _draw(self, line: Line, x: float, y: float, size: float, height: float) -> None:
         merged: list[list] = []  # neighbours in the same style become one text string
         for piece in line:
-            if merged and merged[-1][1] == piece.bold:
+            style = font_style(piece.bold, piece.italic)
+            if merged and merged[-1][1] == style:
                 merged[-1][0] += piece.text
                 merged[-1][2] += piece.width
             else:
-                merged.append([piece.text, piece.bold, piece.width])
-        for text, bold, width in merged:
-            self.pdf.set_font(FAMILY, "B" if bold else "", size)
+                merged.append([piece.text, style, piece.width])
+        for text, style, width in merged:
+            self.pdf.set_font(FAMILY, style, size)
             self.pdf.set_xy(x, y)
             self.pdf.cell(w=width, h=height, text=text, new_x=XPos.RIGHT, new_y=YPos.TOP)
             x += width
@@ -300,27 +316,44 @@ class Sheet:
 # ---------------------------------------------------------------------- resume
 def render_resume_pdf(resume: Resume, style: FitStyle) -> tuple[bytes, int]:
     """Return (pdf bytes, page count)."""
-    return _resume_sheet(resume, style).finish()
+    return resume_sheet(resume, style).finish()
 
 
 def resume_layout(resume: Resume, style: FitStyle) -> tuple[int, float]:
     """(page count, how full the last page is), without building the PDF file."""
-    sheet = _resume_sheet(resume, style)
+    sheet = resume_sheet(resume, style)
     return sheet.pdf.page, sheet.last_page_fill()
 
 
-def _resume_sheet(resume: Resume, style: FitStyle) -> Sheet:
+def headline_size(headline: str, body: float, paper: str, margin: float) -> float:
+    """The PDF's title-line size, for the Word file to use the same one."""
+    return Sheet(paper, margin, body, RESUME_LINE, "", "").headline_size(headline, body)
+
+
+def job_header(company: Company, title: str, stacked: bool) -> list[tuple[list[Run], str]]:
+    """The rows that open a job, as (left text, right-aligned dates). The company comes first, where a recruiter's
+    eye runs down the page. Stacked: the company and the dates, then the title on its own line; otherwise all of it
+    on one line, which takes no more room than a single row."""
+    place = "".join(f" | {x}" for x in (company.location, company.mode) if x)
+    dates = fmt_dates(company.start, company.end)
+    if stacked:
+        return [([Run(company.name, True), Run(place)], dates), ([Run(title, italic=True)], "")]
+    return [([Run(company.name, True), Run(" | "), Run(title, italic=True), Run(place)], dates)]
+
+
+def resume_sheet(resume: Resume, style: FitStyle) -> Sheet:
+    """The resume laid out on pages: `pdf.page` pages, `last_page_fill()`, and the file from `finish()`."""
     p = resume.profile
     sheet = Sheet(style.paper, style.margin_in * 72, style.font_pt, RESUME_LINE, f"{p.name} - Resume", p.name)
     size = sheet.size
 
     # Header: name, then the headline, then the contact line.
     sheet.para([Run(p.name, True)], size=sheet.fit_size(p.name, True, size + 9, sheet.width), align="C")
-    sheet.space(2)
-    sheet.para([Run(resume.headline, True)], align="C")
+    sheet.space(HEADER_GAP)
+    sheet.para([Run(resume.headline, True)], size=sheet.headline_size(resume.headline, size), align="C")
     line = contact_line(p.contact)
     if line:
-        sheet.space(2)
+        sheet.space(HEADER_GAP)
         sheet.para([Run(line)], align="C")
 
     sheet.heading("SUMMARY")
@@ -330,18 +363,17 @@ def _resume_sheet(resume: Resume, style: FitStyle) -> Sheet:
     for group in resume.skills:
         sheet.para([Run(f"{group.category}:", True), Run(" " + ", ".join(group.skills))], after=1)
 
-    jobs = []  # (row text, dates, bullets, height that must stay with the row: the row and the first bullet)
+    jobs = []  # (header rows, bullets, height that must stay together: the header and the first bullet)
     for exp in resume.experience:
-        company = p.companies[exp.company_index]
-        details = " | ".join(x for x in (company.name, company.location, company.mode) if x)
-        left, dates = [Run(exp.job_title, True), Run(f" | {details}")], fmt_dates(company.start, company.end)
+        rows = job_header(p.companies[exp.company_index], exp.job_title, style.stacked)
         first = sheet.bullet_height(exp.bullets[0], after=0.0) if exp.bullets else 0.0
-        jobs.append((left, dates, exp.bullets, sheet.row_height(left, dates) + 1.5 + first))
-    sheet.heading("EXPERIENCE", keep=jobs[0][3] if jobs else 0.0)
-    for index, (left, dates, bullets, start) in enumerate(jobs):
+        jobs.append((rows, exp.bullets, sum(sheet.row_height(left, right) for left, right in rows) + 1.5 + first))
+    sheet.heading("EXPERIENCE", keep=jobs[0][2] if jobs else 0.0)
+    for index, (rows, bullets, start) in enumerate(jobs):
         sheet.space(4 if index else 0)
         sheet.keep(start)  # a job title never sits alone at the bottom of a page
-        sheet.row(left, dates)
+        for left, right in rows:
+            sheet.row(left, right)
         sheet.space(1.5)
         for bullet in bullets:
             sheet.bullet(bullet)
@@ -397,11 +429,11 @@ def _cover(resume: Resume, letter: CoverLetter, paper: str, role: str, size: flo
     # Letterhead, as on the resume
     sheet.para([Run(p.name, True)], size=sheet.fit_size(p.name, True, 20, sheet.width), align="C")
     if resume.headline:
-        sheet.space(2)
-        sheet.para([Run(resume.headline, True)], size=10.5, align="C")
+        sheet.space(HEADER_GAP)
+        sheet.para([Run(resume.headline, True)], size=sheet.headline_size(resume.headline, 10.5), align="C")
     lines = contact_lines(sheet, p.contact, 10)
     if lines:
-        sheet.space(2)
+        sheet.space(HEADER_GAP if resume.headline else 2)
     for line in lines:
         sheet.para([Run(line)], size=10, align="C")
     sheet.rule(before=8, after=22)

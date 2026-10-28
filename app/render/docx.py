@@ -12,7 +12,17 @@ from docx.oxml.ns import qn
 from docx.shared import Inches, Pt
 
 from ..schemas import CoverLetter, FitStyle, Resume
-from .pdf import contact_line, fmt_dates, letter_date, person_name, recipient_lines
+from .pdf import (
+    HEADER_GAP,
+    Run,
+    contact_line,
+    fmt_dates,
+    headline_size,
+    job_header,
+    letter_date,
+    person_name,
+    recipient_lines,
+)
 
 PAPER = {"Letter": (Inches(8.5), Inches(11)), "A4": (Inches(8.27), Inches(11.69))}
 
@@ -58,14 +68,16 @@ def _heading(doc: Document, text: str, font_pt: float) -> None:
     _bottom_border(p)
 
 
-def _row(doc: Document, left_bold: str, left_rest: str, right: str, text_width, space_before: float = 0):
+def _row(doc: Document, left: list[Run], right: str, text_width, space_before: float = 0):
+    """The left text (in the runs' styles) with the right-aligned dates on a tab stop."""
     p = doc.add_paragraph()
     p.paragraph_format.space_before = Pt(space_before)
     p.paragraph_format.keep_together = True
     p.paragraph_format.tab_stops.add_tab_stop(text_width, WD_TAB_ALIGNMENT.RIGHT)
-    p.add_run(left_bold).bold = True
-    if left_rest:
-        p.add_run(left_rest)
+    for part in left:
+        if part.text:
+            run = p.add_run(part.text)
+            run.bold, run.italic = part.bold or None, part.italic or None
     if right:
         p.add_run("\t" + right)
     return p
@@ -87,13 +99,15 @@ def resume_docx(resume: Resume, style: FitStyle) -> bytes:
     # Header: name, then the headline, then the contact line.
     h = doc.add_paragraph()
     h.alignment = WD_ALIGN_PARAGRAPH.CENTER
-    h.paragraph_format.space_before = Pt(2)
-    h.add_run(resume.headline).bold = True
+    h.paragraph_format.space_before = Pt(HEADER_GAP)
+    run = h.add_run(resume.headline)
+    run.bold = True
+    run.font.size = Pt(headline_size(resume.headline, style.font_pt, style.paper, style.margin_in * 72))
     line = contact_line(p.contact)
     if line:
         c = doc.add_paragraph(line)
         c.alignment = WD_ALIGN_PARAGRAPH.CENTER
-        c.paragraph_format.space_before = Pt(2)
+        c.paragraph_format.space_before = Pt(HEADER_GAP)
 
     _heading(doc, "SUMMARY", style.font_pt)
     doc.add_paragraph(resume.summary)
@@ -107,15 +121,9 @@ def resume_docx(resume: Resume, style: FitStyle) -> bytes:
 
     _heading(doc, "EXPERIENCE", style.font_pt)
     for index, exp in enumerate(resume.experience):
-        company = p.companies[exp.company_index]
-        rest = f" | {company.name}"
-        if company.location:
-            rest += f" | {company.location}"
-        if company.mode:
-            rest += f" | {company.mode}"
-        row = _row(doc, exp.job_title, rest, fmt_dates(company.start, company.end), text_width,
-                   space_before=4 if index else 0)
-        row.paragraph_format.keep_with_next = True  # a job title stays with its first bullet
+        for number, (left, right) in enumerate(job_header(p.companies[exp.company_index], exp.job_title, style.stacked)):
+            row = _row(doc, left, right, text_width, space_before=4 if index and not number else 0)
+            row.paragraph_format.keep_with_next = True  # a job's header stays with its first bullet
         for bullet in exp.bullets:
             para = doc.add_paragraph(bullet, style="List Bullet")
             para.paragraph_format.space_after = Pt(1)
@@ -125,10 +133,8 @@ def resume_docx(resume: Resume, style: FitStyle) -> bytes:
         _heading(doc, "EDUCATION", style.font_pt)
         for edu in p.education:
             main = ", ".join(x for x in (edu.degree, edu.field) if x)
-            if main:
-                row = _row(doc, main, f" | {edu.school}", fmt_dates(edu.start, edu.end), text_width)
-            else:
-                row = _row(doc, edu.school, "", fmt_dates(edu.start, edu.end), text_width)
+            left = [Run(main, True), Run(f" | {edu.school}")] if main else [Run(edu.school, True)]
+            row = _row(doc, left, fmt_dates(edu.start, edu.end), text_width)
             row.paragraph_format.keep_with_next = bool(edu.details)
             if edu.details:
                 doc.add_paragraph(edu.details)
@@ -155,10 +161,10 @@ def cover_docx(resume: Resume, letter: CoverLetter, paper: str = "Letter", role:
 
     last = centered(p.name, 20, True)
     if resume.headline:
-        last = centered(resume.headline, 10.5, True, before=2)
+        last = centered(resume.headline, headline_size(resume.headline, 10.5, paper, 72), True, before=HEADER_GAP)
     line = contact_line(p.contact)
     if line:
-        last = centered(line, 10, False, before=2)
+        last = centered(line, 10, False, before=HEADER_GAP if resume.headline else 2)
     last.paragraph_format.space_after = Pt(4)
     _bottom_border(last)
 

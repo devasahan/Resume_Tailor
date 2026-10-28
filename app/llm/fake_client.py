@@ -45,6 +45,18 @@ ROLE_RE = re.compile(
     r"([A-Z][A-Za-z/&+ -]{1,30}?(?:Engineer|Developer|Analyst|Manager|Designer|Scientist|Architect|"
     r"Consultant|Specialist|Administrator|Coordinator|Director|Accountant|Recruiter|Marketer))\b"
 )
+# Each job's first bullet with estimated figures: the job's biggest win, with its size and its result.
+LEADS = [
+    ("Rebuilt the {k1} pipeline behind the main customer workflow for {size}, cutting failed nightly runs by {result} with staged rollouts and clear ownership.",
+     "Rebuild the {k1} pipeline behind the main customer workflow for {size}, cutting failed nightly runs by {result} with staged rollouts and clear ownership."),
+    ("Launched {k1} self-service reporting for {size}, so the time from a request to an answer dropped by {result} once shared dashboards replaced spreadsheet hand-offs.",
+     "Launch {k1} self-service reporting for {size}, so the time from a request to an answer drops by {result} as shared dashboards replace spreadsheet hand-offs."),
+    ("Moved {k1} order processing for {size} onto a versioned, tested setup, and support tickets about missing orders fell by {result} within two quarters.",
+     "Move {k1} order processing for {size} onto a versioned, tested setup, so support tickets about missing orders keep falling, by {result} so far this year."),
+]
+LEAD_SIZES = ["38 internal teams", "12.4K active users", "613 stores", "47 partner companies", "83K customers",
+              "23 regional offices", "4.6K merchants", "2.3K clinics", "36 product teams"]
+LEAD_RESULTS = ["17.8%", "21%", "12.6%", "8.3%", "19%", "26.1%", "14%", "31.7%", "9.4%"]
 LEVELS = ["Junior", "", "Senior", "Lead", "Principal"]
 SCOPES = ["implemented", "built", "designed", "owned", "led"]
 COMPANY_RE = re.compile(
@@ -247,9 +259,12 @@ class FakeClient(LLMClient):
                 past, now = bank[(index * 2 + j) % len(bank)]
                 if j >= len(bank) and "23.4%" in past:  # the one invented figure: once per job
                     past, now = bank[(index * 2 + j + 1) % len(bank)]
+                if j == 0 and ctx.get("metrics", "estimate") == "estimate":  # opens with its size and its result
+                    past, now = LEADS[index % len(LEADS)]
                 template = now if present else past
                 bullets.append(template.format(k1=mine[j % len(mine)], k2=mine[(j + 1) % len(mine)],
-                                               k3=mine[(j + 2) % len(mine)]))
+                                               k3=mine[(j + 2) % len(mine)], size=LEAD_SIZES[index % len(LEAD_SIZES)],
+                                               result=LEAD_RESULTS[index % len(LEAD_RESULTS)]))
             experience.append({"company_index": index, "job_title": titles[index], "bullets": bullets})
 
         groups = [

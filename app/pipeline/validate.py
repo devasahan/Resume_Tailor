@@ -929,19 +929,38 @@ def metric_density_problems(resume: Resume) -> list[str]:
     return problems
 
 
+MIN_FIRST_BULLETS_FOR_RETRY = 2  # two jobs that open without a figure (or the most recent one) are worth the fix round
+
+
+def first_bullet_problems(resume: Resume) -> list[str]:
+    """Jobs whose first bullet carries no figure, most recent first. A recruiter's six-second scan reads only that
+    bullet, so it should show the job's biggest win with its size and its result."""
+    return [resume.profile.companies[exp.company_index].name for exp in resume.experience
+            if exp.bullets and not has_figure(exp.bullets[0])]
+
+
+def _quoted(items: list[str]) -> str:
+    """'a'; 'a' and 'b'; 'a', 'b' and 'c'."""
+    quoted = [f"'{item}'" for item in items]
+    return " and ".join(quoted) if len(quoted) <= 2 else ", ".join(quoted[:-1]) + " and " + quoted[-1]
+
+
 def claim_flags(resume: Resume, jd: str, hints: str) -> list[Flag]:
     """Things the user did not provide and should confirm before sending the resume."""
     flags: list[Flag] = []
     hints_l, jd_l = hints.lower(), jd.lower()
 
     def check_numbers(section: str, text: str) -> None:
-        for token in _numbers_in(text):
-            if token and token.lower() not in hints_l:
-                flags.append(
-                    Flag(section=section, text=text, level="verify",
-                         reason=f"'{token}' is an estimate, not a number you gave. Replace it with your real figure or remove it.")
-                )
-                return
+        """One flag naming every estimate in the text (a job's first bullet gives its size and its result)."""
+        tokens = list(dict.fromkeys(t for t in _numbers_in(text) if t and t.lower() not in hints_l))
+        if not tokens:
+            return
+        if len(tokens) == 1:
+            reason = f"'{tokens[0]}' is an estimate, not a number you gave. Replace it with your real figure or remove it."
+        else:
+            reason = (f"{_quoted(tokens)} are estimates, not numbers you gave. Replace them with your real figures or "
+                      "remove them.")
+        flags.append(Flag(section=section, text=text, level="verify", reason=reason))
 
     check_numbers("headline", resume.headline)
     check_numbers("summary", resume.summary)

@@ -1,4 +1,4 @@
-Carlito (Regular, Bold) is bundled unmodified so PDFs look the same on every computer.
+Carlito (Regular, Bold, Italic) is bundled unmodified so PDFs look the same on every computer.
 
 Carlito is metrically compatible with Calibri.
 Copyright (c) 2010-2013 by tyPoland Lukasz Dziedzic with Reserved Font Name "Carlito".

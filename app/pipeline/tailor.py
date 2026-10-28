@@ -119,6 +119,11 @@ def run_checks(result: TailorResult, jd_text: str) -> None:
     if plain:
         result.ats_warnings.append("Wording that can sound machine-written: " + "; ".join(plain[:6])
                                    + ". Plain words read as your own.")
+    openers = validate.first_bullet_problems(result.resume) if result.metrics_mode == "estimate" else []
+    if openers:
+        result.ats_warnings.append("These jobs do not open with a measured result: " + ", ".join(openers[:6])
+                                   + ". Recruiters read the first bullet of each job first: put that job's biggest "
+                                   "win there, with its size and its result.")
     absent, listed_only = validate.unshown_must_haves(result.resume, result.analysis)
     if absent or listed_only:
         result.ats_warnings.append(
@@ -180,7 +185,7 @@ async def run_tailor(
     facts = candidate_facts(profile, today)
     result = TailorResult(
         requested_model=model_id, prompt_version=PROMPT_VERSION, hints=hints, facts=facts, company_name=company_name,
-        jd=jd,
+        jd=jd, metrics_mode=metrics_mode,
     )
     outcome: Outcome = Outcome()
     notes: list[str] = []
@@ -190,7 +195,7 @@ async def run_tailor(
         schema = strict_json_schema(TailorOutput)
         revision_schema = strict_json_schema(TailorRevision)
         budget = await asyncio.to_thread(bullet_budget, profile, paper, today)  # bullets per employer that fit
-        context = {"profile": profile.model_dump(), "jd": jd, "hints": hints, "bullets": budget}
+        context = {"profile": profile.model_dump(), "jd": jd, "hints": hints, "bullets": budget, "metrics": metrics_mode}
 
         def build(out: TailorOutput):
             """(output, resume, notes). The analysis keeps keywords only, and titles that step down are corrected,
@@ -209,9 +214,10 @@ async def run_tailor(
             """Ask once to fix the draft if it uses too many figures, round guesses, thin text, leaves must-have
             JD terms out of the summary and bullets, copies the posting's voice, repeats its phrases, repeats a word
             by mistake, copies the posting's sentences or lists its phrases as skills, lists qualities as skills,
-            sounds machine-written, names tools a job could not have used, or has job titles that do not read as a
-            career path. The model gets the numbered draft and returns only what it changes (a TailorRevision): far
-            less to write than a whole new draft, and everything that was fine stays word for word."""
+            sounds machine-written, names tools a job could not have used, opens jobs without a measured result, or
+            has job titles that do not read as a career path. The model gets the numbered draft and returns only
+            what it changes (a TailorRevision): far less to write than a whole new draft, and everything that was
+            fine stays word for word."""
             feedback = []
             density = validate.metric_density_problems(value[1])
             if density:
@@ -219,6 +225,17 @@ async def run_tailor(
                     "Too many bullets carry numbers (" + "; ".join(density) + "). Keep a figure in at most "
                     f"{validate.MAX_FIGURE_BULLETS_PER_JOB} bullets per employer and about 2 in 5 overall; rewrite "
                     "the other bullets to describe the impact in words. Keep the candidate's own figures."
+                )
+            openers = validate.first_bullet_problems(value[1]) if metrics_mode == "estimate" else []
+            first_job = value[1].profile.companies[value[1].experience[0].company_index].name if openers else ""
+            if openers and (len(openers) >= validate.MIN_FIRST_BULLETS_FOR_RETRY or openers[0] == first_job):
+                feedback.append(
+                    "These jobs open without a measured result: " + ", ".join(openers[:8]) + ". A recruiter reads "
+                    "only the first bullet of each job in a six-second scan: rewrite it as that job's biggest win for "
+                    "this JD, with its size and its result as figures (for example 'for 83K concurrent players, "
+                    "cutting queue-to-lobby time by 22%'). If a later bullet of the same job already has a figure, "
+                    "move that result into the first bullet and say the later one in words, so the job keeps at most "
+                    f"{validate.MAX_FIGURE_BULLETS_PER_JOB} bullets with figures."
                 )
             rounded = validate.figure_style_problems(value[1], allowed_figures)
             if len(rounded) >= 2:

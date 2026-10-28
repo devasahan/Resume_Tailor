@@ -12,7 +12,7 @@ from __future__ import annotations
 from datetime import date
 from functools import lru_cache
 
-from ..render.pdf import render_resume_pdf, resume_layout
+from ..render.pdf import render_resume_pdf, resume_layout, resume_sheet
 from ..schemas import FitStyle, Profile, Resume, ResumeExperience, SkillGroup
 from .facts import bullet_caps, stay_months
 
@@ -130,20 +130,25 @@ def _pages_note(pages: int) -> str:
 
 def try_styles(resume: Resume, paper: str = "Letter") -> tuple[FitStyle, int, bytes, list[str]] | None:
     """The largest style that fits on at most MAX_PAGES pages, or None. A second page that would hold only a few
-    lines is avoided when a smaller step fits everything on one page."""
-    ladder = styles(paper)
-    layouts = []
-    for index, style in enumerate(ladder):
-        pages, fill = resume_layout(resume, style)
-        layouts.append((index, style, pages))
+    lines is avoided when a smaller step fits everything on one page. Each job's title then goes on its own line
+    under the company when that still fits the same pages, so it never costs a bullet, a font step or a page."""
+    layouts = []  # (ladder step, style, pages, the laid-out sheet, kept to build the file from)
+    for index, style in enumerate(styles(paper)):
+        sheet = resume_sheet(resume, style)
+        pages, fill = sheet.pdf.page, sheet.last_page_fill()
+        layouts.append((index, style, pages, sheet))
         if pages == 1 or (pages <= MAX_PAGES and fill >= MIN_LAST_PAGE_FILL):
             break
     else:  # no step is both within the limit and well filled: the largest one within the limit
         layouts = [layout for layout in layouts if layout[2] <= MAX_PAGES][:1]
         if not layouts:
             return None
-    index, style, pages = layouts[-1]
-    pdf, pages = render_resume_pdf(resume, style)
+    index, style, pages, sheet = layouts[-1]
+    stacked = style.model_copy(update={"stacked": True})
+    stacked_sheet = resume_sheet(resume, stacked)
+    if stacked_sheet.pdf.page == pages:
+        style, sheet = stacked, stacked_sheet
+    pdf, pages = sheet.finish()
     notes = []
     if index:
         notes.append(f"Font reduced to {style.font_pt:g} pt and margins to {style.margin_in:g} in to fit "

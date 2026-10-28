@@ -172,6 +172,7 @@ class FitStyle(BaseModel):
     font_pt: float = 10.5
     margin_in: float = 0.65
     paper: Literal["Letter", "A4"] = "Letter"
+    stacked: bool = False  # each job's title on its own line under the company (used when it costs no bullet)
 
 
 class TailorResult(BaseModel):
@@ -203,5 +204,6 @@ class TailorResult(BaseModel):
     facts: str = ""  # facts computed from the profile (years of experience) that were given to the model
     company_name: str = ""  # company the user typed on the tailor form (wins over the one read from the JD)
     jd: str = ""  # the job description this run was made for (a cover letter can be written later from it)
+    metrics_mode: str = ""  # the "Numbers in bullets" setting the run was made with ("" for older runs)
     career_plan: list[CareerStep] = Field(default_factory=list)  # how the model spread the JD across the jobs
     created_at: str = ""
