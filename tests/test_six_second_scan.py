@@ -1,5 +1,6 @@
-"""What a recruiter reads in a six-second scan: the title line under the name, the company and title of each job,
-and each job's first bullet, which opens with the job's biggest win, its size and its result."""
+"""What a recruiter reads in a six-second scan: the title line under the name (the role and areas of work, never a
+list of skills), the company and title of each job, and each job's first bullet, which opens with the job's biggest
+win, its size and its result."""
 import asyncio
 import io
 from datetime import date
@@ -12,11 +13,11 @@ from app.llm.base import LLMClient
 from app.llm.fake_client import FakeClient
 from app.pipeline import validate
 from app.pipeline.fit import bullet_budget, try_styles
-from app.pipeline.tailor import run_tailor
+from app.pipeline.tailor import run_checks, run_tailor
 from app.prompts import RETRY_MARKER, tailor_system
 from app.render.docx import resume_docx
 from app.render.pdf import Sheet, render_resume_pdf, resume_layout
-from app.schemas import Company, FitStyle, Profile
+from app.schemas import Company, FitStyle, JDAnalysis, Profile, SkillGroup, TailorResult
 
 from .test_validate import make_output
 
@@ -156,3 +157,72 @@ def test_the_title_line_is_larger_but_stays_on_one_line(profile):
     paragraphs = Document(io.BytesIO(resume_docx(resume, FitStyle()))).paragraphs
     headline = next(p for p in paragraphs if p.text == resume.headline)
     assert headline.runs[0].bold and headline.runs[0].font.size.pt == 12.5
+
+
+# ------------------------------------------------------------------ the headline: the role and areas of work
+AI_POSTING = JDAnalysis(target_role="AI Engineer", seniority="Mid", domain="SaaS", key_responsibilities=[], keywords=[],
+                        must_have_skills=["Python", "RAG", "AWS", "Machine Learning", "Data"],
+                        nice_to_have_skills=["Kubernetes"])
+
+
+def test_prompt_asks_for_areas_of_work_not_skills():
+    text = tailor_system("estimate")
+    assert "the target role, then \" | \" and the candidate's 1-2 broad areas of work" in text
+    assert "never a specific skill" in text and '"AI Engineer | AI Platforms & Applied Machine Learning"' in text
+    assert "2-3 most important JD skills" not in text
+    assert "without the hiring company's level number (II, III, L5)" in text  # the level rule stays
+
+
+def test_skills_in_the_headline_are_found(profile):
+    resume = validate.build_resume(profile, make_output())
+    resume.skills = [SkillGroup(category="Core", skills=["Python", "Airflow", "Distributed Systems"])]
+    found = {}
+    for headline in ("AI Engineer | Python | RAG | LLM Platforms", "AI Engineer | Python & AWS",
+                     "AI Engineer | Airflow, Kubernetes", "AI Engineer | AI Platforms & Applied Machine Learning",
+                     "AI Engineer | Data Platforms & Distributed Systems", "Python Developer | Web Platforms & Payments",
+                     "AI Engineer"):
+        resume.headline = headline
+        found[headline] = validate.headline_problems(resume, AI_POSTING)
+    assert found == {
+        "AI Engineer | Python | RAG | LLM Platforms": ["Python", "RAG", "LLM Platforms"],  # tools, and a list
+        "AI Engineer | Python & AWS": ["Python", "AWS"],
+        "AI Engineer | Airflow, Kubernetes": ["Kubernetes", "Airflow"],  # the posting's or the skills list's tools
+        "AI Engineer | AI Platforms & Applied Machine Learning": [],  # broad fields and longer terms are areas
+        "AI Engineer | Data Platforms & Distributed Systems": [],
+        "Python Developer | Web Platforms & Payments": [],  # the role itself may name a tool
+        "AI Engineer": [],
+    }
+
+
+class ListsSkills(LLMClient):
+    """First draft only: the old headline, the role and three skills."""
+
+    def __init__(self, inner):
+        self.inner, self.prompts = inner, []
+
+    async def generate_structured(self, **kwargs):
+        self.prompts.append(kwargs["user"])
+        result = await self.inner.generate_structured(**kwargs)
+        if kwargs["schema_name"] == "tailor_output" and RETRY_MARKER not in kwargs["user"]:
+            result.data["sections"]["headline"] = "Senior Data Engineer | Python | SQL | Airflow"
+        return result
+
+
+def test_the_one_fix_round_rewrites_a_skills_headline(router, db, registry, profile, jd):
+    plain = asyncio.run(run_tailor(router, db, profile=profile, profile_id=None, jd=jd, model_id="demo-concise"))
+    assert plain.resume.headline == "Senior Data Engineer | Data Platforms & Analytics" and plain.retries == 0
+    client = ListsSkills(FakeClient(registry.get("demo-concise")))
+    router.overrides["demo-concise"] = client
+    result = asyncio.run(run_tailor(router, db, profile=profile, profile_id=None, jd=jd, model_id="demo-concise"))
+    assert result.status == "ok" and result.retries == 1 and len(client.prompts) == 2
+    assert "The headline lists specific skills: 'Python', 'SQL', 'Airflow'" in client.prompts[1]
+    assert result.resume.headline == "Senior Data Engineer | Data Platforms & Analytics"
+    assert not any(w.startswith("The headline lists specific skills") for w in result.ats_warnings)
+
+
+def test_a_skills_headline_left_after_an_edit_gets_a_format_note(profile):
+    resume = validate.build_resume(profile, make_output())
+    resume.headline = "AI Engineer | Python | RAG"
+    result = TailorResult(requested_model="m", resume=resume, analysis=AI_POSTING)
+    run_checks(result, "a job description")
+    assert any(w.startswith("The headline lists specific skills: Python, RAG.") for w in result.ats_warnings)
