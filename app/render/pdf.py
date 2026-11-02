@@ -12,7 +12,6 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass
-from datetime import date
 from pathlib import Path
 
 from fpdf import FPDF
@@ -57,19 +56,6 @@ def person_name(name: str) -> str:
     """Normal capitals for a name written all in capitals (or all small): 'JUAN DANIEL RAMIREZ' -> 'Juan Daniel Ramirez'.
     A name that already mixes them ('Ann McDonald') stays as it is."""
     return name.title() if name.isupper() or name.islower() else name
-
-
-def letter_date(today: date | None = None) -> str:
-    today = today or date.today()
-    return f"{today:%B} {today.day}, {today.year}"
-
-
-def recipient_lines(letter: CoverLetter) -> list[str]:
-    """Who the letter is for: the hiring manager's name, or 'Hiring Manager' when only the company is known."""
-    manager, company = letter.hiring_manager.strip(), letter.company_name.strip()
-    if not manager and not company:
-        return []
-    return [manager or "Hiring Manager", *([company] if company else [])]
 
 
 def fmt_dates(start: str, end: str) -> str:
@@ -411,18 +397,18 @@ def contact_lines(sheet: Sheet, contact: Contact, size: float) -> list[str]:
     return lines
 
 
-def render_cover_pdf(resume: Resume, letter: CoverLetter, paper: str = "Letter", role: str = "") -> tuple[bytes, int]:
-    """A business letter under the same header as the resume (name, headline, contact line), so the two look like
-    one set: a rule, the date, the recipient, a subject line with the role, the letter, and the typed signature.
-    One column of real text in reading order, like the resume, so applicant systems read it too."""
+def render_cover_pdf(resume: Resume, letter: CoverLetter, paper: str = "Letter") -> tuple[bytes, int]:
+    """The letter under the same header as the resume (name, headline, contact line), so the two look like one set:
+    a rule, then the letter from its greeting to the typed signature (no date, address or subject line). One column
+    of real text in reading order, like the resume, so applicant systems read it too."""
     for size, line_height, gap in COVER_STYLES:
-        data, pages = _cover(resume, letter, paper, role, size, line_height, gap)
+        data, pages = _cover(resume, letter, paper, size, line_height, gap)
         if pages == 1:
             break
     return data, pages
 
 
-def _cover(resume: Resume, letter: CoverLetter, paper: str, role: str, size: float, line_height: float,
+def _cover(resume: Resume, letter: CoverLetter, paper: str, size: float, line_height: float,
            gap: float) -> tuple[bytes, int]:
     p = resume.profile
     sheet = Sheet(paper, 72, size, line_height, f"{p.name} - Cover Letter", p.name)
@@ -438,14 +424,6 @@ def _cover(resume: Resume, letter: CoverLetter, paper: str, role: str, size: flo
         sheet.para([Run(line)], size=10, align="C")
     sheet.rule(before=8, after=22)
 
-    sheet.para([Run(letter_date())], after=gap + 5)
-    recipient = recipient_lines(letter)
-    for value in recipient:
-        sheet.para([Run(value)])
-    if recipient:
-        sheet.space(gap + 5)
-    if role.strip():
-        sheet.para([Run("Re: ", True), Run(role.strip(), True)], after=gap + 5)
     sheet.para([Run(letter.greeting)], after=gap)
     for paragraph in letter.paragraphs:
         sheet.para([Run(paragraph)], after=gap)

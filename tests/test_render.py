@@ -1,5 +1,6 @@
 import io
 import random
+import re
 
 import pytest
 from docx import Document
@@ -251,45 +252,40 @@ def test_wrapping_splits_a_token_longer_than_the_line():
 
 def test_cover_letter_pdf_and_docx(resume):
     letter = CoverLetter(greeting="Dear Sam,", paragraphs=["First paragraph here.", "Second paragraph here.", "Third."], closing="Sincerely,", company_name="Acme Corp", hiring_manager="Sam Lee")
-    pdf, pages = render_cover_pdf(resume, letter, role="Senior Data Engineer")
+    pdf, pages = render_cover_pdf(resume, letter)
     text = text_of(pdf)
-    assert pages == 1 and all(item in text for item in ("Jordan Rivera", "Sam Lee", "Acme Corp", "Dear Sam,", "Sincerely,"))
+    assert pages == 1 and all(item in text for item in ("Jordan Rivera", "Dear Sam,", "Sincerely,"))
     assert PdfReader(io.BytesIO(pdf)).metadata.title == "Jordan Rivera - Cover Letter"
-    paragraphs = [p.text for p in Document(io.BytesIO(cover_docx(resume, letter, role="Senior Data Engineer"))).paragraphs]
-    assert "Dear Sam," in paragraphs and "Acme Corp" in paragraphs and "Re: Senior Data Engineer" in paragraphs
+    paragraphs = [p.text for p in Document(io.BytesIO(cover_docx(resume, letter))).paragraphs]
+    assert "Dear Sam," in paragraphs and "Sincerely," in paragraphs
 
 
-def test_cover_letter_is_a_business_letter_under_the_resume_header(resume):
-    """Reading order (what an applicant system extracts): the resume's header, date, recipient, subject, letter,
-    closing, and the signature in normal capitals."""
+def test_cover_letter_starts_at_the_greeting_under_the_resume_header(resume):
+    """Reading order (what an applicant system extracts): the resume's header, then the letter from its greeting,
+    the closing, and the signature in normal capitals. No date, recipient or subject line, even when the company
+    and the hiring manager are known."""
     resume.profile.name = "JORDAN RIVERA"
     letter = CoverLetter(greeting="Dear Hiring Manager,", paragraphs=["One.", "Two."], closing="Sincerely,",
-                         company_name="Acme Corp")
-    pdf, _ = render_cover_pdf(resume, letter, role="Senior Data Engineer")
-    lines = [line.strip() for line in text_of(pdf).splitlines() if line.strip()]
-    order = ["JORDAN RIVERA", resume.headline, "Hiring Manager", "Acme Corp", "Re: Senior Data Engineer",
-             "Dear Hiring Manager,", "One.", "Two.", "Sincerely,", "Jordan Rivera"]
+                         company_name="Acme Corp", hiring_manager="Sam Lee")
+    lines = [line.strip() for line in text_of(render_cover_pdf(resume, letter)[0]).splitlines() if line.strip()]
+    order = ["JORDAN RIVERA", resume.headline, "Dear Hiring Manager,", "One.", "Two.", "Sincerely,", "Jordan Rivera"]
     assert [line for line in lines if line in order] == order
-    assert any(line.startswith("Austin, TX") or "@" in line for line in lines[2:4])  # the contact line, under the headline
-    docx = [p.text for p in Document(io.BytesIO(cover_docx(resume, letter, role="Senior Data Engineer"))).paragraphs]
-    assert [t for t in docx if t in order] == order
-
-
-def test_cover_letter_recipient_and_subject_only_when_known(resume):
-    bare = CoverLetter(greeting="Dear Hiring Manager,", paragraphs=["One."], closing="Sincerely,")
-    text = text_of(render_cover_pdf(resume, bare)[0])
-    assert "Hiring Manager\n" not in text.replace("Dear Hiring Manager,", "") and "Re:" not in text
-    named = bare.model_copy(update={"hiring_manager": "Sam Lee"})
-    assert "Sam Lee" in text_of(render_cover_pdf(resume, named)[0])
+    assert lines.index("Dear Hiring Manager,") == 3  # name, headline, contact line, then straight to the greeting
+    docx = [p.text for p in Document(io.BytesIO(cover_docx(resume, letter))).paragraphs]
+    assert [t for t in docx if t in order] == order and docx.index("Dear Hiring Manager,") == 3
+    for text in ("\n".join(lines), "\n".join(docx)):
+        assert "Acme Corp" not in text and "Sam Lee" not in text and "Re:" not in text
+        assert not re.search(r"(?:January|February|March|April|May|June|July|August|September|October|November|"
+                             r"December) \d{1,2}, \d{4}", text)  # no date
 
 
 def test_a_long_cover_letter_stays_on_one_page(resume):
     long = CoverLetter(greeting="Dear Hiring Manager,", closing="Sincerely,", company_name="Acme Corp",
-                       paragraphs=[" ".join(["Delivered reliable data pipelines for the analytics team."] * 11)] * 4)
+                       paragraphs=[" ".join(["Delivered reliable data pipelines for the analytics team."] * 13)] * 4)
     from app.render.pdf import COVER_STYLES, _cover
 
-    assert _cover(resume, long, "Letter", "Senior Data Engineer", *COVER_STYLES[0])[1] == 2  # too long at full size
-    pdf, pages = render_cover_pdf(resume, long, role="Senior Data Engineer")
+    assert _cover(resume, long, "Letter", *COVER_STYLES[0])[1] == 2  # too long at full size
+    pdf, pages = render_cover_pdf(resume, long)
     assert pages == 1 and "Sincerely," in text_of(pdf)
 
 

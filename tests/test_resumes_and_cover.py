@@ -159,11 +159,13 @@ def test_cover_letter_for_an_existing_run(client):
     response = client.post(f"/api/runs/{run['run_id']}/cover-letter", json={})
     assert response.status_code == 200, response.text
     letter = response.json()["cover_letter"]
+    assert not any(w.startswith("Cover letter wording") for w in response.json()["ats_warnings"])  # the demo is plain
     assert len(letter["paragraphs"]) >= 2 and letter["company_name"] == "Globex Corporation" and letter["hiring_manager"] == ""
     pdf = client.get(f"/api/runs/{run['run_id']}/cover.pdf?download=1")
     assert pdf.headers["content-disposition"] == (
         'attachment; filename="Jordan_Rivera_Cover_Letter.pdf"')
-    assert "Re: Senior Data Engineer" in "\n".join(page.extract_text() for page in PdfReader(io.BytesIO(pdf.content)).pages)
+    lines = [line for page in PdfReader(io.BytesIO(pdf.content)).pages for line in page.extract_text().splitlines()]
+    assert lines[3].startswith("Dear ") and not any(line.startswith("Re:") for line in lines)  # the greeting comes first
     runs = client.get("/api/runs").json()["runs"]
     row = next(r for r in runs if r["id"] == run["run_id"])
     assert row["cover_letter"] is True

@@ -119,6 +119,10 @@ def run_checks(result: TailorResult, jd_text: str) -> None:
     if plain:
         result.ats_warnings.append("Wording that can sound machine-written: " + "; ".join(plain[:6])
                                    + ". Plain words read as your own.")
+    letter_plain = validate.cover_plain_problems(result.cover_letter) if result.cover_letter else []
+    if letter_plain:
+        result.ats_warnings.append("Cover letter wording that can sound machine-written: " + "; ".join(letter_plain[:6])
+                                   + ". Plain words read as your own.")
     openers = validate.first_bullet_problems(result.resume) if result.metrics_mode == "estimate" else []
     if openers:
         result.ats_warnings.append("These jobs do not open with a measured result: " + ", ".join(openers[:6])

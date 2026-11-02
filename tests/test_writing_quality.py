@@ -15,9 +15,15 @@ from app.pipeline.fit import (
     smaller_budget,
     try_styles,
 )
-from app.pipeline.tailor import run_tailor
-from app.prompts import RETRY_MARKER, SHORTEN_NOTE, tailor_system, tailor_user
-from app.schemas import Company, Contact, Education, Profile
+from app.pipeline.tailor import run_checks, run_tailor
+from app.prompts import (
+    RETRY_MARKER,
+    SHORTEN_NOTE,
+    cover_system,
+    tailor_system,
+    tailor_user,
+)
+from app.schemas import Company, Contact, CoverLetter, Education, Profile, TailorResult
 
 from .test_validate import make_output
 
@@ -230,3 +236,39 @@ def test_the_prompt_asks_for_plain_words():
     assert "PLAIN WORDS" in text and "the way a person would explain the work to a colleague" in text
     assert "leverage, utilize, spearhead, seamless, robust" in text and '"in order to"' in text
     assert "Do not chain \"-ing\" clauses" in text and "Architected" not in text
+
+
+# ------------------------------------------------------------------ the cover letter
+WORDY_LETTER = CoverLetter(greeting="Dear Hiring Manager,", closing="Sincerely,", paragraphs=[
+    "Shipping AI systems that people rely on takes robust execution. I like that kind of work.",
+    "I built evaluation tools by leveraging automated metrics, ensuring quality, enabling teams, driving adoption.",
+    "The services I build fit seamlessly into existing business workflows."])
+
+
+def test_the_cover_prompt_asks_for_plain_words_and_starts_at_the_greeting():
+    text = cover_system()
+    assert "PLAIN WORDS" in text and "leverage, utilize, spearhead, seamless, robust" in text
+    assert "the letter starts with the greeting" in text and "a date, an address or a subject line" in text
+    assert "The system adds them" not in text
+
+
+def test_cover_letter_wording_is_checked_sentence_by_sentence():
+    assert validate.cover_plain_problems(WORDY_LETTER) == [
+        "'robust' (paragraph 1)", "'leveraging' (paragraph 2)",
+        "a chain of '-ing' clauses (paragraph 2: 'I built evaluation tools by leveraging automated metrics, ...')",
+        "'seamlessly' (paragraph 3)"]
+    plain = WORDY_LETTER.model_copy(update={"paragraphs": [
+        "I built the evaluation service the support team uses every day, and wrong answers dropped as a result.",
+        "Before that, I ran the release checks, wrote the test plans, and kept the team's runbooks current."]})
+    assert validate.cover_plain_problems(plain) == []  # three '-ing'-free list items in one sentence are fine
+
+
+def test_machine_sounding_cover_letters_get_a_format_note(profile):
+    result = TailorResult(requested_model="m", resume=validate.build_resume(profile, make_output()),
+                          analysis=make_output().jd_analysis, cover_letter=WORDY_LETTER)
+    run_checks(result, "a job description")
+    notes = [w for w in result.ats_warnings if w.startswith("Cover letter wording that can sound machine-written")]
+    assert len(notes) == 1 and "'robust' (paragraph 1)" in notes[0] and "Plain words read as your own." in notes[0]
+    result.cover_letter = None
+    run_checks(result, "a job description")
+    assert not any(w.startswith("Cover letter wording") for w in result.ats_warnings)

@@ -609,18 +609,29 @@ MAX_ING_CLAUSES = 2  # a third in one bullet reads as a template
 MIN_PLAIN_PROBLEMS_FOR_RETRY = 2  # one stray word is only noted; it is not worth a model call
 
 
-def plain_word_problems(resume: Resume) -> list[str]:
-    """Machine-sounding wording in the summary and the bullets: buzzwords, and bullets that chain three or more
-    '-ing' clauses. Skills are a list of tool names and are not read."""
-    places = [("summary", resume.summary)] + [
-        (resume.profile.companies[exp.company_index].name, bullet) for exp in resume.experience for bullet in exp.bullets
-    ]
+def _plain_problems(places: list[tuple[str, str]]) -> list[str]:
+    """Buzzwords in each (where, text), and texts that chain three or more '-ing' clauses."""
     problems: list[str] = []
     for where, text in places:
         problems += [f"'{match.group(0)}' ({where})" for match in _BUZZ.finditer(text)]
         if len(_ING_CLAUSE.findall(text)) > MAX_ING_CLAUSES:
             problems.append(f"a chain of '-ing' clauses ({where}: '{' '.join(text.split()[:8])} ...')")
     return problems
+
+
+def plain_word_problems(resume: Resume) -> list[str]:
+    """Machine-sounding wording in the summary and the bullets: buzzwords, and bullets that chain three or more
+    '-ing' clauses. Skills are a list of tool names and are not read."""
+    return _plain_problems([("summary", resume.summary)] + [
+        (resume.profile.companies[exp.company_index].name, bullet) for exp in resume.experience for bullet in exp.bullets
+    ])
+
+
+def cover_plain_problems(letter: CoverLetter) -> list[str]:
+    """The same check on the cover letter, sentence by sentence, so a long paragraph is not read as one '-ing'
+    chain."""
+    return _plain_problems([(f"paragraph {number}", sentence) for number, paragraph in enumerate(letter.paragraphs, 1)
+                            for sentence in re.split(r"(?<=[.!?])\s+", paragraph) if sentence])
 
 
 _WORD = re.compile(r"[A-Za-z][\w+#]*(?:-[\w+#]+)*")

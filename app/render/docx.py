@@ -19,9 +19,7 @@ from .pdf import (
     fmt_dates,
     headline_size,
     job_header,
-    letter_date,
     person_name,
-    recipient_lines,
 )
 
 PAPER = {"Letter": (Inches(8.5), Inches(11)), "A4": (Inches(8.27), Inches(11.69))}
@@ -144,8 +142,8 @@ def resume_docx(resume: Resume, style: FitStyle) -> bytes:
     return buffer.getvalue()
 
 
-def cover_docx(resume: Resume, letter: CoverLetter, paper: str = "Letter", role: str = "") -> bytes:
-    """The same letter as the PDF: the resume's header, a rule, date, recipient, subject line, letter, signature."""
+def cover_docx(resume: Resume, letter: CoverLetter, paper: str = "Letter") -> bytes:
+    """The same letter as the PDF: the resume's header, a rule, then the letter from its greeting to the signature."""
     p = resume.profile
     style = FitStyle(font_pt=11, margin_in=1.0, paper=paper)  # type: ignore[arg-type]
     doc = _setup(style, 1.0, 11, author=p.name, title=f"{p.name} - Cover Letter")
@@ -175,13 +173,7 @@ def cover_docx(resume: Resume, letter: CoverLetter, paper: str = "Letter", role:
         paragraph.add_run(text).bold = bold
         return paragraph
 
-    para(letter_date(), after=14, before=22)
-    recipient = recipient_lines(letter)
-    for index, value in enumerate(recipient):
-        para(value, after=14 if index == len(recipient) - 1 else 0)
-    if role.strip():
-        para(f"Re: {role.strip()}", after=14, bold=True)
-    para(letter.greeting, after=9)
+    para(letter.greeting, after=9, before=22)
     for text in letter.paragraphs:
         para(text, after=9)
     para(letter.closing, after=27)  # room for a handwritten signature on a printout

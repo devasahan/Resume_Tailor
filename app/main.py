@@ -280,11 +280,6 @@ def file_part(text: str, limit: int = 50) -> str:
     return re.sub(r"[^A-Za-z0-9]+", "_", ascii_text).strip("_")[:limit].strip("_")
 
 
-def cover_role(result: TailorResult) -> str:
-    """The role for the cover letter's subject line: the one read from the job description."""
-    return result.analysis.target_role if result.analysis else ""
-
-
 def download_name(result: TailorResult, ext: str, cover: bool = False) -> str:
     """The usual pattern for job applications: the name on the resume, then the document. 'Jordan_Rivera_Resume.pdf'
     and 'Jordan_Rivera_Cover_Letter.pdf'. No company in it, so a file sent to the wrong company does not show it."""
@@ -932,7 +927,7 @@ def create_app(db: Database | None = None, registry: Registry | None = None, rou
         result = load_run(run_id, user)
         if result.resume is None or result.cover_letter is None:
             raise HTTPException(404, "No cover letter in this run.")
-        pdf, _ = render_cover_pdf(result.resume, result.cover_letter, result.style.paper, cover_role(result))
+        pdf, _ = render_cover_pdf(result.resume, result.cover_letter, result.style.paper)
         name = download_name(result, "pdf", cover=True)
         if download:
             log_download(user, run_id, result, "cover_letter", "pdf", name)
@@ -945,7 +940,7 @@ def create_app(db: Database | None = None, registry: Registry | None = None, rou
             raise HTTPException(404, "No cover letter in this run.")
         name = download_name(result, "docx", cover=True)
         log_download(user, run_id, result, "cover_letter", "docx", name)
-        letter = cover_docx(result.resume, result.cover_letter, result.style.paper, cover_role(result))
+        letter = cover_docx(result.resume, result.cover_letter, result.style.paper)
         return file_response(letter, DOCX, "attachment", name)
 
     @app.delete("/api/data", dependencies=[Depends(admin_user)])
