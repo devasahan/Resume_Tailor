@@ -950,27 +950,17 @@ def first_bullet_problems(resume: Resume) -> list[str]:
             if exp.bullets and not has_figure(exp.bullets[0])]
 
 
-# Broad fields of work: a headline area may hold these even when the posting lists them as skills ("Data Platforms
-# & Analytics"); any other one-word skill there is a specific skill ("Python", "AWS", "RAG")
-_FIELD_WORDS = frozenset({
-    "ai", "ml", "data", "analytics", "cloud", "web", "mobile", "security", "infrastructure", "platform", "platforms",
-    "backend", "frontend", "devops", "payments", "fintech", "e-commerce", "ecommerce", "marketing", "operations",
-    "finance", "product", "design", "healthcare", "research", "automation", "networking", "embedded",
-})
+# What a draft adds after the role: a domain, areas of work or skills ("AI Engineer | AI Platforms", "Full-Stack
+# Engineer - Payments"). A comma stays: "Director, Engineering" is a role.
+_AFTER_ROLE = re.compile(r"\s*\|.*$|\s+-\s+.*$")
 
 
-def headline_problems(resume: Resume, analysis: JDAnalysis) -> list[str]:
-    """Specific skills in the headline, which names the target role and 1-2 areas of work ('AI Engineer | AI
-    Platforms & Applied Machine Learning'): a one-word skill from the posting or the skills list after the role,
-    and any part beyond one area part ('Data Engineer | Python | SQL | Airflow')."""
-    _role, *parts = [part.strip() for part in resume.headline.split("|")]
-    if not parts:
-        return []
-    areas = " ".join(parts)
-    skills = [*analysis.must_have_skills, *analysis.nice_to_have_skills, *(s for g in resume.skills for s in g.skills)]
-    named = [term for term in _unique(skills)
-             if len(term.split()) == 1 and term.lower() not in _FIELD_WORDS and mentions(areas, term)]
-    return list(dict.fromkeys(named + parts[1:]))
+def role_only_headline(resume: Resume) -> None:
+    """The headline names the target role only ('Full-Stack Engineer'): what a draft adds after a '|' or a spaced
+    dash goes. Changes the resume in place."""
+    role = _AFTER_ROLE.sub("", resume.headline).strip()
+    if role:
+        resume.headline = role
 
 
 def _quoted(items: list[str]) -> str:

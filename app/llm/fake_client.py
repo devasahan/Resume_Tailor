@@ -57,10 +57,6 @@ LEADS = [
 LEAD_SIZES = ["38 internal teams", "12.4K active users", "613 stores", "47 partner companies", "83K customers",
               "23 regional offices", "4.6K merchants", "2.3K clinics", "36 product teams"]
 LEAD_RESULTS = ["17.8%", "21%", "12.6%", "8.3%", "19%", "26.1%", "14%", "31.7%", "9.4%"]
-# The headline's areas of work, by a word in the role (a field of work, never a list of tools)
-AREAS = [("Data", "Data Platforms & Analytics"), ("Marketing", "Product Launches & Go-to-Market"),
-         ("Customer", "Customer Retention & Growth"), ("Engineer", "Distributed Systems & Platform Infrastructure"),
-         ("Developer", "Web Applications & Platform Infrastructure")]
 LEVELS = ["Junior", "", "Senior", "Lead", "Principal"]
 SCOPES = ["implemented", "built", "designed", "owned", "led"]
 COMPANY_RE = re.compile(
@@ -293,7 +289,7 @@ class FakeClient(LLMClient):
                 for i in range(len(companies))
             ],
             "sections": {
-                "headline": f"{target} | {next((a for word, a in AREAS if word in base), 'Operations & Delivery')}",
+                "headline": target,
                 "summary": (
                     f"{target} with hands-on experience delivering {k[0]}, {k[1]} and {k[2]} work for product and "
                     f"operations teams in fast-moving organizations. Strong in {k[3]}, {k[4]} and {k[5]}, with a habit of "

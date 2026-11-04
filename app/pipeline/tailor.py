@@ -123,11 +123,6 @@ def run_checks(result: TailorResult, jd_text: str) -> None:
     if letter_plain:
         result.ats_warnings.append("Cover letter wording that can sound machine-written: " + "; ".join(letter_plain[:6])
                                    + ". Plain words read as your own.")
-    headline = validate.headline_problems(result.resume, result.analysis)
-    if headline:
-        result.ats_warnings.append("The headline lists specific skills: " + ", ".join(headline[:6]) + ". Recruiters "
-                                   "read it as your level and specialty: write the role and 1-2 areas of work, for "
-                                   "example 'Data Engineer | Data Platforms & Analytics'.")
     openers = validate.first_bullet_problems(result.resume) if result.metrics_mode == "estimate" else []
     if openers:
         result.ats_warnings.append("These jobs do not open with a measured result: " + ", ".join(openers[:6])
@@ -207,10 +202,11 @@ async def run_tailor(
         context = {"profile": profile.model_dump(), "jd": jd, "hints": hints, "bullets": budget, "metrics": metrics_mode}
 
         def build(out: TailorOutput):
-            """(output, resume, notes). The analysis keeps keywords only, and titles that step down are corrected,
-            on every draft, for free."""
+            """(output, resume, notes). The analysis keeps keywords only, the headline the role only, and titles
+            that step down are corrected, on every draft, for free."""
             validate.clean_analysis(out.jd_analysis)
             resume = validate.build_resume(profile, out)
+            validate.role_only_headline(resume)
             notes = validate.fix_title_regressions(resume)
             return out, resume, notes + validate.role_level_fixes(resume, out.jd_analysis)
 
@@ -223,8 +219,8 @@ async def run_tailor(
             """Ask once to fix the draft if it uses too many figures, round guesses, thin text, leaves must-have
             JD terms out of the summary and bullets, copies the posting's voice, repeats its phrases, repeats a word
             by mistake, copies the posting's sentences or lists its phrases as skills, lists qualities as skills,
-            sounds machine-written, names tools a job could not have used, opens jobs without a measured result,
-            lists skills in the headline, or has job titles that do not read as a career path. The model gets the numbered draft and returns only
+            sounds machine-written, names tools a job could not have used, opens jobs without a measured result, or
+            has job titles that do not read as a career path. The model gets the numbered draft and returns only
             what it changes (a TailorRevision): far less to write than a whole new draft, and everything that was
             fine stays word for word."""
             feedback = []
@@ -318,14 +314,6 @@ async def run_tailor(
                     "Some bullets mention tools that job could not really have used: " + " ".join(era)
                     + " Move each one to a later job where it was common (AI tools only to the one or two most recent "
                     "jobs), or replace it with a tool of that time; keep the same number of bullets per employer."
-                )
-            headline = validate.headline_problems(value[1], value[0].jd_analysis)
-            if headline:
-                feedback.append(
-                    "The headline lists specific skills: " + ", ".join(f"'{part}'" for part in headline[:6]) + ". "
-                    "Rewrite it as the target role and 1-2 broad areas of work joined by ' & ', following the "
-                    "HEADLINE rule (for example 'Data Engineer | Data Platforms & Analytics'): no tools, languages, "
-                    "frameworks or cloud platforms."
                 )
             titles = validate.title_growth_problems(value[1])
             if titles:
