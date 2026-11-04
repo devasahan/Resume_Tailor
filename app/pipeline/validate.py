@@ -951,16 +951,36 @@ def first_bullet_problems(resume: Resume) -> list[str]:
 
 
 # What a draft adds after the role: a domain, areas of work or skills ("AI Engineer | AI Platforms", "Full-Stack
-# Engineer - Payments"). A comma stays: "Director, Engineering" is a role.
+# Engineer - Payments")
 _AFTER_ROLE = re.compile(r"\s*\|.*$|\s+-\s+.*$")
 
 
-def role_only_headline(resume: Resume) -> None:
-    """The headline names the target role only ('Full-Stack Engineer'): what a draft adds after a '|' or a spaced
-    dash goes. Changes the resume in place."""
-    role = _AFTER_ROLE.sub("", resume.headline).strip()
-    if role:
-        resume.headline = role
+# Level words before a role ("Senior Data Engineer"); "Tech Lead" and a bare "Lead" stay
+_LEADING_LEVEL = re.compile(
+    r"^(?:(?:senior|sr|staff|lead|principal|junior|jr|associate|graduate|mid-level|entry-level)\.?\s+)+(?=\S)",
+    re.IGNORECASE,
+)
+
+
+def _without_level(role: str) -> str:
+    """'Senior Data Engineer' -> 'Data Engineer', 'AI Engineer II' -> 'AI Engineer'."""
+    role = _LEADING_LEVEL.sub("", role.strip())
+    match = _ROLE_LEVEL.match(role)
+    return match.group("role") if match else role
+
+
+def short_role_headline(resume: Resume) -> None:
+    """The headline is the role's short, common name, never the posting's full title: what a draft adds after a
+    '|' or a spaced dash goes, and so do brackets, the part after a comma and the level ('Staff Data Engineer,
+    Analytics Infrastructure' -> 'Data Engineer'). A bare role noun takes its function from after the comma
+    ('Manager, Customer Success' -> 'Customer Success Manager'). Changes the resume in place."""
+    text = re.sub(r"\s*\([^)]*\)", "", _AFTER_ROLE.sub("", resume.headline))
+    role, _comma, rest = text.partition(",")
+    role, rest = _without_level(role), _without_level(rest)
+    if len(role.split()) == 1 and rest:
+        role = f"{rest} {role}"
+    if role.strip():
+        resume.headline = role.strip()
 
 
 def _quoted(items: list[str]) -> str:

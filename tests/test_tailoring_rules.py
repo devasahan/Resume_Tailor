@@ -197,7 +197,7 @@ def test_a_run_drops_the_level_number_without_an_extra_call(router, db, registry
     result = asyncio.run(run_tailor(router, db, profile=profile, profile_id=None, jd=jd, model_id="demo-concise"))
     role = result.analysis.target_role.removesuffix(" II")
     assert result.status == "ok" and client.calls == 1 and result.analysis.target_role.endswith(" II")
-    assert result.resume.headline.startswith(role) and " II" not in result.resume.headline
+    assert " II" not in result.resume.headline and "Senior" not in result.resume.headline  # the short role name
     assert result.resume.summary.startswith(role) and " II " not in result.resume.summary
     assert any(n.startswith("Summary: wrote") for n in result.notes)
 

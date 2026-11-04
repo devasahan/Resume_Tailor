@@ -158,33 +158,41 @@ def test_the_title_line_is_larger_but_stays_on_one_line(profile):
     assert headline.runs[0].bold and headline.runs[0].font.size.pt == 12.5
 
 
-# ------------------------------------------------------------------ the headline: the role only
-def test_prompt_asks_for_the_role_only():
+# ------------------------------------------------------------------ the headline: the role's short name
+def test_prompt_asks_for_the_roles_short_name():
     text = tailor_system("estimate")
-    assert 'HEADLINE: the target role only, as the JD names it (for example "Full-Stack Engineer"' in text
-    assert "no domain or areas of work and no skills" in text and "areas of work for this JD" not in text
-    assert "without the hiring company's level number (II, III, L5)" in text  # the level rule stays
+    assert "HEADLINE: the role's short, common name in 2-3 words, never the posting's full job title" in text
+    assert '"Full-Stack Engineer" for "Senior Software Engineer, Full Stack (Payments Platform)"' in text
+    assert "as the JD names it" not in text
+    assert "In the summary, write the target role without the hiring company's level number (II, III, L5)" in text
 
 
-def test_whatever_a_draft_adds_after_the_role_goes(profile):
+def test_a_copied_posting_title_becomes_the_roles_short_name(profile):
     resume = validate.build_resume(profile, make_output())
-    cut = {}
-    for headline in ("AI Engineer | AI Platforms & Applied Machine Learning", "Full-Stack Engineer - Payments",
-                     "Senior Data Engineer | Python | SQL | Airflow", "Director, Engineering", "Full-Stack Engineer"):
+    short = {}
+    for headline in ("Senior Software Engineer, Full Stack (Payments Platform)", "AI Engineer II - Agentic Systems",
+                     "Staff Data Engineer, Analytics Infrastructure", "Manager, Customer Success",
+                     "Senior Full-Stack Engineer (Remote)", "Sr. Software Engineer 3", "Lead Data Engineer",
+                     "Senior Data Engineer | Python | SQL | Airflow", "Tech Lead", "Full-Stack Engineer"):
         resume.headline = headline
-        validate.role_only_headline(resume)
-        cut[headline] = resume.headline
-    assert cut == {
-        "AI Engineer | AI Platforms & Applied Machine Learning": "AI Engineer",
-        "Full-Stack Engineer - Payments": "Full-Stack Engineer",
-        "Senior Data Engineer | Python | SQL | Airflow": "Senior Data Engineer",
-        "Director, Engineering": "Director, Engineering",  # a comma is part of a role
+        validate.short_role_headline(resume)
+        short[headline] = resume.headline
+    assert short == {
+        "Senior Software Engineer, Full Stack (Payments Platform)": "Software Engineer",  # the model writes Full-Stack
+        "AI Engineer II - Agentic Systems": "AI Engineer",
+        "Staff Data Engineer, Analytics Infrastructure": "Data Engineer",
+        "Manager, Customer Success": "Customer Success Manager",  # a bare role noun takes its function
+        "Senior Full-Stack Engineer (Remote)": "Full-Stack Engineer",
+        "Sr. Software Engineer 3": "Software Engineer",
+        "Lead Data Engineer": "Data Engineer",
+        "Senior Data Engineer | Python | SQL | Airflow": "Data Engineer",
+        "Tech Lead": "Tech Lead",  # 'Lead' is the role here, not a level
         "Full-Stack Engineer": "Full-Stack Engineer",
     }
 
 
 class AddsToTheRole(LLMClient):
-    """First draft only: the role followed by three skills."""
+    """First draft only: the posting's level, then three skills."""
 
     def __init__(self, inner):
         self.inner, self.prompts = inner, []
@@ -197,11 +205,11 @@ class AddsToTheRole(LLMClient):
         return result
 
 
-def test_a_draft_headline_keeps_only_the_role_without_a_fix_call(router, db, registry, profile, jd):
+def test_a_draft_headline_keeps_only_the_roles_short_name_without_a_fix_call(router, db, registry, profile, jd):
     plain = asyncio.run(run_tailor(router, db, profile=profile, profile_id=None, jd=jd, model_id="demo-concise"))
-    assert plain.resume.headline == "Senior Data Engineer" and plain.retries == 0
+    assert plain.resume.headline == "Data Engineer" and plain.retries == 0  # the posting asks for a Senior one
     client = AddsToTheRole(FakeClient(registry.get("demo-concise")))
     router.overrides["demo-concise"] = client
     result = asyncio.run(run_tailor(router, db, profile=profile, profile_id=None, jd=jd, model_id="demo-concise"))
     assert result.status == "ok" and result.retries == 0 and len(client.prompts) == 1  # fixed in code, for free
-    assert result.resume.headline == "Senior Data Engineer"
+    assert result.resume.headline == "Data Engineer"

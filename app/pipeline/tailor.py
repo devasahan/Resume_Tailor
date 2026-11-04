@@ -202,11 +202,11 @@ async def run_tailor(
         context = {"profile": profile.model_dump(), "jd": jd, "hints": hints, "bullets": budget, "metrics": metrics_mode}
 
         def build(out: TailorOutput):
-            """(output, resume, notes). The analysis keeps keywords only, the headline the role only, and titles
-            that step down are corrected, on every draft, for free."""
+            """(output, resume, notes). The analysis keeps keywords only, the headline the role's short name, and
+            titles that step down are corrected, on every draft, for free."""
             validate.clean_analysis(out.jd_analysis)
             resume = validate.build_resume(profile, out)
-            validate.role_only_headline(resume)
+            validate.short_role_headline(resume)
             notes = validate.fix_title_regressions(resume)
             return out, resume, notes + validate.role_level_fixes(resume, out.jd_analysis)
 

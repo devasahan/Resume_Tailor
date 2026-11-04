@@ -289,7 +289,7 @@ class FakeClient(LLMClient):
                 for i in range(len(companies))
             ],
             "sections": {
-                "headline": target,
+                "headline": base,
                 "summary": (
                     f"{target} with hands-on experience delivering {k[0]}, {k[1]} and {k[2]} work for product and "
                     f"operations teams in fast-moving organizations. Strong in {k[3]}, {k[4]} and {k[5]}, with a habit of "
