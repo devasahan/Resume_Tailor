@@ -42,6 +42,7 @@ h3 { font-size: 15px; margin: 14px 0 6px; }
 .sub { color: var(--muted); margin: 0 0 18px; max-width: 780px; }
 .page-head .sub { margin: 0; }
 .muted { color: var(--muted); } .small { font-size: 13px; }
+.jd-facts { margin-top: 8px; } .jd-facts:empty { display: none; } .jd-facts .fact { margin: 2px 0; }
 .hidden { display: none !important; }
 @media (max-width: 600px) {
   main { padding: 20px 16px 32px; }

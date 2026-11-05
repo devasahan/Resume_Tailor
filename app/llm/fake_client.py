@@ -45,6 +45,34 @@ ROLE_RE = re.compile(
     r"([A-Z][A-Za-z/&+ -]{1,30}?(?:Engineer|Developer|Analyst|Manager|Designer|Scientist|Architect|"
     r"Consultant|Specialist|Administrator|Coordinator|Director|Accountant|Recruiter|Marketer))\b"
 )
+# The work mode and pay a job post states, read with plain patterns (a real model understands any wording)
+HYBRID_RE = re.compile(r"\bhybrid\b", re.IGNORECASE)
+REMOTE_RE = re.compile(r"\bremote\b(?![- ](?:teams?|customers?|colleagues|users|clients|partners)\b)", re.IGNORECASE)
+ONSITE_RE = re.compile(r"\bon-?site\b|\bin[- ]office\b|\bin the office\b", re.IGNORECASE)
+OFFICE_DAYS_RE = re.compile(r"\b(?:\d|one|two|three|four)\s+days?\s+(?:a|per)\s+week\b[^.;\n]{0,24}", re.IGNORECASE)
+_AMOUNT = r"\d[\d,]*(?:\.\d+)?(?:\s?[kK])?(?!\w)"  # 140,000 or 120k, never the 50 of "$50M"
+_PERIOD = r"\s*(?:per|a|an|/)\s*(?:year|yr|annum|hour|hr)\b"
+SALARY_RE = re.compile(  # a range ("$140,000 - $180,000"), or one amount with its period ("$65 an hour")
+    rf"[$£€]\s?{_AMOUNT}\s?(?:-|–|to)\s?[$£€]?\s?{_AMOUNT}(?:{_PERIOD})?|[$£€]\s?{_AMOUNT}{_PERIOD}"
+)
+
+
+def job_facts(jd: str) -> dict:
+    """{work_mode, work_mode_detail, salary} from plain patterns: hybrid before remote before on-site."""
+    if HYBRID_RE.search(jd):
+        mode = "Hybrid"
+    elif REMOTE_RE.search(jd):
+        mode = "Remote"
+    elif ONSITE_RE.search(jd):
+        mode = "On-site"
+    else:
+        mode = "Not stated"
+    days = OFFICE_DAYS_RE.search(jd) if mode == "Hybrid" else None
+    pay = SALARY_RE.search(jd)
+    return {"work_mode": mode, "work_mode_detail": days.group(0).strip() if days else "",
+            "salary": pay.group(0).strip(" .,") if pay else ""}
+
+
 # Each job's first bullet with estimated figures: the job's biggest win, with its size and its result.
 LEADS = [
     ("Rebuilt the {k1} pipeline behind the main customer workflow for {size}, cutting failed nightly runs by {result} with staged rollouts and clear ownership.",
@@ -190,6 +218,8 @@ class FakeClient(LLMClient):
             data = self._tailor(ctx)
         elif schema_name == "tailor_revision":
             data = self._revise(ctx)
+        elif schema_name == "job_facts":
+            data = job_facts(ctx.get("jd", ""))
         elif schema_name == "cover_letter":
             data = self._cover_letter(ctx)
         elif schema_name == "profile":

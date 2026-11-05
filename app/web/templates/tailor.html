@@ -18,6 +18,7 @@
     <section class="panel">
       <h2 class="card-title"><span class="step-num">2</span><label for="jd">Paste the job description</label></h2>
       <textarea id="jd" placeholder="Paste the full job description here: the title, the duties and the requirements."></textarea>
+      <div class="jd-facts small" id="jd-facts" aria-live="polite"></div>
     </section>
 
     <section class="panel">
@@ -211,6 +212,43 @@ async function create(withLetter, keepResume = false) {
     $('#messages').replaceChildren(notice('bad', err.message));
   }
 }
+
+// Where the pasted job is done and what it pays, read by the AI once the text stops changing
+const FACTS_MIN_CHARS = 200, FACTS_WAIT_MS = 1200;
+let factsTimer = null, factsChecked = '', factsAsked = 0;
+
+function factLine(label, value) {
+  return el('p', { class: 'fact' }, el('strong', { text: `${label}: ` }), value);
+}
+
+async function checkFacts() {
+  const jd = $('#jd').value.trim();
+  if (jd.length < FACTS_MIN_CHARS || jd === factsChecked) return;
+  factsChecked = jd;
+  const asked = ++factsAsked;  // a newer paste wins over an older answer
+  $('#jd-facts').replaceChildren(el('p', { class: 'fact muted', text: 'Checking work mode and salary…' }));
+  try {
+    const facts = await api('/api/job-facts', { method: 'POST', body: { jd } });
+    if (asked !== factsAsked) return;
+    const mode = facts.work_mode + (facts.work_mode !== 'Not stated' && facts.work_mode_detail ? ` (${facts.work_mode_detail})` : '');
+    $('#jd-facts').replaceChildren(factLine('Work mode', mode), factLine('Salary', facts.salary || 'Not stated'));
+  } catch (err) {
+    if (asked !== factsAsked) return;
+    factsChecked = '';  // the next change tries again
+    $('#jd-facts').replaceChildren(el('p', { class: 'fact muted', text: `Could not check the work mode and salary. ${err.message}` }));
+  }
+}
+
+$('#jd').addEventListener('input', () => {
+  clearTimeout(factsTimer);
+  if ($('#jd').value.trim().length < FACTS_MIN_CHARS) {  // emptied or too short: nothing to show
+    factsAsked += 1; factsChecked = '';
+    $('#jd-facts').replaceChildren();
+    return;
+  }
+  factsTimer = setTimeout(checkFacts, FACTS_WAIT_MS);
+});
+if ($('#jd').value.trim()) factsTimer = setTimeout(checkFacts, FACTS_WAIT_MS);  // text the browser restored
 
 $('#create').addEventListener('click', () => create(true));
 $('#resume-only').addEventListener('click', () => create(false));

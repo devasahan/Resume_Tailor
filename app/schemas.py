@@ -130,6 +130,13 @@ class CoverLetterOut(BaseModel):
     closing: str
 
 
+class JobFacts(BaseModel):
+    """What a pasted job post says about where the job is done and what it pays, as the AI reads it."""
+    work_mode: Literal["Remote", "Hybrid", "On-site", "Not stated"]
+    work_mode_detail: str  # "3 days a week in office", "US only"; "" when the post says nothing more
+    salary: str  # as written, with currency and period: "$140,000 - $180,000 a year"; "" when not stated
+
+
 # ---------------------------------------------------------------- merged document
 class ResumeExperience(BaseModel):
     company_index: int  # index into Resume.profile.companies

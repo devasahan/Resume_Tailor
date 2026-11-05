@@ -104,7 +104,7 @@ async def read_resume(
             notes.append(f"The model could not parse the resume ({str(exc)[:160]}). Used the rule-based parser instead.")
         except CostCapError as exc:
             notes.append(f"{str(exc)[:200]} Used the rule-based parser instead.")
-        _record_cost(db, model_id, outcome, user_id)
+        record_cost(db, model_id, outcome, user_id)
     if profile is None:
         profile = parse_resume_text(text)
     return profile, method, notes
@@ -118,7 +118,8 @@ async def parse_resume(
     return profile, method, notes + profile_warnings(profile)
 
 
-def _record_cost(db: Database, model_id: str, outcome: Outcome, user_id: int | None = None) -> None:
+def record_cost(db: Database, model_id: str, outcome: Outcome, user_id: int | None = None, task: str = "parse") -> None:
+    """A row with what a model call outside a tailoring run cost, so the daily cost cap counts it."""
     if not outcome.input_tokens and not outcome.output_tokens:
         return
     record = TailorResult(
@@ -126,4 +127,4 @@ def _record_cost(db: Database, model_id: str, outcome: Outcome, user_id: int | N
         input_tokens=outcome.input_tokens, output_tokens=outcome.output_tokens,
         cost_usd=round(outcome.cost_usd, 6), attempts=outcome.attempts, fallback_chain=outcome.chain,
     )
-    db.save_run(record, None, "", task="parse", user_id=user_id)
+    db.save_run(record, None, "", task=task, user_id=user_id)

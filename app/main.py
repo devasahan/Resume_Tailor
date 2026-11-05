@@ -13,6 +13,7 @@ import re
 import secrets
 import unicodedata
 import time
+from collections import OrderedDict
 from datetime import timedelta
 from pathlib import Path
 from urllib.parse import quote, urlsplit
@@ -25,11 +26,13 @@ from pydantic import BaseModel, Field
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from . import auth, config
-from .llm.base import LLMError
+from .llm.base import CostCapError, LLMError
 from .llm.registry import ModelSpec, Registry
 from .llm.router import Router
 from .parsing.resume_parser import MAX_BYTES, extract_text, parse_resume, profile_warnings, read_resume
 from .pipeline import validate
+from .pipeline.generate import GenerationFailed
+from .pipeline.job_facts import check_job_facts
 from .prompts import METRICS_MODES
 from .pipeline.tailor import analysis_terms, fit_report, run_checks, run_tailor, write_cover_letter
 from .render.docx import cover_docx, resume_docx
@@ -54,6 +57,13 @@ DOCX = "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
 
 
 # ------------------------------------------------------------------ request bodies
+class JobFactsRequest(BaseModel):
+    jd: str = Field(min_length=40, max_length=20000)
+
+
+FACTS_CACHE_SIZE = 200  # answers kept by job-post text, so pasting the same post again costs nothing
+
+
 class TailorRequest(BaseModel):
     jd: str = Field(min_length=40, max_length=20000)
     profile_id: int | None = None  # which uploaded resume; None = the newest one
@@ -775,6 +785,31 @@ def create_app(db: Database | None = None, registry: Registry | None = None, rou
         if not db.delete_profile(profile_id, user_id=user.id):
             raise HTTPException(404, "Resume not found.")
         return {"deleted": True}
+
+    # ------------------------------------------------------------------ work mode and salary of a pasted job post
+    facts_cache: OrderedDict[str, dict] = OrderedDict()
+
+    @app.post("/api/job-facts")
+    async def api_job_facts(body: JobFactsRequest, user: auth.User = Depends(current_user)):
+        """Where the pasted job is done and what it pays, as the AI reads the job post (shown under the job box)."""
+        key = hashlib.sha256(body.jd.strip().encode("utf-8")).hexdigest()
+        if key in facts_cache:
+            facts_cache.move_to_end(key)
+            return facts_cache[key]
+        try:
+            facts = await check_job_facts(router, db, body.jd, user_id=user.id)
+        except LookupError as exc:
+            raise HTTPException(422, str(exc) if user.is_admin else public_error(str(exc))) from exc
+        except CostCapError as exc:
+            raise HTTPException(429, str(exc) if user.is_admin else public_error(str(exc))) from exc
+        except TimeoutError as exc:
+            raise HTTPException(504, "The check took too long. Try again in a minute.") from exc
+        except (GenerationFailed, LLMError) as exc:
+            raise HTTPException(502, "The check did not work this time. Try again in a minute.") from exc
+        facts_cache[key] = facts.model_dump()
+        while len(facts_cache) > FACTS_CACHE_SIZE:
+            facts_cache.popitem(last=False)
+        return facts_cache[key]
 
     # ------------------------------------------------------------------ tailor
     @app.post("/api/tailor")

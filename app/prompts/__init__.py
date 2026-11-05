@@ -11,7 +11,7 @@ from pathlib import Path
 from ..pipeline.facts import bullet_caps, experience_before, months_phrase, stay_months
 from ..schemas import CareerStep, Company, JDAnalysis, Resume
 
-PROMPT_VERSION = "v24"
+PROMPT_VERSION = "v25"
 RETRY_MARKER = "Your previous answer was rejected"
 
 _DIR = Path(__file__).parent
@@ -138,6 +138,14 @@ def parse_system() -> str:
 
 def parse_user(resume_text: str) -> str:
     return f"<resume_text>\n{resume_text.strip()}\n</resume_text>"
+
+
+def job_facts_system() -> str:
+    return _read("job_facts_system.md")
+
+
+def job_facts_user(jd: str) -> str:
+    return f"<job_description>\n{jd.strip()}\n</job_description>"
 
 
 def retry_suffix(error: str) -> str:
