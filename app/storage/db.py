@@ -11,14 +11,19 @@ import json
 import logging
 import sqlite3
 import os
+import sys
 from contextlib import contextmanager
 from datetime import datetime, time, timedelta, timezone, tzinfo
 from functools import lru_cache
 from pathlib import Path
+from time import perf_counter
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from .. import config
 from ..schemas import Profile, TailorResult
+
+log = logging.getLogger(__name__)  # under "app": its INFO lines reach the server log (main.show_app_log)
+SLOW_DB_SECONDS = 0.5  # a database step this slow is named in the server log (network storage, a lock held elsewhere)
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value TEXT NOT NULL);
@@ -186,6 +191,13 @@ class Database:
 
     @contextmanager
     def _conn(self):
+        """One connection per step. A step that takes SLOW_DB_SECONDS or more is named in the server log, by the
+        method that asked for it (the frame behind contextmanager's __enter__)."""
+        began = perf_counter()
+        try:
+            caller = sys._getframe(2).f_code.co_name
+        except ValueError:  # called from the top of the stack
+            caller = "?"
         conn = sqlite3.connect(self.path, timeout=15)
         conn.row_factory = sqlite3.Row
         try:
@@ -193,6 +205,9 @@ class Database:
             conn.commit()
         finally:
             conn.close()
+            took = perf_counter() - began
+            if took >= SLOW_DB_SECONDS:
+                log.info("slow database step %s: %.1fs", caller, took)
 
     # ------------------------------------------------------------------ settings
     def get_settings(self) -> dict:

@@ -25,7 +25,7 @@ from fastapi.templating import Jinja2Templates
 from pydantic import BaseModel, Field
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
-from . import auth, config
+from . import auth, config, timing
 from .llm.base import CostCapError, LLMError
 from .llm.registry import ModelSpec, Registry
 from .llm.router import Router
@@ -34,10 +34,22 @@ from .pipeline import validate
 from .pipeline.generate import GenerationFailed
 from .pipeline.job_facts import check_job_facts
 from .prompts import METRICS_MODES
+from .prompts import read_all as read_prompt_files
 from .pipeline.tailor import analysis_terms, fit_report, run_checks, run_tailor, write_cover_letter
 from .render.docx import cover_docx, resume_docx
 from .render.pdf import person_name, render_cover_pdf, render_resume_pdf
-from .schemas import ExperienceOut, Profile, SkillGroup, TailoredSections, TailorOutput, TailorResult
+from .schemas import (
+    Company,
+    ExperienceOut,
+    FitStyle,
+    Profile,
+    Resume,
+    ResumeExperience,
+    SkillGroup,
+    TailoredSections,
+    TailorOutput,
+    TailorResult,
+)
 from .storage.db import Database
 
 WEB = Path(__file__).parent / "web"
@@ -125,10 +137,10 @@ _TECHNICAL = (
 # in the background and the page asks GET /api/jobs/{id} every few seconds until it ends. While it runs, the job
 # writes a heartbeat; a restart (Reload) ends the process without warning, and the missing heartbeat tells the page.
 JOB_WAIT_SECONDS = 20.0
-# On PythonAnywhere the web app runs without thread support, so a job (on the event-loop thread) moves only while some
-# request is being answered. A check on a running job therefore waits up to this long for it to end: the job runs
-# while the page waits, instead of only in the moment each quick check takes. Under the POST's 20 s, so no proxy
-# times out.
+# On PythonAnywhere work done while no request is open runs slowly or not at all: the Web-tab server (uWSGI) has no
+# thread support, and on the uvicorn site the log showed steps after the first 20 s taking 3-4 times longer. A check on
+# a running job therefore waits up to this long for it to end, so the job runs while a request is open. Under the
+# POST's 20 s, so no proxy times out.
 JOB_POLL_WAIT_SECONDS = 15.0
 JOB_BEAT_SECONDS = 15.0
 JOB_LOST_SECONDS = 90.0  # no heartbeat for this long: the process that ran the job is gone
@@ -253,6 +265,50 @@ def show_app_log() -> None:
 HTTPS_PROBE = "rt_https"  # a Secure cookie: browsers send it only over https://
 log = logging.getLogger("resume_tailor")
 timing_log = logging.getLogger(__name__)  # under "app": its INFO lines reach the server log (show_app_log)
+
+
+def warm_up() -> None:
+    """Do the first tailoring's one-time work when the server starts: read the prompt files, and lay out a small
+    made-up resume as a PDF, which loads the font code and the three fonts. On a host's network storage that is slow
+    the first time (PythonAnywhere). Called by the server entry points (app/asgi.py, app/wsgi.py); a failure is
+    logged and never keeps the site from starting."""
+    began = time.perf_counter()
+    try:
+        prompt_files = read_prompt_files()
+        sample = Resume(
+            profile=Profile(name="Sample Person", companies=[Company(name="Sample Company", start="Jan 2020", end="Present")]),
+            headline="Software Engineer", summary="Builds reliable web services.",
+            skills=[SkillGroup(category="Languages", skills=["Python"])],
+            experience=[ResumeExperience(company_index=0, job_title="Software Engineer",
+                                         bullets=["Built a sample service used by 1,000 people, cutting load time by 20%."])],
+        )
+        render_resume_pdf(sample, FitStyle())
+    except Exception:
+        log.exception("Warm-up failed; the first tailoring will do this work instead")
+        return
+    timing_log.info("warm-up done in %.1fs (%d prompt files, the fonts and the page layout code)",
+                    time.perf_counter() - began, prompt_files)
+SLOW_REQUEST_SECONDS = 2.0  # a request this slow is named in the server log, with its time
+
+
+class SlowRequestLog:
+    """Names each request that took SLOW_REQUEST_SECONDS or more in the server log (method, path and seconds; the
+    path holds at most a numeric id). Job checks (/api/jobs/...) are left out: they wait for the job on purpose."""
+
+    def __init__(self, app) -> None:
+        self.app = app
+
+    async def __call__(self, scope, receive, send) -> None:
+        if scope["type"] != "http":
+            await self.app(scope, receive, send)
+            return
+        began = time.perf_counter()
+        try:
+            await self.app(scope, receive, send)
+        finally:
+            took = time.perf_counter() - began
+            if took >= SLOW_REQUEST_SECONDS and not scope["path"].startswith("/api/jobs/"):
+                timing_log.info("slow request %s %s: %.1fs", scope["method"], scope["path"], took)
 _proxy_logged = False
 
 
@@ -410,6 +466,8 @@ def create_app(db: Database | None = None, registry: Registry | None = None, rou
             )
         return response
 
+    app.add_middleware(SlowRequestLog)  # added last, so it is the outermost: it times the whole request
+
     @app.exception_handler(StarletteHTTPException)
     async def http_error(request: Request, exc: StarletteHTTPException):
         """Users get plain messages; the admin keeps the technical detail (model, key hint, Settings advice)."""
@@ -461,8 +519,9 @@ def create_app(db: Database | None = None, registry: Registry | None = None, rou
             task.exception()  # retrieved, so asyncio does not warn; run() has recorded it already
 
     async def answer_soon(user: auth.User, kind: str, work):
-        """The run work() makes, if it is ready within JOB_WAIT_SECONDS. Otherwise 202 {"job", "status":
-        "running"}: the work goes on, and GET /api/jobs/{job} gives the same answer once it ends."""
+        """The run work(steps) makes, if it is ready within JOB_WAIT_SECONDS. Otherwise 202 {"job", "status":
+        "running"}: the work goes on, and GET /api/jobs/{job} gives the same answer once it ends. The work marks its
+        steps, and the server log gets one line with each step's time and the CPU used (see app/timing.py)."""
         job_id = secrets.token_urlsafe(16)
         db.create_job(job_id, user.id, kind)
 
@@ -472,9 +531,10 @@ def create_app(db: Database | None = None, registry: Registry | None = None, rou
                 db.touch_job(job_id)
 
         async def run() -> TailorResult:
+            steps, cpu = timing.Steps(), timing.cpu_now()
             beating, started = asyncio.create_task(beat()), time.perf_counter()
             try:
-                result = await work()
+                result = await work(steps)
             except JobFailed as exc:
                 db.finish_job(job_id, run_id=None, error=str(exc))
                 raise
@@ -487,7 +547,8 @@ def create_app(db: Database | None = None, registry: Registry | None = None, rou
                 raise
             finally:
                 beating.cancel()
-                timing_log.info("%s job finished in %.1fs", kind, time.perf_counter() - started)
+                timing_log.info("%s job finished in %.1fs: %s", kind, time.perf_counter() - started,
+                                timing.report(steps, cpu))
             if not db.finish_job(job_id, run_id=result.run_id) and kind == "tailor" and result.run_id is not None:
                 db.delete_run(result.run_id)  # the account (or all data) was deleted meanwhile: keep nothing of it
             return result
@@ -848,10 +909,11 @@ def create_app(db: Database | None = None, registry: Registry | None = None, rou
                     cover_model = chosen
                 except LLMError:
                     cover_model = None
-        return await answer_soon(user, "tailor", lambda: run_tailor(
+        return await answer_soon(user, "tailor", lambda steps: run_tailor(
             router, db, profile=profile, profile_id=profile_id, jd=body.jd, hints=body.hints, model_id=model_id,
             allow_fallback=not compare, cover_letter=body.cover_letter, cover_model_id=cover_model,
             company_name=body.company_name.strip(), hiring_manager=body.hiring_manager.strip(), user_id=user.id,
+            steps=steps,
         ))
 
     @app.get("/api/jobs/{job_id}")
@@ -939,8 +1001,9 @@ def create_app(db: Database | None = None, registry: Registry | None = None, rou
         except LLMError as exc:
             raise HTTPException(422, str(exc)) from exc
 
-        async def work() -> TailorResult:
-            fresh, error = await write_cover_letter(router, db, run_id, jd=jd, model_id=model_id, user_id=user.id)
+        async def work(steps: timing.Steps) -> TailorResult:
+            fresh, error = await write_cover_letter(router, db, run_id, jd=jd, model_id=model_id, user_id=user.id,
+                                                    steps=steps)
             if error:
                 raise JobFailed(error)
             return fresh

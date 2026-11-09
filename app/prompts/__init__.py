@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import re
 from datetime import date
+from functools import cache
 from pathlib import Path
 
 from ..pipeline.facts import bullet_caps, experience_before, months_phrase, stay_months
@@ -25,8 +26,19 @@ SHORTEN_NOTE = (
 )
 
 
+@cache
 def _read(name: str) -> str:
+    """A prompt file, read once per process: the files change only with a deploy, which restarts the app, and on a
+    host's network storage each read can be slow."""
     return (_DIR / name).read_text(encoding="utf-8")
+
+
+def read_all() -> int:
+    """Read every prompt file now (when the server starts, see main.warm_up). Returns how many there are."""
+    names = sorted(path.name for path in _DIR.glob("*.md"))
+    for name in names:
+        _read(name)
+    return len(names)
 
 
 def _fill(template: str, **values: str) -> str:

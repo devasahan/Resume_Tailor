@@ -10,7 +10,10 @@ import threading
 
 from a2wsgi import ASGIMiddleware
 
-from .main import create_app, show_app_log
+from .main import create_app, show_app_log, warm_up
+
+show_app_log()
+warm_up()  # the first tailoring's one-time work, at import: forked workers start with it done (it starts no thread)
 
 _bridge: ASGIMiddleware | None = None
 _bridge_pid = 0

@@ -30,6 +30,7 @@ from ..schemas import (
     TailorRevision,
 )
 from ..storage.db import Database
+from ..timing import Steps
 from . import validate
 from .facts import candidate_facts
 from .fit import (
@@ -180,8 +181,10 @@ async def run_tailor(
     hiring_manager: str = "",
     save: bool = True,
     user_id: int | None = None,
+    steps: Steps | None = None,
 ) -> TailorResult:
-    started = time.perf_counter()
+    """`steps` (optional) gets a mark at the end of each step, for the job's timing line in the server log."""
+    started, steps = time.perf_counter(), steps or Steps()
     settings = router.settings()
     paper = settings["paper_size"]
     metrics_mode = settings.get("metrics_mode", "estimate")
@@ -193,12 +196,20 @@ async def run_tailor(
     )
     outcome: Outcome = Outcome()
     notes: list[str] = []
+    steps.mark("setup")
 
     try:
         chain = router.chain(model_id, allow_fallback)
         schema = strict_json_schema(TailorOutput)
         revision_schema = strict_json_schema(TailorRevision)
-        budget = await asyncio.to_thread(bullet_budget, profile, paper, today)  # bullets per employer that fit
+        steps.mark("models")
+
+        def plan_bullets() -> list[int]:
+            steps.mark("thread wait")  # from the request for a worker thread until this line runs in it
+            return bullet_budget(profile, paper, today)
+
+        budget = await asyncio.to_thread(plan_bullets)  # bullets per employer that fit
+        steps.mark("bullet plan")
         context = {"profile": profile.model_dump(), "jd": jd, "hints": hints, "bullets": budget, "metrics": metrics_mode}
 
         def build(out: TailorOutput):
@@ -343,16 +354,20 @@ async def run_tailor(
                 context={**context, "draft": resume.model_dump(exclude={"profile"})},  # read only by the demo models
             )
 
+        system_prompt = tailor_system(metrics_mode)
+        user_prompt = tailor_user(jd, profile.companies, hints, facts, bullets=budget, today=today)
+        steps.mark("prompts")
         await generate_validated(
-            router, chain, system=tailor_system(metrics_mode),
-            user=tailor_user(jd, profile.companies, hints, facts, bullets=budget, today=today),
+            router, chain, system=system_prompt, user=user_prompt,
             schema=schema, schema_name="tailor_output", parse=parse, context=context, outcome=outcome,
             refine=refine,
         )
+        steps.mark("AI")
         output, resume, title_notes = outcome.value  # type: ignore[misc]
 
         # --- fit two pages at most: pick the style -> ask once more with a smaller bullet budget -> trim bullets
         fit = await asyncio.to_thread(try_styles, resume, paper)
+        steps.mark("layout")
         if fit is None:
             second = Outcome()
             smaller = smaller_budget(budget)
@@ -373,6 +388,7 @@ async def run_tailor(
             except GenerationFailed as exc:
                 _absorb(outcome, exc.outcome)
                 notes.append("Asking the model for shorter bullets failed, so the text was trimmed instead.")
+            steps.mark("shorter draft")
         if fit:
             style, pages, _pdf, fit_notes = fit
             notes += fit_notes
@@ -381,6 +397,7 @@ async def run_tailor(
             resume, style, pages, _pdf, trim_notes = await asyncio.to_thread(trim_to_fit, resume, paper)
             notes += trim_notes
             fits = pages <= MAX_PAGES
+            steps.mark("trimming")
 
         if outcome.input_tokens == 0 and outcome.output_tokens == 0:
             try:
@@ -404,9 +421,10 @@ async def run_tailor(
             await _cover_letter(
                 router, result, outcome, notes, jd=jd, hints=hints,
                 company_name=company_name or output.jd_analysis.company, hiring_manager=hiring_manager,
-                model_id=cover_model_id or outcome.final_model_id, allow_fallback=allow_fallback,
+                model_id=cover_model_id or outcome.final_model_id, allow_fallback=allow_fallback, steps=steps,
             )
         run_checks(result, jd)
+        steps.mark("checks")
     except GenerationFailed as exc:
         if exc.outcome is not outcome:
             _absorb(outcome, exc.outcome)
@@ -416,6 +434,8 @@ async def run_tailor(
     except Exception as exc:  # never let one model's failure break a compare run
         log.exception("Unexpected error while tailoring with %s", model_id)
         result.status, result.error = "error", f"Unexpected error: {type(exc).__name__}: {str(exc)[:300]}"
+    if result.status != "ok":
+        steps.mark("until it failed")
 
     result.notes = notes
     result.attempts = outcome.attempts
@@ -427,16 +447,18 @@ async def run_tailor(
     result.latency_ms = int((time.perf_counter() - started) * 1000)
     if save:
         db.save_run(result, profile_id, jd_hash(jd), user_id=user_id)
+        steps.mark("saving")
     return result
 
 
 async def _cover_letter(
     router: Router, result: TailorResult, outcome: Outcome, notes: list[str], *, jd: str, hints: str,
-    company_name: str, hiring_manager: str, model_id: str, allow_fallback: bool,
+    company_name: str, hiring_manager: str, model_id: str, allow_fallback: bool, steps: Steps | None = None,
 ) -> str | None:
     """Write result.cover_letter from the final resume. Returns None, or the reason no letter was written (also
     added to notes). A cost-cap stop here leaves the resume intact instead of failing the whole run."""
     assert result.resume is not None and result.analysis is not None
+    steps = steps or Steps()
     resume = result.resume
 
     def parse(data: dict) -> CoverLetter:
@@ -449,16 +471,21 @@ async def _cover_letter(
 
     second = Outcome()
     try:
+        chain = router.chain(model_id, allow_fallback)
+        system_prompt = cover_system()
+        user_prompt = cover_user(jd, resume, result.analysis.target_role, company_name, hiring_manager, hints)
+        schema = strict_json_schema(CoverLetterOut)
+        steps.mark("cover prompts")
         await generate_validated(
-            router, router.chain(model_id, allow_fallback), system=cover_system(),
-            user=cover_user(jd, resume, result.analysis.target_role, company_name, hiring_manager, hints),
-            schema=strict_json_schema(CoverLetterOut), schema_name="cover_letter", parse=parse,
+            router, chain, system=system_prompt, user=user_prompt,
+            schema=schema, schema_name="cover_letter", parse=parse,
             context={
                 "company_name": company_name, "hiring_manager": hiring_manager,
                 "target_role": result.analysis.target_role, "keywords": result.analysis.keywords,
             },
             outcome=second,
         )
+        steps.mark("cover AI")
         _absorb(outcome, second)
         result.cover_letter = second.value
         return None
@@ -468,28 +495,33 @@ async def _cover_letter(
     except CostCapError as exc:
         _absorb(outcome, second)
         message = f"Cover letter not written: {str(exc)[:200]}"
+    steps.mark("cover AI failed")
     notes.append(message)
     return message
 
 
 async def write_cover_letter(
-    router: Router, db: Database, run_id: int, *, jd: str, model_id: str, user_id: int | None = None
+    router: Router, db: Database, run_id: int, *, jd: str, model_id: str, user_id: int | None = None,
+    steps: Steps | None = None,
 ) -> tuple[TailorResult, str | None]:
     """Write (or rewrite) the cover letter of a saved run.
 
     Returns (updated run, error). The caller has checked that the run exists and has a resume and analysis.
     The spend is saved as its own row dated today (task 'cover_letter'), so the daily cost cap counts it even
     when the run itself is from an earlier day; the run only shows it in cover_cost_usd. The run is read again
-    before saving so that edits made on the Review page in the meantime are kept.
+    before saving so that edits made on the Review page in the meantime are kept. `steps` (optional) gets a mark at
+    the end of each step, for the job's timing line in the server log.
     """
+    steps = steps or Steps()
     base = db.get_run(run_id)
     assert base is not None and base.resume is not None and base.analysis is not None
     base.cover_letter = None
     outcome, notes, started = Outcome(), [], time.perf_counter()
+    steps.mark("reading the run")
     error = await _cover_letter(
         router, base, outcome, notes, jd=jd, hints=base.hints,
         company_name=base.company_name or base.analysis.company, hiring_manager="",
-        model_id=model_id, allow_fallback=True,
+        model_id=model_id, allow_fallback=True, steps=steps,
     )
     if outcome.attempts:
         db.save_run(TailorResult(
@@ -500,6 +532,7 @@ async def write_cover_letter(
             notes=[f"Cover letter for run {run_id}."],
         ), None, "", task="cover_letter", user_id=user_id)
     fresh = db.get_run(run_id) or base
+    steps.mark("cost record")
     if base.cover_letter is not None:
         fresh.cover_letter = base.cover_letter  # replaces any earlier letter
     fresh.cover_cost_usd = round(fresh.cover_cost_usd + outcome.cost_usd, 6)
@@ -508,5 +541,7 @@ async def write_cover_letter(
     if not fresh.jd:
         fresh.jd = jd
     run_checks(fresh, jd)  # recomputes all flags, so cover-letter flags are never duplicated
+    steps.mark("checks")
     db.update_run(fresh)
+    steps.mark("saving")
     return fresh, error
