@@ -21,6 +21,7 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from .. import config
 from ..schemas import Profile, TailorResult
+from ..timing import DATABASE
 
 log = logging.getLogger(__name__)  # under "app": its INFO lines reach the server log (main.show_app_log)
 SLOW_DB_SECONDS = 0.5  # a database step this slow is named in the server log (network storage, a lock held elsewhere)
@@ -191,8 +192,9 @@ class Database:
 
     @contextmanager
     def _conn(self):
-        """One connection per step. A step that takes SLOW_DB_SECONDS or more is named in the server log, by the
-        method that asked for it (the frame behind contextmanager's __enter__)."""
+        """One connection per step. Every step is counted for the job lines (app/timing.py), and one that takes
+        SLOW_DB_SECONDS or more is named in the server log, by the method that asked for it (the frame behind
+        contextmanager's __enter__)."""
         began = perf_counter()
         try:
             caller = sys._getframe(2).f_code.co_name
@@ -206,6 +208,7 @@ class Database:
         finally:
             conn.close()
             took = perf_counter() - began
+            DATABASE.add(took)
             if took >= SLOW_DB_SECONDS:
                 log.info("slow database step %s: %.1fs", caller, took)
 

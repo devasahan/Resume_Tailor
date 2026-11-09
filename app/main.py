@@ -268,10 +268,11 @@ timing_log = logging.getLogger(__name__)  # under "app": its INFO lines reach th
 
 
 def warm_up() -> None:
-    """Do the first tailoring's one-time work when the server starts: read the prompt files, and lay out a small
-    made-up resume as a PDF, which loads the font code and the three fonts. On a host's network storage that is slow
-    the first time (PythonAnywhere). Called by the server entry points (app/asgi.py, app/wsgi.py); a failure is
-    logged and never keeps the site from starting."""
+    """Do the first tailoring's one-time work when the server starts: read the prompt files (kept in memory), and lay
+    out a small made-up resume as a PDF, which loads the font and page-layout code and brings the font files into the
+    system's file cache (fpdf2 still reads and parses them for every layout; the job lines count those loads). On a
+    host's network storage that is slow the first time (PythonAnywhere). Called by the server entry points
+    (app/asgi.py, app/wsgi.py); a failure is logged and never keeps the site from starting."""
     began = time.perf_counter()
     try:
         prompt_files = read_prompt_files()
@@ -286,14 +287,15 @@ def warm_up() -> None:
     except Exception:
         log.exception("Warm-up failed; the first tailoring will do this work instead")
         return
-    timing_log.info("warm-up done in %.1fs (%d prompt files, the fonts and the page layout code)",
+    timing_log.info("warm-up done in %.1fs (%d prompt files, the font and page layout code)",
                     time.perf_counter() - began, prompt_files)
 SLOW_REQUEST_SECONDS = 2.0  # a request this slow is named in the server log, with its time
 
 
 class SlowRequestLog:
-    """Names each request that took SLOW_REQUEST_SECONDS or more in the server log (method, path and seconds; the
-    path holds at most a numeric id). Job checks (/api/jobs/...) are left out: they wait for the job on purpose."""
+    """Names each request that took SLOW_REQUEST_SECONDS or more in the server log: its method, its route as the app
+    declares it (/api/runs/{run_id}/resume.pdf, never the address the browser sent, which could hold anything) and
+    its seconds. Job checks (/api/jobs/...) are left out: they wait for the job on purpose."""
 
     def __init__(self, app) -> None:
         self.app = app
@@ -308,7 +310,8 @@ class SlowRequestLog:
         finally:
             took = time.perf_counter() - began
             if took >= SLOW_REQUEST_SECONDS and not scope["path"].startswith("/api/jobs/"):
-                timing_log.info("slow request %s %s: %.1fs", scope["method"], scope["path"], took)
+                route = getattr(scope.get("route"), "path", None) or "(no route)"  # set by the router it went to
+                timing_log.info("slow request %s %s: %.1fs", scope["method"], route, took)
 _proxy_logged = False
 
 
@@ -531,10 +534,17 @@ def create_app(db: Database | None = None, registry: Registry | None = None, rou
                 db.touch_job(job_id)
 
         async def run() -> TailorResult:
-            steps, cpu = timing.Steps(), timing.cpu_now()
-            beating, started = asyncio.create_task(beat()), time.perf_counter()
+            before, steps = timing.snapshot(), timing.Steps()
+            beating = asyncio.create_task(beat())
             try:
-                result = await work(steps)
+                try:
+                    result = await work(steps)
+                except BaseException:
+                    steps.mark("until it failed")  # from the last step the work finished to where it stopped
+                    raise
+                finally:  # before the job's own bookkeeping below, so the steps add up to the time logged
+                    beating.cancel()
+                    timing_log.info("%s job finished in %.1fs: %s", kind, steps.total(), timing.report(steps, before))
             except JobFailed as exc:
                 db.finish_job(job_id, run_id=None, error=str(exc))
                 raise
@@ -545,10 +555,6 @@ def create_app(db: Database | None = None, registry: Registry | None = None, rou
                 log.exception("Background %s failed", kind)
                 db.finish_job(job_id, run_id=None, error=f"Unexpected error: {type(exc).__name__}")
                 raise
-            finally:
-                beating.cancel()
-                timing_log.info("%s job finished in %.1fs: %s", kind, time.perf_counter() - started,
-                                timing.report(steps, cpu))
             if not db.finish_job(job_id, run_id=result.run_id) and kind == "tailor" and result.run_id is not None:
                 db.delete_run(result.run_id)  # the account (or all data) was deleted meanwhile: keep nothing of it
             return result

@@ -472,9 +472,10 @@ async def _cover_letter(
     second = Outcome()
     try:
         chain = router.chain(model_id, allow_fallback)
+        schema = strict_json_schema(CoverLetterOut)
+        steps.mark("cover models")
         system_prompt = cover_system()
         user_prompt = cover_user(jd, resume, result.analysis.target_role, company_name, hiring_manager, hints)
-        schema = strict_json_schema(CoverLetterOut)
         steps.mark("cover prompts")
         await generate_validated(
             router, chain, system=system_prompt, user=user_prompt,
@@ -531,8 +532,9 @@ async def write_cover_letter(
             fallback_chain=outcome.chain, latency_ms=int((time.perf_counter() - started) * 1000),
             notes=[f"Cover letter for run {run_id}."],
         ), None, "", task="cover_letter", user_id=user_id)
-    fresh = db.get_run(run_id) or base
     steps.mark("cost record")
+    fresh = db.get_run(run_id) or base
+    steps.mark("reading the run again")
     if base.cover_letter is not None:
         fresh.cover_letter = base.cover_letter  # replaces any earlier letter
     fresh.cover_cost_usd = round(fresh.cover_cost_usd + outcome.cost_usd, 6)

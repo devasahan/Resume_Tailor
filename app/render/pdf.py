@@ -11,6 +11,7 @@ and never leaves a section heading or a job title alone at the bottom of a page.
 from __future__ import annotations
 
 import re
+import time
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -18,6 +19,7 @@ from fpdf import FPDF
 from fpdf.enums import XPos, YPos
 
 from ..schemas import Company, Contact, CoverLetter, FitStyle, Resume
+from ..timing import FONTS
 
 FONT_DIR = Path(__file__).parent / "fonts"
 FAMILY = "Carlito"
@@ -94,9 +96,11 @@ class Sheet:
         pdf.set_auto_page_break(False)  # pagination is handled here so a line is never split in two
         pdf.set_margins(margin, margin, margin)
         pdf.c_margin = 0  # no inner padding: widths measured here are the widths drawn
+        began = time.perf_counter()  # fpdf2 reads and parses the three font files again for every sheet
         pdf.add_font(FAMILY, "", str(FONT_DIR / "Carlito-Regular.ttf"))
         pdf.add_font(FAMILY, "B", str(FONT_DIR / "Carlito-Bold.ttf"))
         pdf.add_font(FAMILY, "I", str(FONT_DIR / "Carlito-Italic.ttf"))
+        FONTS.add(time.perf_counter() - began)  # counted for the job lines (app/timing.py)
         pdf.set_title(title)
         pdf.set_author(author)
         try:
