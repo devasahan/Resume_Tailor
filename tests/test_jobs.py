@@ -2,6 +2,7 @@
 hosting proxy's time limit ("Gateway Time-out" on PythonAnywhere) never cuts the work off."""
 import sqlite3
 import threading
+import time
 from wsgiref.simple_server import make_server
 
 import httpx
@@ -30,6 +31,7 @@ def browsers(tmp_path, monkeypatch):
     """The admin's and a user's browser on one running app (the work goes on between requests), with every job
     too slow to answer at once."""
     monkeypatch.setattr(main, "JOB_WAIT_SECONDS", 0)
+    monkeypatch.setattr(main, "JOB_POLL_WAIT_SECONDS", 0)  # each check answers at once (the tests below wait)
     db = Database(tmp_path / "jobs.db")
     db.set_settings({"parser_model": "rules"})
     with TestClient(create_app(db=db)) as admin:
@@ -137,6 +139,30 @@ def test_a_job_running_here_keeps_beating_and_is_never_reported_lost(browsers, m
     else:
         raise AssertionError("the job never wrote a heartbeat")
     assert answer(admin, started).json()["status"] == "ok"
+
+
+def test_a_check_waits_for_a_job_running_here_so_it_never_crawls(browsers, monkeypatch):
+    """On PythonAnywhere a job moves only while some request is answered: one check holds its request open until
+    the job ends, instead of the job advancing only in the moment each quick check takes."""
+    admin, _user, _db = browsers
+    monkeypatch.setattr(main, "JOB_POLL_WAIT_SECONDS", 5)
+    monkeypatch.setenv("FAKE_DELAY", "0.3")
+    save_profile(admin)
+    started = admin.post("/api/tailor", json={"jd": SAMPLE_JD, "model": "demo-concise"})
+    assert started.status_code == 202
+    began = time.perf_counter()
+    checked = admin.get(f"/api/jobs/{started.json()['job']}")
+    assert checked.status_code == 200 and checked.json()["status"] == "ok"  # one check: the run came back
+    assert time.perf_counter() - began < 5
+
+
+def test_a_check_on_a_job_running_elsewhere_answers_at_once(browsers, monkeypatch):
+    admin, _user, db = browsers
+    monkeypatch.setattr(main, "JOB_POLL_WAIT_SECONDS", 5)
+    db.create_job("elsewhere", db.user_by_email(ADMIN_EMAIL)["id"], "tailor")  # another worker process runs it
+    began = time.perf_counter()
+    assert admin.get("/api/jobs/elsewhere").status_code == 202
+    assert time.perf_counter() - began < 1
 
 
 @pytest.mark.parametrize("delete", ["the account", "all data"])

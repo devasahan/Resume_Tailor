@@ -73,7 +73,7 @@ async function finished(data, onWait) {
   let failingSince = null, failures = 0, lastError = null;
   while (data && data.job && data.status === 'running') {
     if (onWait) onWait(Date.now() - started, lastError);
-    await new Promise(resolve => setTimeout(resolve, 1500));
+    await new Promise(resolve => setTimeout(resolve, 500));  // the server holds each check open while the job runs
     try {
       data = await api(`/api/jobs/${encodeURIComponent(data.job)}`);
       failingSince = null; failures = 0; lastError = null;

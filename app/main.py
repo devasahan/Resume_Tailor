@@ -125,6 +125,11 @@ _TECHNICAL = (
 # in the background and the page asks GET /api/jobs/{id} every few seconds until it ends. While it runs, the job
 # writes a heartbeat; a restart (Reload) ends the process without warning, and the missing heartbeat tells the page.
 JOB_WAIT_SECONDS = 20.0
+# On PythonAnywhere the web app runs without thread support, so a job (on the event-loop thread) moves only while some
+# request is being answered. A check on a running job therefore waits up to this long for it to end: the job runs
+# while the page waits, instead of only in the moment each quick check takes. Under the POST's 20 s, so no proxy
+# times out.
+JOB_POLL_WAIT_SECONDS = 15.0
 JOB_BEAT_SECONDS = 15.0
 JOB_LOST_SECONDS = 90.0  # no heartbeat for this long: the process that ran the job is gone
 JOB_LOST = "The server restarted before this finished. Try again."
@@ -247,6 +252,7 @@ def show_app_log() -> None:
 
 HTTPS_PROBE = "rt_https"  # a Secure cookie: browsers send it only over https://
 log = logging.getLogger("resume_tailor")
+timing_log = logging.getLogger(__name__)  # under "app": its INFO lines reach the server log (show_app_log)
 _proxy_logged = False
 
 
@@ -444,8 +450,8 @@ def create_app(db: Database | None = None, registry: Registry | None = None, rou
         return HTTPException(502, message if user.is_admin else failure_message(message))
 
     # This process's unfinished jobs. The reference also keeps a task that nobody waits for from being garbage
-    # collected. On the Web-tab website (uWSGI) the event loop may only move while a request is served, so a job
-    # here is never reported lost for a late heartbeat.
+    # collected. On the Web-tab website (uWSGI without threads) the event loop moves only while a request is served,
+    # so a job here is never reported lost for a late heartbeat, and a check on it waits (JOB_POLL_WAIT_SECONDS).
     running: dict[str, asyncio.Task] = {}
     app.state.jobs = running
 
@@ -466,7 +472,7 @@ def create_app(db: Database | None = None, registry: Registry | None = None, rou
                 db.touch_job(job_id)
 
         async def run() -> TailorResult:
-            beating = asyncio.create_task(beat())
+            beating, started = asyncio.create_task(beat()), time.perf_counter()
             try:
                 result = await work()
             except JobFailed as exc:
@@ -481,6 +487,7 @@ def create_app(db: Database | None = None, registry: Registry | None = None, rou
                 raise
             finally:
                 beating.cancel()
+                timing_log.info("%s job finished in %.1fs", kind, time.perf_counter() - started)
             if not db.finish_job(job_id, run_id=result.run_id) and kind == "tailor" and result.run_id is not None:
                 db.delete_run(result.run_id)  # the account (or all data) was deleted meanwhile: keep nothing of it
             return result
@@ -848,11 +855,15 @@ def create_app(db: Database | None = None, registry: Registry | None = None, rou
         ))
 
     @app.get("/api/jobs/{job_id}")
-    def api_job(job_id: str, user: auth.User = Depends(current_user)):
-        """Slow work started by POST /api/tailor or /api/runs/{id}/cover-letter: still running, or its answer."""
+    async def api_job(job_id: str, user: auth.User = Depends(current_user)):
+        """Slow work started by POST /api/tailor or /api/runs/{id}/cover-letter: still running, or its answer. A job
+        running in this process is given up to JOB_POLL_WAIT_SECONDS to end first (see JOB_POLL_WAIT_SECONDS)."""
         job = db.get_job(job_id, user.id) if len(job_id) <= 64 else None
         if job is None:
             raise HTTPException(404, "Not found.")
+        if job["status"] == "running" and job_id in running:
+            await asyncio.wait({running[job_id]}, timeout=JOB_POLL_WAIT_SECONDS)
+            job = db.get_job(job_id, user.id) or job
         if job["status"] == "running":
             lost = auth.utc(auth.now_utc() - timedelta(seconds=JOB_LOST_SECONDS))
             if job_id in running or max(job["created_at"], job["beat_at"]) >= lost:
