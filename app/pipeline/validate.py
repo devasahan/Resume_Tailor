@@ -1825,13 +1825,32 @@ def short_role_headline(resume: Resume) -> None:
         resume.headline = role
 
 
+# A broad field is part of a common title, never a specialty: 'AI Platform Engineer', 'Data Platform Engineer' and
+# 'Cloud Security Engineer' are used as they are; 'Voice' in 'Voice AI Engineer' is a specialty
+_BROAD_FIELDS = frozenset({
+    "ai", "ml", "machine", "learning", "data", "cloud", "platform", "platforms", "infrastructure", "infra", "backend",
+    "back-end", "frontend", "front-end", "full-stack", "fullstack", "full", "stack", "software", "mobile", "ios",
+    "android", "web", "security", "devops", "mlops", "dataops", "devsecops", "site", "reliability", "sre", "systems",
+    "embedded", "network",
+})
+
+
+def _extra_words(special: str, common: str) -> list[str]:
+    """The words of the special title that the common title lacks, in either spelling: ['Voice'] for 'Voice AI
+    Engineer' -> 'AI Engineer'."""
+    kept = {spelling.us_word(word) for word in common.split()}
+    return [word for word in special.split() if spelling.us_word(word) not in kept]
+
+
 def common_title(analysis: JDAnalysis | None) -> tuple[str, str]:
     """(the posting's special title, the most similar common title): ('Voice AI Engineer', 'AI Engineer'); ('', '')
-    when the posting's title is a common one already ('Senior Data Engineer' -> 'Data Engineer')."""
+    when the posting's title is a common one already ('Senior Data Engineer' -> 'Data Engineer'), also when only broad
+    fields set it apart ('AI Platform Engineer' stays, whatever the model offers instead)."""
     if analysis is None or not analysis.general_role.strip():
         return "", ""
     special, common = _role_core(analysis.target_role), _role_core(analysis.general_role)
-    if not special or not common or len(common.split()) > 4 or spelling.us_text(special) == spelling.us_text(common):
+    if (not special or not common or len(common.split()) > 4 or spelling.us_text(special) == spelling.us_text(common)
+            or all(spelling.us_word(word) in _BROAD_FIELDS for word in _extra_words(special, common))):
         return "", ""
     return special, common
 
@@ -1863,6 +1882,7 @@ def general_role_fixes(resume: Resume, analysis: JDAnalysis | None) -> None:
     Engineer'). The specialty belongs in the bullets. Changes the resume in place."""
     special, common = common_title(analysis)
     if not special:
+        _keep_posting_headline(resume, analysis)
         return
     resume.headline = common
     words = r"[\s-]+".join(either_spelling(word) for word in special.split())
@@ -1878,6 +1898,25 @@ def general_role_fixes(resume: Resume, analysis: JDAnalysis | None) -> None:
     resume.summary = pattern.sub(swap, resume.summary)
     for exp in resume.experience:
         exp.job_title = pattern.sub(swap, exp.job_title)
+
+
+def _keep_posting_headline(resume: Resume, analysis: JDAnalysis | None) -> None:
+    """A common posting title stays whole in the headline when a draft drops only its broad fields: 'AI Engineer' ->
+    'AI Platform Engineer' for an 'AI Platform Engineer' post, never 'Full-Stack Engineer' -> 'Software Engineer'."""
+    if analysis is None:
+        return
+    posting = _role_core(analysis.target_role)
+    words, headline = posting.split(), resume.headline.split()
+    if not headline or len(headline) >= len(words) or len(words) > 4:
+        return
+    position, missing = 0, []  # the headline is the posting's title with some words left out, in order
+    for word in words:
+        if position < len(headline) and spelling.us_word(word) == spelling.us_word(headline[position]):
+            position += 1
+        else:
+            missing.append(word)
+    if position == len(headline) and all(spelling.us_word(word) in _BROAD_FIELDS for word in missing):
+        resume.headline = posting
 
 
 def specialty_problems(resume: Resume, analysis: JDAnalysis | None) -> list[str]:

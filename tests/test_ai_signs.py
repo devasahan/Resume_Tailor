@@ -959,6 +959,39 @@ def test_a_common_posting_title_or_an_older_run_changes_nothing(profile, target,
     assert validate.common_title(_analysis(target, general)) == ("", "") and validate.specialty(_analysis(target, general)) == ""
 
 
+@pytest.mark.parametrize("target,general", [
+    ("AI Platform Engineer", "AI Engineer"), ("AI Platform Engineer", "Platform Engineer"),
+    ("AI Platform Engineer", "Software Engineer"), ("Senior Data Platform Engineer", "Data Engineer"),
+    ("Cloud Security Engineer", "Security Engineer"),
+])
+def test_a_title_of_broad_fields_is_a_common_one_whatever_the_model_offers(target, general):
+    assert validate.common_title(_analysis(target, general)) == ("", "") and validate.specialty(_analysis(target, general)) == ""
+
+
+def test_an_ai_platform_engineer_post_keeps_its_title_and_its_ai(profile):
+    analysis = _analysis("Senior AI Platform Engineer", "AI Engineer")
+    out = make_output(headline="AI Engineer", summary="AI Platform Engineer with 7+ years of AI and ML platform work on "
+                      "Kubernetes and Ray.")
+    out.sections.experience[0].job_title = "Senior AI Platform Engineer"
+    resume = validate.build_resume(profile, out)
+    validate.short_role_headline(resume)
+    validate.general_role_fixes(resume, analysis)
+    assert resume.headline == "AI Platform Engineer"  # a draft's shorter headline gets the posting's title back
+    assert resume.summary == "AI Platform Engineer with 7+ years of AI and ML platform work on Kubernetes and Ray."
+    assert resume.experience[0].job_title == "Senior AI Platform Engineer"
+    assert validate.specialty_problems(resume, analysis) == []  # 'AI' is a field, never a specialty to take out
+
+
+@pytest.mark.parametrize("target,general,special,words", [
+    ("Voice AI Platform Engineer", "AI Platform Engineer", ("Voice AI Platform Engineer", "AI Platform Engineer"),
+     "Voice"),
+    ("Payments Backend Engineer", "Backend Engineer", ("Payments Backend Engineer", "Backend Engineer"), "Payments"),
+])
+def test_a_niche_specialty_still_makes_a_title_special(target, general, special, words):
+    assert validate.common_title(_analysis(target, general)) == special
+    assert validate.specialty(_analysis(target, general)) == words
+
+
 class SpecialPost(LLMClient):
     """The first draft copies a special posting title ('Voice AI Engineer') and names its specialty in the summary."""
 
@@ -993,3 +1026,6 @@ def test_the_prompt_asks_for_the_common_title():
     assert "COMMON TITLE: some posting titles are special ones" in text
     assert '"AI Engineer" for "Voice AI Engineer" or "Conversational AI Engineer"' in text
     assert "show it only in the bullets" in text and "never a special title" in text
+    assert ('"AI Platform Engineer", "Data Platform Engineer" and "Cloud Security Engineer" are common titles and are '
+            "used as they are") in text
+    assert '"AI Platform Engineer" for "Senior AI Platform Engineer"' in text
