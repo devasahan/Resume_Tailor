@@ -163,10 +163,11 @@ def test_the_title_line_is_larger_but_stays_on_one_line(profile):
 # ------------------------------------------------------------------ the headline: the role's short name
 def test_prompt_asks_for_the_roles_short_name():
     text = tailor_system("estimate")
-    assert "HEADLINE: the role's short, common name in 2-3 words, never the posting's full job title" in text
+    assert "HEADLINE: `general_role`, the role's short, common name in 2-3 words, never the posting's full job title" in text
     assert '"Full-Stack Engineer" for "Senior Software Engineer, Full Stack (Payments Platform)"' in text
     assert "as the JD names it" not in text
-    assert "In the summary, write the target role without the hiring company's level number (II, III, L5)" in text
+    assert ("In the summary, write the role as `general_role` (with a level such as Senior when the candidate's most "
+            "recent title in your plan has it), without the hiring company's level number (II, III, L5)") in text
 
 
 def test_a_copied_posting_title_becomes_the_roles_short_name(profile):

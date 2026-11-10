@@ -91,7 +91,8 @@ Line = list[Piece]
 class Sheet:
     """A PDF being laid out. `y` is the current top of the next line, in points from the page top."""
 
-    def __init__(self, paper: str, margin: float, size: float, line: float, title: str, author: str):
+    def __init__(self, paper: str, margin: float, size: float, line: float, title: str, author: str,
+                 lang: str = "en-US"):
         pdf = FPDF(orientation="P", unit="pt", format=paper)
         pdf.set_auto_page_break(False)  # pagination is handled here so a line is never split in two
         pdf.set_margins(margin, margin, margin)
@@ -104,7 +105,7 @@ class Sheet:
         pdf.set_title(title)
         pdf.set_author(author)
         try:
-            pdf.set_lang("en-US")
+            pdf.set_lang(lang)  # en-GB for an EU style CV and its letter
         except Exception:  # older fpdf2 without set_lang
             pass
         pdf.add_page()
@@ -334,7 +335,8 @@ def job_header(company: Company, title: str, stacked: bool) -> list[tuple[list[R
 def resume_sheet(resume: Resume, style: FitStyle, document: str = "Resume") -> Sheet:
     """The resume laid out on pages: `pdf.page` pages, `last_page_fill()`, and the file from `finish()`."""
     p = resume.profile
-    sheet = Sheet(style.paper, style.margin_in * 72, style.font_pt, RESUME_LINE, f"{p.name} - {document}", p.name)
+    sheet = Sheet(style.paper, style.margin_in * 72, style.font_pt, RESUME_LINE, f"{p.name} - {document}", p.name,
+                  "en-GB" if document == "CV" else "en-US")
     size = sheet.size
 
     # Header: name, then the headline, then the contact line.
@@ -401,21 +403,22 @@ def contact_lines(sheet: Sheet, contact: Contact, size: float) -> list[str]:
     return lines
 
 
-def render_cover_pdf(resume: Resume, letter: CoverLetter, paper: str = "Letter") -> tuple[bytes, int]:
+def render_cover_pdf(resume: Resume, letter: CoverLetter, paper: str = "Letter",
+                     lang: str = "en-US") -> tuple[bytes, int]:
     """The letter under the same header as the resume (name, headline, contact line), so the two look like one set:
     a rule, then the letter from its greeting to the typed signature (no date, address or subject line). One column
     of real text in reading order, like the resume, so applicant systems read it too."""
     for size, line_height, gap in COVER_STYLES:
-        data, pages = _cover(resume, letter, paper, size, line_height, gap)
+        data, pages = _cover(resume, letter, paper, size, line_height, gap, lang)
         if pages == 1:
             break
     return data, pages
 
 
 def _cover(resume: Resume, letter: CoverLetter, paper: str, size: float, line_height: float,
-           gap: float) -> tuple[bytes, int]:
+           gap: float, lang: str = "en-US") -> tuple[bytes, int]:
     p = resume.profile
-    sheet = Sheet(paper, 72, size, line_height, f"{p.name} - Cover Letter", p.name)
+    sheet = Sheet(paper, 72, size, line_height, f"{p.name} - Cover Letter", p.name, lang)
     # Letterhead, as on the resume
     sheet.para([Run(p.name, True)], size=sheet.fit_size(p.name, True, 20, sheet.width), align="C")
     if resume.headline:

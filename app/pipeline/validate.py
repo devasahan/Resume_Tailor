@@ -31,18 +31,22 @@ from ..schemas import (
 from . import spelling
 from .facts import months_phrase, parse_point, stay_months
 
-_PUNCT_MAP = str.maketrans(
-    {"’": "'", "‘": "'", "“": '"', "”": '"', "–": "-", "—": "-", "…": "...", " ": " ", "\t": " ", "→": " to "}
-)
-_BULLET_LEAD = re.compile(r"^[\s\-*•·▪◦‣–—>]+")
-_NUMBER = re.compile(r"[$€£]?\d[\d,.]*\s?(?:%|[kKmMbB]\b|\+|x\b)?")
+_PUNCT_MAP = str.maketrans({
+    "\u2019": "'", "\u2018": "'", "\u201c": '"', "\u201d": '"', "\u2013": "-", "\u2014": " - ", "\u2015": " - ",
+    "\u2026": "...", "\u00a0": " ", "\t": " ", "\u2192": " to ", "\u2212": "-", "\u2010": "-", "\u2011": "-",
+    "\n": " ", "\r": " ", "\x0b": " ", "\x0c": " ", "\x85": " ", "\u2028": " ", "\u2029": " ",
+})
+# A bullet's own mark; a dash touching a figure is its minus sign and stays: '-12% churn', '-$1.2M', '–12%'
+_BULLET_LEAD = re.compile(r"^(?:[\s*•·▪◦‣—>]|[-–](?![\d$€£]|\.\d))+")
+_NUMBER = re.compile(r"(?:[$€£]|(?<![\w.]))\d[\d,.]*\s?(?:%|[kKmMbB]\b|\+|x\b)?")
 _FIRST_PERSON = re.compile(r"\b(I|me|my|mine|myself|I'm|I've)\b")
 
 
 def clean_text(text: str) -> str:
     """Normalise punctuation, drop symbols/emoji/control characters, collapse whitespace."""
     text = text.translate(_PUNCT_MAP)
-    text = "".join(ch for ch in text if unicodedata.category(ch)[0] not in ("S", "C") or ch in "+#$%&<>=|€£")
+    text = "".join(ch for ch in text if (unicodedata.category(ch)[0] not in ("S", "C") or ch in "+#$%&<>=|€£±")
+                   and not ("\ufe00" <= ch <= "\ufe0f" or unicodedata.category(ch) == "Me"))  # emoji: '✔️', '1️⃣'
     return re.sub(r"\s+", " ", text).strip()
 
 
@@ -53,83 +57,321 @@ def clean_bullet(text: str) -> str:
 # A dash used as punctuation ("Built X — cutting Y", "X -- Y", "X - Y") is a well-known sign of AI-written text
 # (a recruiter's advice): it becomes a comma, and the prompt asks for a full stop or a comma in the first place.
 # Kept: hyphens inside words (event-driven, AI-/ML-based), "Python- and SQL-based", "-12%", command-line flags
-# (--dry-run, also after a bracket or a quote), and a range between two like values, which loses its spaces
-# (2019 - 2021 -> 2019-2021; $5M - $10M; Q1 - Q3; Jan - Mar; 2021 - present; Tier 1 - Tier 3 -> Tier 1 to Tier 3).
-_SPACE_RUN = re.compile(r"[ \t\u00a0\u2007\u202f]+")  # non-breaking spaces too; one space keeps the scan linear
-_DASH_RUN = re.compile(r" ?(?:[\u2012\u2013\u2014\u2015]+|-{1,3}) ?")
-_MONTHS = frozenset({
-    "jan", "january", "feb", "february", "mar", "march", "apr", "april", "may", "jun", "june", "jul", "july", "aug",
-    "august", "sep", "sept", "september", "oct", "october", "nov", "november", "dec", "december",
-})
-_OPEN_END = frozenset({"present", "now", "today", "current", "date"})
+# (--dry-run, also after a bracket, a quote or another dash), and a range between two like values going up, which
+# loses its spaces (2019 - 2021 -> 2019-2021; $500K - $2M; 10 - 20%; Q1 - Q3; Jan - Mar; 2021 - present) or reads
+# "to" when its first end is two words (Jan 2021 - Mar 2024 -> Jan 2021 to Mar 2024; Tier 1 - Tier 3 -> Tier 1 to
+# Tier 3). A spaced em dash joins only two dates: models write it as punctuation ("from 101 to 83 — 18 fewer"). A dash
+# that starts a list item ("things:\n- Airflow DAGs") is punctuation, never one end of a range.
+_SPACE_RUN = re.compile(r"\s+")  # newlines and every Unicode space too; one space keeps the scan linear
+_HYPHENS = str.maketrans({"‐": "-", "‑": "-", "−": "-"})  # Unicode hyphens and the minus sign
+_LINE_BREAKS = "\n\r\x0b\x0c\x85\u2028\u2029"
+# A dash that starts a line ('\n- Cut costs', never '\n-12%'): the spaces read after a line break are never line
+# breaks, so a run of them is no slow scan
+_LINE_DASH = re.compile(f"[{_LINE_BREAKS}][^\\S{_LINE_BREAKS}]*[‒–—―-]+(?=[^\\S{_LINE_BREAKS}])")
+_THREE_WORDS = re.compile(f"(?:[^\\S{_LINE_BREAKS}]+\\S+){{3}}")  # ... on the same line
+_LIST_MARK = "\ufdd0"  # a noncharacter: stands in for a list marker's dash until the dash fix replaces it
+_DASH_RUN = re.compile(f" ?[‒–—―{_LIST_MARK}-]+ ?")
+_DASH_WINDOW = 120  # characters read on each side of a dash: enough for its words, and the scan stays linear
+_MONTH_NUMBER = {name: number for number, names in enumerate((
+    ("jan", "january"), ("feb", "february"), ("mar", "march"), ("apr", "april"), ("may",), ("jun", "june"),
+    ("jul", "july"), ("aug", "august"), ("sep", "sept", "september"), ("oct", "october"), ("nov", "november"),
+    ("dec", "december")), 1) for name in names}
+_MONTH_SHORT = frozenset({"jan", "feb", "mar", "apr", "jun", "jul", "aug", "sep", "sept", "oct", "nov", "dec"})
+_SEASON_NUMBER = {"winter": 0, "spring": 1, "summer": 2, "fall": 3, "autumn": 3}
+_OPEN_END = frozenset({"present", "date"})  # always the end of a range: 2021-present
+# ... only where the clause ends with them: (2021-now), never '2023 — now used' or '2019 — today, I lead'
+_OPEN_NOW = frozenset({"now", "today", "current"})
 _TOKEN_EDGES = "()[]{}\"'`,;:.!?"
+_CLAUSE_END = ",;:.!?)]}"
+_RANGE_NUMBER = re.compile(
+    r"([$€£]?)(\d{1,3}(?:,\d{3})+|\d+)(\.\d+)?(%|bn|[kmb]|x|\+|ms|s|sec|secs|min|mins|h|hr|hrs|d|kb|mb|gb|tb|pb)?",
+    re.IGNORECASE)
+_RANGE_LABEL = re.compile(r"([A-Za-z]{1,4})(\d+)")  # v16, Sev1, p50, P0
+_RANGE_MAGNITUDE = {"k": 1e3, "m": 1e6, "b": 1e9, "bn": 1e9}
+_YEAR = re.compile(r"(?:19|20)\d\d")
+_DIGITS = re.compile(r"\d+")
+_CLOCK = re.compile(r"(1[0-2]|0?[1-9])(?::([0-5]\d))?([ap])\.?m", re.IGNORECASE)  # 7am, 7:30pm, 7p.m.
+# Words that put the year after them in time, so it is never a count: 'in 2000 — 5000 users signed up'
+_YEAR_WORDS = frozenset({"in", "since", "by", "during", "until", "till", "through", "throughout", "before", "after",
+                         "early", "mid", "late", "circa"})
+# A full stop that ends an abbreviation, not a sentence: 'Contoso Ltd.', 'etc.', 'the U.S.', 'e.g.'
+_ABBREVIATION_STOP = re.compile(r"(?:[A-Za-z]\.){2,}|(?:inc|ltd|corp|co|llc|plc|bros|etc|vs|approx|jr|sr|st)\.",
+                                re.IGNORECASE)
 
 
-def _shape(token: str) -> str:
-    """What one end of a range looks like: '2019' -> 'Y', '14' -> '9', '$5M' -> '$9M', 'v16' -> 'v9', '17.8%' -> '9%'."""
-    token = token.strip(_TOKEN_EDGES)
-    if re.fullmatch(r"(?:19|20)\d\d", token):
-        return "Y"
-    return re.sub(r"\d+(?:[.,]\d+)*", "9", token)
+def _bare(token: str) -> str:
+    return token.strip(_TOKEN_EDGES)
 
 
-def _range_join(before: str, after: str) -> str | None:
-    """'-' (' to ' for 'Tier 1 - Tier 3') when the dash joins two like values; None when it is punctuation
-    ('in 2022 — 14 services', 'from 101 to 83 — 17.8% fewer')."""
-    left_words, right_words = before.split(), after.split()
+def _runs_on(word: str) -> bool:
+    """False when a clause ends at `word` ('in 2021.', 'Northwind,'); the full stop of 'Jan.' only ends the
+    abbreviation."""
+    return word[-1:] not in _CLAUSE_END or (word.endswith(".") and _bare(word).lower() in _MONTH_SHORT)
+
+
+def _year_of(token: str) -> int | None:
+    """2021 for '2021' and 'FY21' (also 'FY2021'), else None."""
+    bare = _bare(token)
+    if _YEAR.fullmatch(bare):
+        return int(bare)
+    fiscal = re.fullmatch(r"FY(\d\d|\d{4})", bare)
+    return int(fiscal.group(1)) + (2000 if len(fiscal.group(1)) == 2 else 0) if fiscal else None
+
+
+def _part_of(token: str) -> tuple[str, int] | None:
+    """('month', 3) for 'Mar', ('quarter', 2) for 'Q2', ('half', 1) for 'H1', ('season', 1) for 'Spring'; 'may',
+    'march' and 'spring' are words, not dates."""
+    bare = _bare(token)
+    if bare[:1].isupper() and bare.lower() in _MONTH_NUMBER:
+        return "month", _MONTH_NUMBER[bare.lower()]
+    if bare[:1].isupper() and bare.lower() in _SEASON_NUMBER:
+        return "season", _SEASON_NUMBER[bare.lower()]
+    if re.fullmatch(r"Q[1-4]|H[12]", bare):
+        return ("quarter" if bare[0] == "Q" else "half"), int(bare[1])
+    return None
+
+
+def _left_date(words: list[str]) -> tuple[tuple[int | None, tuple[str, int] | None], int] | None:
+    """((year, part of the year), how many words) for the date that ends `words`: 'Jan 2021', 'Jan. 2021', 'H1 2023',
+    '2021', 'Jan'."""
+    year, part = _year_of(words[-1]), _part_of(words[-1])
+    if year is not None:
+        month = _part_of(words[-2]) if len(words) > 1 and _runs_on(words[-2]) else None
+        return (year, month), (2 if month else 1)
+    return ((None, part), 1) if part else None
+
+
+def _right_date(words: list[str]) -> tuple[int | None, tuple[str, int] | None] | None:
+    """(year, part of the year) for the date that starts `words`: 'Mar 2024', 'Mar. 2024', 'Fall 2024', '2024',
+    'Mar'."""
+    year, part = _year_of(words[0]), _part_of(words[0])
+    if year is not None:
+        return year, None
+    if part is None:
+        return None
+    return (_year_of(words[1]) if len(words) > 1 and _runs_on(words[0]) else None), part
+
+
+def _dates_go_up(left: tuple[int | None, tuple[str, int] | None],
+                 right: tuple[int | None, tuple[str, int] | None]) -> bool:
+    (left_year, left_part), (right_year, right_part) = left, right
+    if left_year is not None and right_year is not None and left_year != right_year:
+        return left_year < right_year  # also between two kinds of part: 'H1 2023 - Mar 2024'
+    if left_part and right_part and left_part[0] != right_part[0]:
+        return False  # 'Jan - Q3'
+    if left_year is not None and right_year is not None:
+        return bool(left_part and right_part and left_part[1] < right_part[1])
+    if left_year is not None or not left_part or not right_part:
+        return False  # '2023 - Mar', 'Jan - 2024'
+    # 'Jan - Mar 2023', 'Q1 - Q3'; months and seasons may wrap round the year end ('Nov - Feb', 'Fall - Spring'),
+    # quarters and halves go up
+    return left_part[1] != right_part[1] if left_part[0] in ("month", "season") else left_part[1] < right_part[1]
+
+
+def _number_of(token: str) -> tuple[str, float, str, tuple[int, int] | None] | None:
+    """(currency, value, unit, parts) for one end of a number range: '$500K' -> ('$', 500000.0, 'k', None). A plain
+    decimal also keeps its parts, so 'Python 3.8 - 3.12' can go up as a version does."""
+    match = _RANGE_NUMBER.fullmatch(_bare(token))
+    if not match:
+        return None
+    currency, whole, decimal, unit = match.group(1), match.group(2).replace(",", ""), match.group(3), match.group(4)
+    unit = (unit or "").lower()
+    if len(whole) > 15:
+        return None
+    parts = (int(whole), int(decimal[1:])) if decimal and not currency and not unit else None
+    return currency, float(whole + (decimal or "")) * _RANGE_MAGNITUDE.get(unit, 1), unit, parts
+
+
+def _numbers_go_up(left: tuple[str, float, str, tuple[int, int] | None],
+                   right: tuple[str, float, str, tuple[int, int] | None]) -> bool:
+    (left_currency, left_value, left_unit, left_parts), (right_currency, right_value, right_unit, right_parts) = (
+        left, right)
+    if left_currency != right_currency and right_currency:
+        return False
+    magnitudes = left_unit in _RANGE_MAGNITUDE and right_unit in _RANGE_MAGNITUDE  # '$500K - $2M'
+    if left_unit != right_unit and left_unit and not magnitudes:
+        return False  # '5% - 10x'; a unit on the right end only is the unit of both ('10 - 20%', '2.5 - 3.5%')
+    if not left_unit and right_unit in _RANGE_MAGNITUDE:
+        left_value *= _RANGE_MAGNITUDE[right_unit]  # '10 - 50K', '1.5 - 2M'
+    # by value ('2 - 2.5', '0.85 - 0.9'); two plain decimals that go down by value may go up part by part, as
+    # versions do ('3.8 - 3.12')
+    return left_value < right_value or bool(left_parts and right_parts and left_parts < right_parts)
+
+
+def _shape_of(token: str) -> tuple[str, tuple[int, ...]] | None:
+    """('v9.9', (1, 24)) for 'v1.24': the token with each run of digits as 9 (a year as Y, so it never looks like a
+    count), and its numbers, years first ('11/2019' -> (2019, 11)); None without a digit."""
+    bare = _bare(token)
+    runs = _DIGITS.findall(bare)
+    if not runs or len(bare) > 24:
+        return None
+    shape = _DIGITS.sub(lambda run: "Y" if _YEAR.fullmatch(run.group()) else "9", bare)
+    return shape, tuple(int(run) for run in sorted(runs, key=lambda run: not _YEAR.fullmatch(run)))
+
+
+def _clock_of(token: str) -> int | None:
+    """Minutes after midnight for '7am' or '7:30pm', else None."""
+    match = _CLOCK.fullmatch(_bare(token))
+    if not match:
+        return None
+    hour, minute, half = match.groups()
+    return (int(hour) % 12 + (12 if half.lower() == "p" else 0)) * 60 + int(minute or 0)
+
+
+def _range_join(before: str, after: str, dates_only: bool) -> str | None:
+    """'-' when the dash joins two like values going up, ' to ' when the first end is two words ('Jan 2021 to Mar
+    2024', 'Tier 1 to Tier 3'); None when the dash is punctuation ('in 2022 — 14 services', 'from 101 to 83 — 18
+    fewer', 'in 2019 — in 2022 I took over')."""
+    left_words, right_words = before.split()[-6:], after.split()[:3]
     if not left_words or not right_words:
         return None
     left, right = left_words[-1], right_words[0]
-    left_shape = _shape(left)
-    if "9" in left_shape or left_shape == "Y":
-        if left_shape == _shape(right):
-            return "-"
-        if left_shape == "Y" and right.strip(_TOKEN_EDGES).lower() in _OPEN_END:
-            return "-"
-        if (len(left_words) > 1 and len(right_words) > 1 and left_words[-2].lower() == right.lower()
-                and _shape(right_words[1]) == left_shape):
-            return " to "
+    if not _runs_on(left):
+        return None  # 'in 2021. — 2022 brought', 'to 45, — 75 fewer'
+    lowered = [_bare(word).lower() for word in left_words]
+    left_number, right_number = _number_of(left), _number_of(right)
+    if len(lowered) > 2 and lowered[-2] == "to" and "from" in lowered[:-2]:
+        # 'from A to B — C': B ends a pair, unless it is a bare number whose unit comes after the dash ('from 4 hours
+        # to 30 - 45 minutes', 'from weekly to 2 - 3 times a day')
+        if (left_number is None or left_number[0] or left_number[2] or _year_of(left) is not None
+                or _year_of(right) is not None):
+            return None  # 'from $18,600 to $12,400 — $74,400 saved a year', 'from 120 to 45 — 2022 brought'
+        start = _number_of(left_words[-3]) if len(lowered) > 3 and lowered[-4] == "from" else None
+        if start and not start[0] and not start[2] and right_number and (
+                right_number[0] or right_number[2] or right_number[1] == abs(start[1] - left_number[1])):
+            return None  # C is the change from A to B: 'from 120 to 45 — 75 fewer', 'from 10 to 13 — 30% more'
+    left_date = _left_date(left_words)
+    if left_date:
+        (left_year, _part), size = left_date
+        open_end = _bare(right).lower()
+        after_word = right.lstrip(_TOKEN_EDGES)[len(open_end):][:1]  # what directly follows now/today/current
+        now_ends = after_word in tuple(")]}.!?") or (not after_word and len(right_words) == 1)
+        if left_year is not None and (open_end in _OPEN_END or (open_end in _OPEN_NOW and now_ends)):
+            return " to " if size == 2 else "-"
+        right_date = _right_date(right_words)
+        if right_date and _dates_go_up(left_date[0], right_date):
+            return " to " if size == 2 else "-"
+    if len(left_words) > 1 and len(right_words) > 1 and _runs_on(left_words[-2]) and _runs_on(right):
+        first, last = (_year_of(left_words[-2]), _part_of(left)), (_year_of(right), _part_of(right_words[1]))
+        if None not in first + last and _dates_go_up(first, last):
+            return " to "  # the year first: 'FY23 Q1 - FY23 Q3', '2023 H1 - 2024 H2'
+    if dates_only:
         return None
-    if left.strip(_TOKEN_EDGES).lower() in _MONTHS and right.strip(_TOKEN_EDGES).lower() in _MONTHS:
+    if left_number and right_number:
+        # a year-like first end is a count when it is round and no word puts it in time: '2000 - 5000 requests';
+        # 'Launched 2021 - 3000 users' and 'in 2000 - 5000 users signed up' stay punctuation
+        count = (left_date is not None and left_date[1] == 1 and not right_number[0] and not right_number[2]
+                 and _year_of(right) is None and left_number[1] % 100 == 0
+                 and (len(lowered) == 1 or lowered[-2] not in _YEAR_WORDS))
+        if (not left_date or count) and _numbers_go_up(left_number, right_number):
+            return "-"
+    left_label, right_label = _RANGE_LABEL.fullmatch(_bare(left)), _RANGE_LABEL.fullmatch(_bare(right))
+    if (left_label and right_label and left_label.group(1).lower() == right_label.group(1).lower()
+            and len(left_label.group(2)) < 8 and len(right_label.group(2)) < 8
+            and int(left_label.group(2)) < int(right_label.group(2))):
+        return "-"  # 'v16 - v18', 'Sev1 - Sev3', 'p50 - p99'
+    if len(left_words) > 1 and len(right_words) > 1 and _runs_on(left_words[-2]) and _runs_on(right):
+        label, first, last = _bare(left_words[-2]), _number_of(left), _number_of(right_words[1])
+        if (label.isalpha() and len(label) > 1 and label.lower() == _bare(right).lower()
+                and label.lower() not in _SMALL_WORDS and first and last and not first[0] and not last[0]
+                and (first[2] == last[2] or (first[2] in _RANGE_MAGNITUDE and last[2] in _RANGE_MAGNITUDE))
+                and _numbers_go_up(first, last)):
+            return " to "  # 'Tier 1 - Tier 3', '(Level 2 - Level 4)', 'EUR 2M - EUR 5M'
+    if (left_number and right_number) or (left_label and right_label):
+        return None  # the value rules read both ends, and they do not go up
+    # ends the value rules cannot read go up when they have the same shape and their numbers go up ('v1.24 -
+    # v1.28', '$80/hr - $120/hr', '9:00 - 17:00', '#1 - #3', '03/2019 - 06/2021'), or are clock times ('7am - 7pm')
+    left_shape, right_shape = _shape_of(left), _shape_of(right)
+    if left_shape and right_shape and left_shape[0] == right_shape[0] and left_shape[1] < right_shape[1]:
         return "-"
-    return None
+    left_clock, right_clock = _clock_of(left), _clock_of(right)
+    return "-" if left_clock is not None and right_clock is not None and left_clock < right_clock else None
 
 
 def _dash_edits(text: str) -> list[tuple[int, int, str, bool]]:
     """(start, end, replacement, used as punctuation) for each dash that is not part of a word, a flag or a negative
-    number. Runs of spaces must already be one space (_SPACE_RUN)."""
-    edits: list[tuple[int, int, str, bool]] = []
+    number; dashes next to each other count as one. Runs of spaces must already be one space (_SPACE_RUN)."""
+    stripped = text.strip()
+    first_text = len(text) - len(text.lstrip())  # where the text starts and ends: a dash outside is dropped
+    last_text = first_text + len(stripped)
+    found: list[list] = []  # [start, end, replacement or None for punctuation]
     for match in _DASH_RUN.finditer(text):
         raw = match.group(0)
-        dash, spaced_before, spaced_after = raw.strip(), raw.startswith(" "), raw.endswith(" ")
-        before, after = text[: match.start()], text[match.end():]
+        start, end = match.start(), match.end()
+        dash, spaced_after = raw.strip(), raw.endswith(" ")
+        # a space the dash before took still counts, so 'Northbeam — - Airflow' is one dash
+        spaced_before = raw.startswith(" ") or text[start - 1: start] == " "
+        at_edge = start <= first_text or end >= last_text  # nothing but spaces before it, or after it
+        before_char, after_char = text[start - 1: start], text[end: end + 1]
         if dash == "-" and not (spaced_before and spaced_after):
+            if at_edge and (spaced_before or spaced_after):
+                found.append([start, end, None])  # a list marker: '- Led the team'
             continue  # inside a word or a number, 'Python- and', '-12%', '-v'
-        if dash in ("\u2012", "\u2013") and not spaced_before and not spaced_after:
+        if dash in ("‒", "–") and not spaced_before and not spaced_after:
             continue  # 2019–2021, New York–London: clean_text makes it a plain hyphen
-        if (dash.startswith("--") and not spaced_after and after[:1].islower()
-                and (spaced_before or not before or before[-1] in "([{\"'`/")):
-            continue  # a command-line flag: --dry-run, (--dry-run), `--force`
-        if not before.strip() or not after.strip():
-            edits.append((match.start(), match.end(), "", True))  # at the very start or end: dropped
+        if (dash.startswith("--") and not spaced_after and after_char.islower()
+                and (spaced_before or not before_char or before_char in " ([{\"'`/")):
+            continue  # a command-line flag: --dry-run, (--dry-run), `--force`, '— --dry-run'
+        if at_edge or _LIST_MARK in dash:
+            found.append([start, end, None])  # at the very start or end, or a list marker after a line break
             continue
-        joined = _range_join(before, after)
+        dates_only = (spaced_before or spaced_after) and ("—" in dash or "―" in dash or "--" in dash)
+        joined = _range_join(text[max(0, start - _DASH_WINDOW): start], text[end: end + _DASH_WINDOW], dates_only)
+        found.append([start, end, joined])
+    merged: list[list] = []
+    for item in found:  # 'the migration — — of 14 services': one dash
+        if merged and item[2] is None and merged[-1][2] is None and merged[-1][1] == item[0]:
+            merged[-1][1] = item[1]
+        else:
+            merged.append(item)
+    edits: list[tuple[int, int, str, bool]] = []
+    for start, end, joined in merged:
         if joined is not None:
-            edits.append((match.start(), match.end(), joined, False))
+            edits.append((start, end, joined, False))
             continue
-        last, first = before.rstrip()[-1:], after.lstrip()[:1]
-        replacement = " " if last in ",.;:!?([" else "" if first in ",.;:!?)]" else ", "
-        edits.append((match.start(), match.end(), replacement, True))
+        if start <= first_text or end >= last_text:
+            edits.append((start, end, "", True))  # at the very start or end: dropped
+            continue
+        before = text[max(0, start - _DASH_WINDOW): start].rstrip()
+        after = text[end: end + _DASH_WINDOW].lstrip()
+        last, first = before[-1:], after[:1]
+        # after an abbreviation's full stop, or before a word in lower case, the dash still stands for a comma
+        # ('Contoso Ltd., a 40-person fintech,'); after a sentence's full stop it goes ('on time. Then', '2021. 2022')
+        aside = last == "." and first not in ",.;:!?)]}" and (
+            _ABBREVIATION_STOP.fullmatch(before.rsplit(" ", 1)[-1].lstrip("([{\"'")) is not None
+            or (first.islower() and after.split(" ", 1)[0].islower()))  # 'iOS', 'eBay': a name may start a sentence
+        replacement = ("" if last in "([{" else ", " if aside else " " if last in ",.;:!?\u2026"
+                       else "" if first in ",.;:!?)]}" else ", ")
+        edits.append((start, end, replacement, True))
     return edits
+
+
+def _marked_list_items(text: str) -> str:
+    """The text with each dash that starts a list item replaced by _LIST_MARK: in a list of two or more, or before
+    three words or more. Alone before one or two words, a dash that starts a line is a range or a dash wrapped onto
+    it ('Jan 2020' and then '– Mar 2023' on the next line)."""
+    starts = list(_LINE_DASH.finditer(text))
+    parts: list[str] = []
+    last = 0
+    for match in starts:
+        if len(starts) > 1 or _THREE_WORDS.match(text, match.end()):
+            parts += [text[last:match.start()], " " + _LIST_MARK]
+            last = match.end()
+    parts.append(text[last:])
+    return "".join(parts)
 
 
 def fix_dashes(text: str) -> str:
     """Dashes used as punctuation become commas, and a range loses its spaces. Run on the model's own text before
     clean_text, which turns any dash into a plain hyphen."""
-    text = _SPACE_RUN.sub(" ", text)
-    for start, end, replacement, _punctuation in reversed(_dash_edits(text)):
-        text = text[:start] + replacement + text[end:]
-    return text
+    text = _SPACE_RUN.sub(" ", _marked_list_items(text.translate(_HYPHENS)))  # before the lines are joined
+    parts: list[str] = []
+    last = 0
+    for start, end, replacement, _punctuation in _dash_edits(text):
+        parts += [text[last:start], replacement]
+        last = end
+    parts.append(text[last:])
+    return "".join(parts)
 
 
 def clean_prose(text: str) -> str:
@@ -154,10 +396,11 @@ def dash_problems(resume: Resume, letter: CoverLetter | None = None) -> list[str
     come from the user's own edits. Ranges, hyphenated words and command-line flags are not reported."""
     problems: list[str] = []
     for where, text in prose_places(resume, letter):
-        text = _SPACE_RUN.sub(" ", text)
+        text = _SPACE_RUN.sub(" ", text.translate(_HYPHENS))
         for start, end, _replacement, punctuation in _dash_edits(text):
             if punctuation:
-                before, after = " ".join(text[:start].split()[-3:]), " ".join(text[end:].split()[:3])
+                before = " ".join(text[max(0, start - _DASH_WINDOW): start].split()[-3:])
+                after = " ".join(text[end: end + _DASH_WINDOW].split()[:3])
                 problems.append(f"'{' '.join(part for part in (before, text[start:end].strip(), after) if part)}'"
                                 f" ({where})")
     return problems
@@ -507,7 +750,7 @@ def _word_pattern(word: str, last: bool) -> str:
     plural or singular ('API' ~ 'APIs', 'pipelines')."""
     if not word.isalpha():  # 'Node.js', 'CI/CD' stay literal; each part of 'modeling/warehousing' in either spelling
         return either_spelling(word)
-    forms = spelling.twins(word) if len(word) > 3 and not word.isupper() else ()
+    forms = spelling.twins(word) if len(word) > 3 else ()  # 'DATA MODELING' too: the match ignores case
     if len(forms) > 1:
         return "(?:" + "|".join(_one_word_pattern(form, last) for form in sorted(forms)) + ")"
     return _one_word_pattern(word, last)
@@ -667,7 +910,7 @@ def copied_posting_spans(resume: Resume, jd: str, analysis: JDAnalysis) -> list[
     shared = {tuple(posting[i:i + n]) for i in range(len(posting) - n + 1)}
     terms = [*analysis.must_have_skills, *analysis.nice_to_have_skills, *analysis.keywords,
              *(item for group in resume.skills for item in group.skills)]
-    known = {_stem(word) for term in [*clean_terms(terms), analysis.target_role]
+    known = {_stem(word) for term in [*clean_terms(terms), analysis.target_role, analysis.general_role]
              for word, _start, _end in _word_spans(term)}
     places = [("summary", resume.summary)] + [
         (resume.profile.companies[exp.company_index].name, bullet) for exp in resume.experience for bullet in exp.bullets
@@ -759,26 +1002,131 @@ _VAGUE_VERB = (r"(?:improv(?:e|es|ed|ing)|increas(?:e|es|ed|ing)|enhanc(?:e|es|e
                r"|maximi[sz](?:e|es|ed|ing)|elevat(?:e|es|ed|ing))")
 _VAGUE_QUAL = (r"(?:(?:overall|operational|organi[sz]ational|business|team|process|system|cross[\s-]functional"
                r"|cross[\s-]team|company[\s-]wide|workflow|general|data[\s-]driven)\s+)?")
+# A technical term, not a result: 'performance tests', 'value objects', 'value-based pricing', 'value based care',
+# 'performance-critical'; 'alignment based on shared OKRs' is still vague
+_COMPOUND = (r"(?!-\w)(?!\s+(?:objects?|types?|at\s+risk|streams?|tests?|testing|reviews?|schemas?|insights|accuracy"
+             r"|scores?|pages?|cache|caching|monitoring|metrics|profiling|tuning|engineering|budgets?|dashboards?"
+             r"|regressions?|bottlenecks?|benchmarks?|tooling|alert(?:s|ing)|observability|management|reporting|reports"
+             r"|logging|tracking|analytics|analysis|attribution|tools|features|baselines|slos"
+             r"|based(?!\s+(?:on|upon|around|off)\b))\b)")
+# 'the performance of the checkout API' names what got better; 'the efficiency of our operations' does not. A word
+# for people is the owner after any two words ('the data engineering team'); operations, functions, groups and units
+# only after a determiner or an organisation's word ('our operations', 'business operations'), never after a
+# technical one ('CRUD operations', 'AWS Lambda functions'). The owner ends its noun phrase: 'the business logic
+# layer', "the company's order API" and 'business-critical reports' are specific.
+_ORG_WORD = (r"(?:business|company|corporate|commercial|day[\s-]to[\s-]day|daily|core|internal|global|regional"
+             r"|cross[\s-]functional|back[\s-]office|front[\s-]?line|finance|financial|sales|marketing|hr|it|people"
+             r"|support|customer|engineering|operating)\s+")
+_OWNER_ENDS = (r"(?![\w'’-])(?!\s+(?!(?:by|with|for|in|of|on|at|to|from|across|between|into|via|over|under|through"
+               r"|throughout|within|without|during|using|after|before|around|since|than|as|and|or|but|so|while|when"
+               r"|where|which|that|who|whose|because|thanks|each|every|i|we|they|you)\b)[a-z])")
+_GENERIC_OWNER = (r"(?:(?:the|our|its|their|your|my|his|her|all)\s+)?(?:[\w&.-]+['’]s\s+)?"  # "Northwind's"
+                  r"(?:(?:entire|whole|overall|wider|broader)\s+)?"  # an intensifier is not one of the two words
+                  r"(?:(?:(?!(?:by|with|for|in|of|on|at|to|from|across|between|into|via)\b)[\w&-]+\s+){0,2}?"
+                  r"(?:teams?|staff|employees|people|company|companies|business(?:es)?|organi[sz]ations?|orgs?"
+                  r"|departments?|stakeholders|firm|divisions?)"
+                  rf"|(?:{_ORG_WORD}){{0,2}}(?<!\bof\s)(?:operations|functions?|groups?|units?)){_OWNER_ENDS}")
 _VAGUE_NOUN = (r"(?:efficienc(?:y|ies)|productivity|decision[\s-]making|collaboration|visibility(?!\s+into\b)|alignment"
                r"|effectiveness|outcomes|agility|performance|results|engagement|value|excellence)"
-               # 'the performance of the checkout API' names what got better; these are technical terms, not results
-               r"(?!\s+of\b)(?![\s-]+(?:objects?|types?|at\s+risk|based|streams?|tests?|testing|reviews?|schemas?|insights"
-               r"|accuracy|scores?|pages?|cache)\b)")
+               rf"(?!\s+of\b(?!\s+{_GENERIC_OWNER})){_COMPOUND}")
+# Can be made specific by a figure in the same clause: 'improved team productivity by 18% (from 11 to 13 tickets)'
 _VAGUE_RESULT = re.compile(
     rf"(?<![\w-]){_VAGUE_VERB}\s+(?:(?:the|its|their)\s+)?{_VAGUE_QUAL}{_VAGUE_NOUN}\b"  # not 'event-driven ...'
-    r"|\bdata[\s-]driven\s+decision[\s-]making\b|\boperational\s+excellence\b|\bresults[\s-]driven\b"
     r"|\bstreamlin(?:e|es|ed|ing)\s+(?:(?:the|its|their|\w+)\s+)?(?:process(?:es)?|operations|workflows?|procedures)\b"
-    r"|\bdeliver(?:s|ed|ing)?\s+(?:(?:strong|measurable|tangible|significant|real)\s+)?results\b"
-    r"|\badd(?:s|ed|ing)?\s+(?:(?:significant|real|tangible)\s+)?value\b", re.IGNORECASE)
+    rf"{_COMPOUND}", re.IGNORECASE)
+# Cliches whatever follows them: 'Results-driven Data Engineer with 7+ years ...' is no more specific for the figure
+_VAGUE_CLICHE = re.compile(
+    r"\bdata[\s-]driven\s+decision[\s-]making\b|\boperational\s+excellence\b|\bresults[\s-]driven\b"
+    rf"|\bdeliver(?:s|ed|ing)?\s+(?:(?:strong|measurable|tangible|significant|real)\s+)?results\b{_COMPOUND}"
+    rf"|\badd(?:s|ed|ing)?\s+(?:(?:significant|real|tangible)\s+)?value\b{_COMPOUND}", re.IGNORECASE)
+# A figure that measures something: not a year (2024, the 2010s) unless a count follows ('2047 requests'), no digit
+# inside a name (Q3, S3, EC2, B2B, GPT-4, Web3), and no number that names a version, a standard or a product (Java 17,
+# SOC 2, Fortune 500, 5G, 2FA, 24/7, 1:1s) unless a measure follows. 'sub-50ms', 'top-10' and '(-38%)' are figures.
+_MEASURE = re.compile(r"(?:(?<![\w-])|(?<=[\s(\[]-)|(?<=\bsub-)|(?<=\btop-)|(?<=\bunder-)|(?<=\bover-)|(?<=\bnear-))"
+                      r"([$€£]?)(\d+(?:[.,]\d+)*(?:[/:]\d+)?)([A-Za-z]*)", re.IGNORECASE)
+_NAME_NUMBER = re.compile(r"[2-6]G|[23]D|2FA|[1-3]P|24/7|1:1s?")  # not '16G heaps' or '40ms'
+# 'to Java 17', 'with SOC 2'; but a metric's value ('NPS 52', 'CSAT 4.7') and a rank ('Top 10') are figures
+_NAME_BEFORE_NUMBER = re.compile(r"(?:[^\s.!?:;]\s+|\()(?!(?:NPS|CSAT|DAU|MAU|ARR|MRR|GMV|AOV|LTV|CAC|CTR|MTTR|SLA"
+                                 r"|Top)\s)[A-Z](?:[\w#+.]*[\w#+])?\s+$")
+_YEAR_NUMBER = re.compile(r"(?:19|20)\d\d(?:/(?:19|20)?\d\d)?|(?:19|20)\d0s")  # 2024, 2024/25, the 2010s
+_FAST_UNIT = r"ms|µs|μs|milliseconds?|microseconds?|seconds?|secs?|minutes?|mins?"
+_TIME_SPAN_UNIT = rf"{_FAST_UNIT}|hours?|hrs?|days?|weeks?|months?"
+_MEASURE_WORD = re.compile(rf"(?:\s+[\w-]+)?\s+(?:{_TIME_SPAN_UNIT}|quarters?|years?|points?|pts|percent|users|people|ftes?)\b",
+                           re.IGNORECASE)  # 'saving Finance 120 hours'
+_COUNT_WORD = re.compile(  # '1900-person', '2047 requests per second', '1938 concurrent users'
+    rf"-[a-z]|(?:\s+[\w-]+)?\s+(?:{_TIME_SPAN_UNIT}|per|percent|[kmgt]b|rps|qps|tps|requests|users|tickets|customers|clients"
+    r"|servers|nodes|records|rows|events|orders|transactions|queries|jobs|accounts|people|employees|staff|agents"
+    r"|engineers|students|patients|members|merchants|stores|sites|locations|devices|endpoints|pages|documents|files"
+    r"|calls|messages|emails|items|products|skus|hosts|instances|pods|builds|deployments|sessions|visits|visitors"
+    r"|subscribers|leads|deals|shipments|invoices|claims|cases|seats|licen[cs]es|vendors|suppliers|connections"
+    r"|threads|partitions|shards|containers|vms|cores|tables|pipelines|repos|repositories|services|microservices"
+    r"|apis|lines|alerts|incidents|tasks|units|packages|parcels|responses|applicants|candidates)\b", re.IGNORECASE)
+# 'the catalog search delivers results in 90 ms': query results and their speed, not the 'delivered results' cliche
+_SPEED = re.compile(rf"(?<![\w.,])(?!(?:19|20)\d0s\b)\d[\d.,]*(?:\s?(?:{_FAST_UNIT})|s)\b|\breal[\s-]time\b",
+                    re.IGNORECASE)
+_CLAUSE_BREAK = re.compile(r"[.;](?:\s|$)|,\s+(?:and|but|while)\b")
+_CLAUSE_WINDOW = 300  # characters read for a figure: a whole bullet, and linear time on any text
+# ', procurement' right before ', and payroll': that ', and' closes a list ('across finance, procurement, and payroll')
+_LIST_ITEM = r"(?!(?:and|or|then)\b)(?:[^\s,;]+\s+){0,3}[^\s,;]+"
+_LAST_ITEM = re.compile(rf",\s+{_LIST_ITEM}$")
+_ONLY_ITEMS = re.compile(rf"(?:,\s+(?!\w+ing\b){_LIST_ITEM})+")  # ', release cadence', not ', cutting reviews'
+# 'U.S.', 'e.g.', 'Inc.': the full stop of an abbreviation ends no sentence when a lowercase word or a figure follows
+# ('across U.S. warehouses by 18%'); 'in the U.S. Cut pick time ...' starts a new one
+_CLAUSE_ABBREVIATION = re.compile(r"(?<![\w.])(?:[a-z]\.){2,}$|\b(?:inc|ltd|co|corp|vs|approx|etc|incl|est)\.$", re.IGNORECASE)
+_SAME_SENTENCE = re.compile(r"\s+[a-z\d$€£]")
 _ING_CLAUSE = re.compile(r",\s+(?:and\s+)?(?!during\b)[a-z]{4,}ing\b")  # ", ensuring ...", ", and enabling ..."
 MAX_ING_CLAUSES = 2  # a third in one bullet reads as a template
 MIN_PLAIN_PROBLEMS_FOR_RETRY = 2  # one stray word is only noted; it is not worth a model call
 
 
+def _abbreviation_stop(text: str, stop: int) -> bool:
+    """The full stop at `stop` ends an abbreviation, not the sentence: a lowercase word or a figure follows it."""
+    return (text.startswith(".", stop) and _SAME_SENTENCE.match(text, stop + 1) is not None
+            and _CLAUSE_ABBREVIATION.search(text, max(0, stop - 12), stop + 1) is not None)
+
+
+def _clause(text: str, end: int) -> str:
+    """The rest of the clause after `end`: up to '. ', '; ' or ', and/but/while' that starts a new clause. Neither an
+    abbreviation ('U.S. warehouses') nor the ', and' that closes a list after the phrase ('across finance, procurement,
+    and payroll') ends it. A list that the phrase itself starts does ('improved team productivity, release cadence,
+    and on-call health'): a figure after it belongs to the last item."""
+    rest = text[end:end + _CLAUSE_WINDOW]
+    if text[end + _CLAUSE_WINDOW:end + _CLAUSE_WINDOW + 1].strip():  # no word cut in half: '20' of '2024' is no figure
+        rest = rest[:re.search(r"\S*$", rest).start()]
+    for found in _CLAUSE_BREAK.finditer(rest):
+        stop = found.start()
+        if _abbreviation_stop(rest, stop) or (
+                found.group(0).endswith("and") and _LAST_ITEM.search(rest, max(0, stop - 80), stop)
+                and not _ONLY_ITEMS.fullmatch(rest, 0, stop)):
+            continue
+        return rest[:stop]
+    return rest
+
+
+def _is_figure(text: str, number: re.Match, stop: int) -> bool:
+    """`number`, a _MEASURE match in `text` inside a clause that ends at `stop`, measures something."""
+    currency, digits, letters = number.groups()
+    if currency or text.startswith(("%", "+"), number.end()):
+        return True  # $41K, 40%, 2000+
+    if _NAME_NUMBER.fullmatch(digits + letters) or (
+            not letters and _NAME_BEFORE_NUMBER.search(text, max(0, number.start() - 40), number.start())):
+        return _MEASURE_WORD.match(text, number.end(), stop) is not None  # SOC 2; but 'saving Finance 120 hours'
+    if _YEAR_NUMBER.fullmatch(digits + letters):
+        return _COUNT_WORD.match(text, number.end(), stop) is not None  # 'in 2024'; but '2047 requests per second'
+    return True
+
+
 def _measured(text: str, end: int) -> bool:
-    """A figure follows in the same clause, so the result is specific: 'improved team productivity by 18.3% (from 11
-    to 13 tickets a sprint)'."""
-    return bool(re.search(r"\d", re.split(r"[.;](?:\s|$)", text[end:], maxsplit=1)[0][:100]))
+    """A real figure follows in the same clause, so the result is specific: 'improved team productivity by 18.3% (from
+    11 to 13 tickets a sprint)'. Never a year, a name like 'Q3', 'GPT-4' or 'Java 17', or a figure after ', and'."""
+    stop = end + len(_clause(text, end))
+    return any(_is_figure(text, number, stop) for number in _MEASURE.finditer(text, end, stop))
+
+
+def _literal_delivery(text: str, match: re.Match) -> bool:
+    """Bare 'delivers results' with a speed figure or 'real time' in its clause: a system that returns results."""
+    return (re.fullmatch(r"deliver(?:s|ed|ing)?\s+results", match.group(0), re.IGNORECASE) is not None
+            and _SPEED.search(_clause(text, match.end())) is not None)
 
 
 def _posting_phrase(phrase: str, terms: list[str]) -> bool:
@@ -789,12 +1137,18 @@ def _posting_phrase(phrase: str, terms: list[str]) -> bool:
 def _plain_problems(places: list[tuple[str, str]], exempt: list[str] | None = None) -> list[str]:
     """Buzzwords and vague results in each (where, text), and texts that chain three or more '-ing' clauses. A vague
     phrase that is itself one of the posting's terms (`exempt`: it asks for "operational excellence") is the keyword
-    the posting wants; with a verb in front ("improved operational excellence") it is still vague."""
+    the posting wants; with a verb in front ("improved operational excellence") it is still vague. One phrase is one
+    problem: the cliche inside a vague result already reported ('Drove operational excellence') is not counted again."""
     problems: list[str] = []
     for where, text in places:
         problems += [f"'{match.group(0)}' ({where})" for match in _BUZZ.finditer(text)]
-        problems += [f"'{match.group(0)}' ({where})" for match in _VAGUE_RESULT.finditer(text)
-                     if not _measured(text, match.end()) and not _posting_phrase(match.group(0), exempt or [])]
+        vague = [match for match in _VAGUE_RESULT.finditer(text)
+                 if not _measured(text, match.end()) and not _posting_phrase(match.group(0), exempt or [])]
+        reported = {i for match in vague for i in range(*match.span())}
+        problems += [f"'{match.group(0)}' ({where})" for match in vague]
+        problems += [f"'{match.group(0)}' ({where})" for match in _VAGUE_CLICHE.finditer(text)
+                     if not reported.intersection(range(*match.span()))
+                     and not _posting_phrase(match.group(0), exempt or []) and not _literal_delivery(text, match)]
         if len(_ING_CLAUSE.findall(text)) > MAX_ING_CLAUSES:
             problems.append(f"a chain of '-ing' clauses ({where}: '{' '.join(text.split()[:8])} ...')")
     return problems
@@ -814,12 +1168,22 @@ def _posting_terms(analysis: JDAnalysis | None) -> list[str]:
     return [*analysis.must_have_skills, *analysis.nice_to_have_skills, *analysis.keywords]
 
 
+def _sentences(paragraph: str) -> list[str]:
+    """The paragraph's sentences. An abbreviation that a lowercase word or a figure follows ('U.S. warehouses') ends
+    none."""
+    sentences, start = [], 0
+    for gap in re.finditer(r"(?<=[.!?])\s+", paragraph):
+        if not _abbreviation_stop(paragraph, gap.start() - 1):
+            sentences.append(paragraph[start:gap.start()])
+            start = gap.end()
+    return [sentence for sentence in [*sentences, paragraph[start:]] if sentence]
+
+
 def cover_plain_problems(letter: CoverLetter, analysis: JDAnalysis | None = None) -> list[str]:
     """The same check on the cover letter, sentence by sentence, so a long paragraph is not read as one '-ing'
     chain."""
     return _plain_problems([(f"paragraph {number}", sentence) for number, paragraph in enumerate(letter.paragraphs, 1)
-                            for sentence in re.split(r"(?<=[.!?])\s+", paragraph) if sentence],
-                           _posting_terms(analysis))
+                            for sentence in _sentences(paragraph)], _posting_terms(analysis))
 
 
 _WORD = re.compile(r"[A-Za-z][\w+#]*(?:-[\w+#]+)*")
@@ -1062,8 +1426,35 @@ def ats_lint(resume: Resume) -> list[str]:
     return warnings
 
 
+# A product or standard name before a bare number or version: Microsoft 365, Fortune 500, Postgres 15, Node.js 20, iOS 17
+_NAME_BEFORE = re.compile(r"[^\s.!?:;]\s+(?:[A-Z][\w#+.-]*|[a-z]+[A-Z][\w#+.-]*|[a-z]+\.(?:js|net|io))\s$")
+_NAMED_BEFORE = re.compile(r"(?:\b[A-Z][A-Za-z]*-|\+\+)$")  # GPT-4, COVID-19, SEV-2, C++17: part of a name
+# A count after a metric or a team is a figure: 'NPS 12 points', 'Finance 20 hours', 'Postgres 40 TB'
+_METRIC_NAMES = frozenset({
+    "NPS", "eNPS", "CSAT", "CES", "MTTR", "MTTD", "MTTA", "MTBF", "AHT", "FCR", "DSO", "DPO", "DAU", "MAU", "WAU", "ARR",
+    "MRR", "ARPU", "LTV", "CAC", "ROAS", "ROI", "CTR", "CVR", "AOV", "GMV", "TPS", "QPS", "RPS", "SLA", "SLO", "KPI",
+})
+_MEASURE_AFTER = re.compile(
+    r"\s*(?:points?|pts|bps|basis\s+points|percentage\s+points|hours?|hrs?|minutes?|mins?|seconds?|secs?|days?|weeks?"
+    r"|months?|years?|ms|[kmgtp]b|people|engineers|analysts|developers|users|customers|clients|accounts|tickets"
+    r"|dashboards|reports|services|teams|stores|sites|countries|markets|apps|models|pipelines|jobs|requests"
+    r"|transactions|orders|calls|incidents|alerts)\b", re.IGNORECASE)
+
+
 def _numbers_in(text: str) -> list[str]:
-    return [m.group(0).strip(" ,.") for m in _NUMBER.finditer(text)]
+    """The figures in a text; never the digits of a name or a version (p95, EC2, GPT-4, C++17, Microsoft 365, Node.js
+    20, Python 3.12), but a count after a metric or a team is one ('NPS 12 points', 'Finance 20 hours')."""
+    found = []
+    for match in _NUMBER.finditer(text):
+        token, before = match.group(0).strip(" ,."), text[max(0, match.start() - 60): match.start()]
+        if _NAMED_BEFORE.search(before):
+            continue
+        if re.fullmatch(r"\d+(?:\.\d+)*", token):
+            name = _NAME_BEFORE.search(before)
+            if name and name.group(0).split()[-1] not in _METRIC_NAMES and not _MEASURE_AFTER.match(text, match.end()):
+                continue
+        found.append(token)
+    return found
 
 
 _FIGURE_CORE = re.compile(r"[$€£]?(\d[\d,]*)(\.\d+)?")
@@ -1075,7 +1466,10 @@ def is_round_figure(token: str) -> bool:
     match = _FIGURE_CORE.match(token)
     if not match or match.group(2):
         return False
-    value = int(match.group(1).replace(",", "") or 0)
+    digits = match.group(1).replace(",", "") or "0"
+    if len(digits) > 18:
+        return False
+    value = int(digits)
     if 1900 <= value <= 2100 and token.isdigit():
         return False
     thousands = 0
@@ -1083,9 +1477,11 @@ def is_round_figure(token: str) -> bool:
         while value >= 1000 and value % 1000 == 0:
             value //= 1000
             thousands += 1
-        if not thousands and value >= 1000 and value % 100 == 0:
+        if value >= 1000 and value % 100 == 0:
             value //= 100
-            thousands = 1
+            thousands += 1
+        if token.rstrip()[-1:] in "kKmMbB":
+            thousands += 1
     return (value >= 10 and value % 5 == 0) or (thousands > 0 and value < 10)
 
 
@@ -1113,7 +1509,7 @@ MAX_FIGURE_SHARE = 0.5
 def has_figure(text: str) -> bool:
     """True if the text carries a number other than a plain year."""
     for token in _numbers_in(text):
-        if token.isdigit() and 1900 <= int(token) <= 2100:
+        if token.isdigit() and len(token) == 4 and 1900 <= int(token) <= 2100:
             continue
         if token:
             return True
@@ -1143,69 +1539,133 @@ MIN_FIRST_BULLETS_FOR_RETRY = 2  # two jobs that open without a figure (or the m
 # percentage that describes a change comes with its base in absolute terms, right beside it: "by 17.8% ($41,000 a
 # year)", "by 22% (from 41 to 32 seconds)", "by 22%, from 41 to 32 seconds", "from 41 to 32 seconds, a 22% drop". A
 # level or a share ("99.9% uptime", "used by 38% of users", "from 61% to 87%") needs none.
-_PCT = r"\d+(?:\.\d+)?\s?%"
+_PCT = r"(?<![\d,.])(?:\d{1,3}(?:,\d{3})+|\d+)(?:\.\d+)?\s?%"  # '1,200%' is one figure
 _NOT_SHARE = r"(?!\s+of\b)"
+_CHANGE_NOUN = (r"(?:increase|decrease|reduction|improvement|growth|drop|decline|rise|gain|cut|saving|uplift|lift"
+                r"|boost|jump|fall)")
+# Words between a percentage and its change noun name what changed ('a 17.8% cost reduction'), never a level
+# ('99.9% uptime during growth') or a new phrase ('lift-and-shift', 'a 6% decline rate')
+_FILLER = (r"(?:(?!(?:of|to|in|from|and|or|the|a|an|during|through|despite|amid|while|for|over|with|on|at|by|across"
+           r"|after|before|since|uptime|availability|accuracy|coverage|slas?|slos?|share|rates?|precision|recall"
+           r"|utili[sz]ation|occupancy)\b)[a-z][\w-]*\s+)")
+# After a verb, the words before the percentage name what changed ('Cut AWS spend 17.8%'), never a level kept
+# alongside ('Cut costs while maintaining 99.9% uptime', 'for top 5% accounts')
+_VERB_FILLER = (r"(?:(?!(?:by|to|from|at|of|with|in|on|and|or|while|whilst|yet|but|without|despite|within|under|below"
+                r"|above|for|top|bottom|kept|keep|keeps|keeping|maintain|maintains|maintained|maintaining|hold|holds"
+                r"|held|holding|sustain|sustains|sustained|sustaining|hit|hits|hitting|reach|reached|reaching"
+                r"|achieve|achieved|achieving)\b)[\w-]+\s+)")
+_LEVEL_AFTER = r"(?!\s+(?:uptime|availability|accuracy|coverage|sla|slo|of)\b)"
 _CHANGE_PCT = re.compile(
     rf"\bby\s+(?:(?:about|almost|nearly|over|more\s+than|up\s+to)\s+)?{_PCT}{_NOT_SHARE}"
     rf"|(?P<adj>{_PCT}\s+(?:faster|slower|fewer|less|lower|higher|more|smaller|larger|shorter|cheaper|quicker)\b)"
-    rf"|(?P<noun>{_PCT}\s+(?:(?:year[\s-]over[\s-]year|yoy|annual|monthly|quarterly)\s+)?"
-    r"(?:increase|decrease|reduction|improvement|growth|drop|decline|rise|gain|cut|saving|uplift|lift|boost|jump|fall)s?\b)"
-    rf"|{_PCT}\s+(?:year[\s-]over[\s-]year|yoy|quarter[\s-]over[\s-]quarter|month[\s-]over[\s-]month)\b"
+    rf"|(?P<noun>{_PCT}\s+(?:(?:year[\s-](?:over|on)[\s-]year|yoy|annual|monthly|quarterly)\s+)?"
+    rf"(?P<filler>{_FILLER}{{0,2}}?){_CHANGE_NOUN}s?\b(?!\s+rates?\b)(?!-(?!off\b)))"
+    rf"|{_PCT}\s+(?:year[\s-](?:over|on)[\s-]year|yoy|qoq|mom|quarter[\s-](?:over|on)[\s-]quarter"
+    rf"|month[\s-](?:over|on)[\s-]month)\b"
+    rf"|\b{_CHANGE_NOUN}s?\s+of\s+{_PCT}"
+    rf"|\b(?:cut|cutting|reduced|reducing|lowered|lowering|increased|increasing|raised|raising|improved|improving"
+    rf"|boosted|boosting|lifted|lifting|grew|growing|decreased|decreasing|saved|saving)\s+"
+    rf"{_VERB_FILLER}{{0,3}}?{_PCT}{_NOT_SHARE}{_LEVEL_AFTER}"
     rf"|\b(?:up|down|grew|rose|fell|dropped|declined|jumped|climbed)\s+{_PCT}{_NOT_SHARE}", re.IGNORECASE)
 _VALUE = r"[$€£]?\d[\d,]*(?:\.\d+)?"
-_UNIT = (r"(?:ms|msec|secs?|seconds?|s|mins?|minutes?|m|hrs?|hours?|h|days?|d|weeks?|months?|years?"
+_UNIT = (r"(?:ms|msec|milliseconds?|millis|million|billion|mn|bn|secs?|seconds?|s|mins?|minutes?|m|hrs?|hours?|h"
+         r"|days?|d|weeks?|months?|years?"
          r"|[kKmMgGtTpP][bB]|[kKmMbB])")
-_PAIR_BODY = (rf"(?P<was>{_VALUE})(?:\s?(?P<was_unit>{_UNIT})\b)?(?!\s?%)[^.;()]{{0,30}}?\bto\s+"
-              rf"(?P<now>{_VALUE})(?:\s?(?P<now_unit>{_UNIT})\b)?(?!\s?%)")
-_PAIR_IN_BRACKET = re.compile(rf"^\s*(?:from\s+)?{_PAIR_BODY}", re.IGNORECASE)  # '(from 41 to 32 seconds)'
-_PAIR_AFTER = re.compile(rf"^,?\s*from\s+{_PAIR_BODY}", re.IGNORECASE)  # ', from 41 to 32 seconds'
-_PAIR_BEFORE = re.compile(rf"\bfrom\s+{_PAIR_BODY}[^.;()%]{{0,25}}$", re.IGNORECASE)  # '..., a 22% drop'
-_BRACKET_AFTER = re.compile(r"^[^.;()%]{0,60}?\(([^()]*)\)")
-_LEVELS = re.compile(rf"\bfrom\s+{_PCT}[^()]{{0,30}}?\bto\s+{_PCT}", re.IGNORECASE)  # '(from 3.1% to 3.2%)'
-
-_MONEY_AFTER = re.compile(r"^,?\s*(?:saving|worth|or|about|roughly|which\s+is|that\s+is)?\s*[$€£]\s?\d", re.IGNORECASE)
-_TO_AFTER = re.compile(rf"^\s*to\s+{_VALUE}", re.IGNORECASE)  # 'by 23.4% to 11 minutes'
-_MONEY_BEFORE = re.compile(r"[$€£]\d[^.;%]{0,60}$")  # 'saving $41,300 a year, a 17.8% cut'
+_PAIR_BODY = (rf"(?P<was>{_VALUE})(?!\.?\d)(?:\s?(?P<was_unit>{_UNIT})\b)?(?!\s?%)"
+              rf"(?P<gap>(?:(?!\bfrom\b)[^.;()]){{0,30}}?)\bto\s+"
+              rf"(?P<now>{_VALUE})(?!\.?\d)(?:\s?(?P<now_unit>{_UNIT})\b)?(?!\s?%)")
+_PAIR_FROM = re.compile(rf"\bfrom\s+{_PAIR_BODY}", re.IGNORECASE)  # '(p95 from 820 to 648 ms)', '(down from ...)'
+_PAIR_IN_BRACKET = re.compile(rf"^\s*(?:[\w-]+:\s*)?(?:from\s+)?{_PAIR_BODY}", re.IGNORECASE)  # '(p95: 820 to 648 ms)'
+_PAIR_AFTER = re.compile(rf"^,?\s*(?:(?:down|up)\s+)?from\s+{_PAIR_BODY}", re.IGNORECASE)  # ', down from 41 to 32 s'
+_SAME_CLAUSE = r"(?!\b(?:and|but|while|then|whereas)\b)"  # 'from 41 to 32 minutes and drove a 30% drop': two claims
+_PAIR_BEFORE = re.compile(rf"\bfrom\s+{_PAIR_BODY}(?:{_SAME_CLAUSE}[^.;)%]){{0,25}}$", re.IGNORECASE)  # '..., a 22% drop'
+_BRACKET_AFTER = re.compile(r"^(?:\.\d|[^.;()%]){0,60}?\(([^()]*)\)")
+_LEVELS = re.compile(rf"(?:\bfrom\s+)?{_PCT}[^()]{{0,30}}?\bto\s+{_PCT}", re.IGNORECASE)  # '(from 3.1% to 3.2%)'
+_LEVELS_AFTER = re.compile(rf"^,?\s*from\s+{_PCT}[^()]{{0,30}}?\bto\s+{_PCT}", re.IGNORECASE)
+_LEVELS_BEFORE = re.compile(rf"\bfrom\s+{_PCT}[^()]{{0,30}}?\bto\s+{_PCT}(?:{_SAME_CLAUSE}[^.;)%]){{0,25}}$",
+                            re.IGNORECASE)
+# An amount with its period in brackets is a base too: '(12 hours a week)', '(1,200 fewer alerts a month)'
+_AMOUNT_IN_BRACKET = re.compile(r"\d[\d,.]*\s*(?:[a-z%]+\s+){0,4}?(?:(?:a|per|each|every)\s+(?:day|week|month|quarter"
+                                r"|year|sprint|release|night|run)|fewer|more|less|saved)\b", re.IGNORECASE)
+# Money after a percentage is its base only when it is the saving itself: never 'by 21%, protecting $2.3M in revenue'
+_MONEY_AFTER = re.compile(r"^[,:]?\s*(?:(?:saving|saved|worth|or|about|roughly|which\s+is|that\s+is|for|(?:which|that)"
+                          r"\s+saved|a\s+saving\s+of)\s+(?:(?:the\s+)?(?:company|team|business|clients?|customers?|us)"
+                          r"\s+)?)?[$€£]\s?\d", re.IGNORECASE)
+_SAVING_AFTER = re.compile(r"^,?\s*(?:saving|saved|freeing(?:\s+up)?|(?:which|that)\s+saved)\s+(?:(?:about|roughly"
+                           r"|over|nearly)\s+)?[$€£]?\d", re.IGNORECASE)  # ', saving 12 hours a week'
+_TO_AFTER = re.compile(rf"^,?\s*(?:(?:down|up)\s+)?to\s+{_VALUE}", re.IGNORECASE)  # 'by 23.4% to 11 minutes'
+# A period after the percentage does not hide the base after it: 'Grew ARR 24.3% year-over-year to $12.4M'
+_PERIOD_AFTER = re.compile(r"^\s+(?:(?:year|quarter|month)[\s-](?:over|on)[\s-](?:year|quarter|month)|yoy|qoq|mom"
+                           r"|annually|yearly|quarterly|monthly|(?:a|per|each|every)\s+(?:year|quarter|month|week))\b",
+                           re.IGNORECASE)
+_MONEY_BEFORE = re.compile(rf"[$€£]\d(?:\.\d|\([^()]*\)|{_SAME_CLAUSE}[^.;%()]){{0,60}}$")  # 'saving $41,300 a year, a 17.8% cut'
 _SENTENCE_END = re.compile(r"(?<=[.!?;])\s+")
 MIN_UNBASED_FOR_RETRY = 2  # one is only noted: like a single rounded figure, not worth a model call
 MAX_BASE_GAP = 1.0  # percentage points between a percentage and the change its base shows
-_TIME = {"ms": 0.001, "msec": 0.001, "s": 1, "sec": 1, "secs": 1, "second": 1, "seconds": 1, "min": 60, "mins": 60,
-         "minute": 60, "minutes": 60, "h": 3600, "hr": 3600, "hrs": 3600, "hour": 3600, "hours": 3600, "d": 86400,
-         "day": 86400, "days": 86400, "week": 604800, "weeks": 604800, "month": 2629800, "months": 2629800,
-         "year": 31557600, "years": 31557600}
+_TIME = {"ms": 0.001, "msec": 0.001, "millisecond": 0.001, "milliseconds": 0.001, "millis": 0.001, "s": 1, "sec": 1,
+         "secs": 1, "second": 1, "seconds": 1, "min": 60, "mins": 60, "minute": 60, "minutes": 60, "h": 3600,
+         "hr": 3600, "hrs": 3600, "hour": 3600, "hours": 3600, "d": 86400, "day": 86400, "days": 86400,
+         "week": 604800, "weeks": 604800, "month": 2629800, "months": 2629800, "year": 31557600, "years": 31557600}
 _DATA = {"kb": 1e3, "mb": 1e6, "gb": 1e9, "tb": 1e12, "pb": 1e15}
-_COUNT = {"k": 1e3, "b": 1e9}
+_COUNT = {"k": 1e3, "b": 1e9, "million": 1e6, "mn": 1e6, "billion": 1e9, "bn": 1e9}
+# 'Kept checkout up 99.95% through Black Friday': a level held, not a change; never 'Kept churn flat while pushing
+# activation up 12.4%'
+_KEPT = re.compile(r"\b(?:kept|keep|keeps|keeping|stayed|stays|remained|remains|held|holding)\s+"
+                   r"(?:(?!(?:while|whilst|and|but|then|whereas|yet)\b)[\w-]+\s+){0,3}$", re.IGNORECASE)
+# The job post's own growth figures: a cover letter may quote them ('your 40% annual growth')
+_GROWTH_WORDS = re.compile(r"\b(?:grow|grows|grew|grown|growing|growth|expand(?:s|ed|ing)?|expansion|increase[sd]?"
+                           r"|rise|rises|rose|risen|rising|scal(?:e|es|ed|ing)|doubled|tripled|annually"
+                           r"|year[\s-](?:over|on)[\s-]year|yoy)\b", re.IGNORECASE)
+_SPEED_UP = re.compile(r"\b(?:sped|speed(?:s|ing)?)\s+up\b|\baccelerat\w*", re.IGNORECASE)
 
 
 def _change_percentages(sentence: str):
-    """(match, text before it, text after it) for each percentage that describes a change, each side cut at the
-    neighbouring percentage, so one base never counts for another."""
-    matches = list(_CHANGE_PCT.finditer(sentence))
+    """(match, its base) for each percentage that describes a change; text before a percentage starts after the
+    previous percentage's own base, so one base never counts for another."""
+    matches = [m for m in _CHANGE_PCT.finditer(sentence)
+               if not (m.group(0)[:2].lower() == "up" and _KEPT.search(sentence[: m.start()]))]
+    start = 0
     for index, match in enumerate(matches):
-        before = sentence[matches[index - 1].end() if index else 0: match.start()]
+        before = sentence[start: match.start()]
         after = sentence[match.end(): matches[index + 1].start() if index + 1 < len(matches) else len(sentence)]
-        yield match, before, after
+        based, pair, used = _attached_base(match, before, after)
+        start = match.end() + used
+        yield match, (based, pair)
 
 
-def _attached_base(match: re.Match, before: str, after: str) -> tuple[bool, re.Match | None]:
-    """(the percentage has its base beside it, the 'from A to B' to check against it, if the base is one)."""
+def _years(pair: re.Match | None) -> bool:
+    """'from 2021 to 2023': a span of years, not a base; never '1,950 to 2,040' (a count)."""
+    return pair is not None and not (pair.group("was_unit") or pair.group("now_unit")) and all(
+        re.fullmatch(r"(?:19|20)\d\d", pair.group(group)) for group in ("was", "now"))
+
+
+def _attached_base(match: re.Match, before: str, after: str) -> tuple[bool, re.Match | None, int]:
+    """(has its base beside it, the 'from A to B' to check against it, where its base after it ends)."""
     bracket = _BRACKET_AFTER.match(after)
     if bracket:
-        pair = _PAIR_IN_BRACKET.search(bracket.group(1))
-        if pair or re.search(r"[$€£]\s?\d", bracket.group(1)) or _LEVELS.search(bracket.group(1)):
-            return True, pair
-    pair = _PAIR_AFTER.match(after)
-    if pair:
-        return True, pair
-    if _TO_AFTER.match(after) or _MONEY_AFTER.match(after):
-        return True, None
+        content = bracket.group(1)
+        pair = _PAIR_FROM.search(content) or _PAIR_IN_BRACKET.search(content)
+        pair = None if _years(pair) else pair
+        if (pair or re.search(r"[$€£]\s?\d", content) or _LEVELS.search(content)
+                or _AMOUNT_IN_BRACKET.search(content)):
+            return True, pair, bracket.end()
+    period = _PERIOD_AFTER.match(after)
+    skipped = period.end() if period else 0
+    rest = after[skipped:]
+    pair = _PAIR_AFTER.match(rest)
+    if pair and not _years(pair):
+        return True, pair, skipped + pair.end()
+    found = _TO_AFTER.match(rest) or _MONEY_AFTER.match(rest) or _SAVING_AFTER.match(rest) or _LEVELS_AFTER.match(rest)
+    if found:
+        return True, None, skipped + found.end()
     if match.group("noun") or match.group("adj"):
         pair = _PAIR_BEFORE.search(before)
-        if pair:
-            return True, pair
-        if _MONEY_BEFORE.search(before):
-            return True, None
-    return False, None
+        # 'Consolidated Kafka clusters from 14 to 6, a 17.8% cost reduction': the pair counts clusters, not costs
+        if pair and not _years(pair) and not (match.group("noun") and match.group("filler")):
+            return True, pair, 0
+        if _MONEY_BEFORE.search(before) or _LEVELS_BEFORE.search(before):
+            return True, None, 0
+    return False, None, 0
 
 
 def _scale(unit: str, other: str, money: bool) -> tuple[str, float] | None:
@@ -1227,21 +1687,41 @@ def _number(value: str) -> float:
     return float(value.lstrip("$€£").replace(",", ""))
 
 
-def pair_change(pair: re.Match) -> float | None:
-    """The change, in percent, from A to B ('from 1.2s to 820ms' is 31.7), or None when the two ends cannot be
-    compared (different kinds of unit, years)."""
-    was_unit, now_unit = (pair.group("was_unit") or "").lower(), (pair.group("now_unit") or "").lower()
-    was_unit, now_unit = was_unit or now_unit, now_unit or was_unit  # 'from 41 to 32 seconds': one unit for both
+def pair_values(pair: re.Match) -> tuple[float, float] | None:
+    """(A, B) of 'from A to B' on one scale ('from 1.2s to 820ms' is (1.2, 0.82)), or None when the two ends cannot
+    be compared (different kinds of unit, years, a second number before 'to')."""
+    if re.search(r"\d", pair.group("gap") or "") or _years(pair):
+        return None  # 'from 1h 20m to 41m': a second number before 'to'; 'from 2019 to 2022': years, not a base
+    raw_was, raw_now = (pair.group("was_unit") or "").lower(), (pair.group("now_unit") or "").lower()
+    money_was, money_now = pair.group("was")[:1] in "$€£", pair.group("now")[:1] in "$€£"
+    money = money_was or money_now
+    plain_unit = raw_now if money_was else raw_was
+    if money_was != money_now and plain_unit != "m" and (plain_unit in _TIME or plain_unit in _DATA):
+        return None  # 'from $6.20 to 3 minutes per invoice': money and time
     was, now = _number(pair.group("was")), _number(pair.group("now"))
+    if bool(raw_was) != bool(raw_now):
+        unit = raw_was or raw_now
+        bare = (pair.group("now") if raw_was else pair.group("was")).lstrip("$€£").split(".")[0]
+        full = "," in bare or len(bare) >= 4
+        scale = ("count", 1e6) if unit == "m" and full else _scale(unit, unit, money)  # beside 980,000, M is millions
+        if scale and scale[0] == "count" and full:
+            # '980,000 to 1.2M': the bare end is written in full, only the other one in millions
+            was, now = (was * scale[1], now) if raw_was else (was, now * scale[1])
+            return (was, now) if was > 0 else None
+    was_unit, now_unit = raw_was or raw_now, raw_now or raw_was  # 'from 41 to 32 seconds': one unit for both
     if was_unit:
-        money = pair.group("was")[:1] in "$€£" or pair.group("now")[:1] in "$€£"
         scale_was, scale_now = _scale(was_unit, now_unit, money), _scale(now_unit, was_unit, money)
         if scale_was is None or scale_now is None or scale_was[0] != scale_now[0]:
             return None
         was, now = was * scale_was[1], now * scale_now[1]
-    elif 1900 <= was <= 2100 and 1900 <= now <= 2100:
-        return None  # from 2019 to 2022: years, not a base
-    return abs(was - now) / was * 100 if was > 0 else None
+    return (was, now) if was > 0 else None
+
+
+def pair_change(pair: re.Match) -> float | None:
+    """The change, in percent, from A to B ('from 1.2s to 820ms' is 31.7), or None when the two ends cannot be
+    compared."""
+    values = pair_values(pair)
+    return abs(values[0] - values[1]) / values[0] * 100 if values else None
 
 
 def unbased_percentages(text: str, ignore: frozenset[str] = frozenset()) -> list[str]:
@@ -1249,9 +1729,9 @@ def unbased_percentages(text: str, ignore: frozenset[str] = frozenset()) -> list
     `ignore`: figures that are not the candidate's (the company's own growth, quoted from the job post)."""
     found: list[str] = []
     for sentence in _SENTENCE_END.split(text):
-        for match, before, after in _change_percentages(sentence):
+        for match, (based, _pair) in _change_percentages(sentence):
             figure = re.search(_PCT, match.group(0)).group(0).replace(" ", "")  # type: ignore[union-attr]
-            if figure not in ignore and not _attached_base(match, before, after)[0]:
+            if figure not in ignore and not based:
                 found.append(match.group(0))
     return found
 
@@ -1260,19 +1740,37 @@ def base_mismatches(text: str) -> list[str]:
     """Bases that do not agree with their own percentage ('by 22% (from 41 to 38 seconds)')."""
     found: list[str] = []
     for sentence in _SENTENCE_END.split(text):
-        for match, before, after in _change_percentages(sentence):
-            pair = _attached_base(match, before, after)[1]
-            change = pair_change(pair) if pair else None
-            percent = float(re.search(r"\d+(?:\.\d+)?", match.group(0)).group(0))  # type: ignore[union-attr]
-            if change is not None and abs(change - percent) > MAX_BASE_GAP:
+        for match, (_based, pair) in _change_percentages(sentence):
+            values = pair_values(pair) if pair else None
+            if values is None:
+                continue
+            was, now = values
+            percent = float(re.search(_PCT, match.group(0)).group(0).replace(" ", "").replace(",", "")  # type: ignore[union-attr]
+                            .rstrip("%"))
+            changes = [abs(was - now) / was * 100]
+            speed = (re.search(r"\b(?:faster|quicker)\b", match.group(0), re.IGNORECASE)
+                     or _SPEED_UP.search(sentence[: match.start()]))
+            if now > 0 and speed:
+                changes.append((was / now - 1) * 100)  # '140% faster (from 12 to 5 minutes)': 2.4 times the speed
+            if all(abs(change - percent) > MAX_BASE_GAP for change in changes):
                 found.append(pair.group(0).strip())  # type: ignore[union-attr]
     return found
+
+
+def posting_figures(jd: str) -> frozenset[str]:
+    """The job post's own change figures ('We grew 40% last year', 'grown 40% annually'), which a cover letter may
+    quote; never its benefits ('up to 20% travel', 'a 4% 401(k) match')."""
+    figures = {re.search(_PCT, m.group(0)).group(0).replace(" ", "") for m in _CHANGE_PCT.finditer(jd)}  # type: ignore[union-attr]
+    for sentence in re.split(r"(?<=[.!?])\s+|\n+", jd):
+        if _GROWTH_WORDS.search(sentence):
+            figures.update(match.replace(" ", "") for match in re.findall(_PCT, sentence))
+    return frozenset(figures)
 
 
 def unbased_percentage_problems(resume: Resume, letter: CoverLetter | None = None, jd: str = "") -> list[str]:
     """"'by 23.4%' (Northwind Labs)" for every percentage without its base, in the summary, the bullets and the
     cover letter. A percentage the job post itself gives (the company's growth) is the company's, not a claim."""
-    posting = frozenset(match.replace(" ", "") for match in re.findall(_PCT, jd))
+    posting = posting_figures(jd)
     return [f"'{found}' ({where})" for where, text in prose_places(resume, letter)
             for found in unbased_percentages(text, posting if where.startswith("cover letter") else frozenset())]
 
@@ -1307,18 +1805,92 @@ def _without_level(role: str) -> str:
     return match.group("role") if match else role
 
 
-def short_role_headline(resume: Resume) -> None:
-    """The headline is the role's short, common name, never the posting's full title: what a draft adds after a
-    '|' or a spaced dash goes, and so do brackets, the part after a comma and the level ('Staff Data Engineer,
-    Analytics Infrastructure' -> 'Data Engineer'). A bare role noun takes its function from after the comma
-    ('Manager, Customer Success' -> 'Customer Success Manager'). Changes the resume in place."""
-    text = re.sub(r"\s*\([^)]*\)", "", _AFTER_ROLE.sub("", resume.headline))
+def _role_core(title: str) -> str:
+    """A title's short, common name: what follows a '|' or a spaced dash goes, and so do brackets, the part after a
+    comma and the level ('Staff Data Engineer, Analytics Infrastructure' -> 'Data Engineer'). A bare role noun
+    takes its function from after the comma ('Manager, Customer Success' -> 'Customer Success Manager')."""
+    text = re.sub(r"\s*\([^)]*\)", "", _AFTER_ROLE.sub("", title or ""))
     role, _comma, rest = text.partition(",")
     role, rest = _without_level(role), _without_level(rest)
     if len(role.split()) == 1 and rest:
         role = f"{rest} {role}"
-    if role.strip():
-        resume.headline = role.strip()
+    return role.strip()
+
+
+def short_role_headline(resume: Resume) -> None:
+    """The headline is the role's short, common name, never the posting's full title (see _role_core). Changes the
+    resume in place."""
+    role = _role_core(resume.headline)
+    if role:
+        resume.headline = role
+
+
+def common_title(analysis: JDAnalysis | None) -> tuple[str, str]:
+    """(the posting's special title, the most similar common title): ('Voice AI Engineer', 'AI Engineer'); ('', '')
+    when the posting's title is a common one already ('Senior Data Engineer' -> 'Data Engineer')."""
+    if analysis is None or not analysis.general_role.strip():
+        return "", ""
+    special, common = _role_core(analysis.target_role), _role_core(analysis.general_role)
+    if not special or not common or len(common.split()) > 4 or spelling.us_text(special) == spelling.us_text(common):
+        return "", ""
+    return special, common
+
+
+def specialty(analysis: JDAnalysis | None) -> str:
+    """What makes the posting's title a special one, when the common title is the special one without it: 'Voice'
+    for 'Voice AI Engineer' -> 'AI Engineer'. '' otherwise."""
+    special, common = common_title(analysis)
+    words, kept = special.split(), common.split()
+    if len(words) > len(kept) and spelling.us_text(" ".join(words[-len(kept):])) == spelling.us_text(common):
+        return " ".join(words[: -len(kept)])
+    return ""
+
+
+def _article_for(word: str) -> str:
+    """'an' before 'AI Engineer', 'ML Engineer' or 'Engineering Manager'; 'a' before 'UX Designer' or 'User
+    Researcher'."""
+    if len(word) > 1 and word.isupper():  # an acronym is read letter by letter
+        return "an" if word[0] in "AEFHILMNORSX" else "a"
+    lower = word.lower()
+    if lower.startswith(("uni", "use", "usu", "uti", "eu", "one", "ure")):
+        return "a"
+    return "an" if lower[:1] in "aeiou" else "a"
+
+
+def general_role_fixes(resume: Resume, analysis: JDAnalysis | None) -> None:
+    """A special posting title is never copied: the headline is the most similar common title, and the summary and
+    the job titles say it instead ('Voice AI Engineer' -> 'AI Engineer', 'a Senior Voice AI Engineer' -> 'a Senior AI
+    Engineer'). The specialty belongs in the bullets. Changes the resume in place."""
+    special, common = common_title(analysis)
+    if not special:
+        return
+    resume.headline = common
+    words = r"[\s-]+".join(either_spelling(word) for word in special.split())
+    pattern = re.compile(rf"(?<![\w-])(?:(?P<article>an?)\s+)?{words}(?![\w-])", re.IGNORECASE)
+
+    def swap(match: re.Match) -> str:
+        article = match.group("article")
+        if not article:
+            return common
+        new = _article_for(common.split()[0])
+        return (new[0].upper() + new[1:] if article[0].isupper() else new) + " " + common
+
+    resume.summary = pattern.sub(swap, resume.summary)
+    for exp in resume.experience:
+        exp.job_title = pattern.sub(swap, exp.job_title)
+
+
+def specialty_problems(resume: Resume, analysis: JDAnalysis | None) -> list[str]:
+    """Where the headline, the summary or a job title names what makes the posting's title special ('voice' for a
+    'Voice AI Engineer' post): it belongs only in the bullets."""
+    words = specialty(analysis)
+    if not words:
+        return []
+    pattern = re.compile(r"(?<![\w-])" + r"[\s-]+".join(either_spelling(word) for word in words.split())
+                         + r"(?![\w-])", re.IGNORECASE)
+    places = [("headline", resume.headline), ("summary", resume.summary)] + [
+        (f"job title at {resume.profile.companies[exp.company_index].name}", exp.job_title) for exp in resume.experience]
+    return [where for where, text in places if pattern.search(text)]
 
 
 def _quoted(items: list[str]) -> str:
@@ -1419,75 +1991,105 @@ def _name_forms(name: str) -> list[str]:
     return [form for form in dict.fromkeys([name.strip(), core]) if form]
 
 
-def known_names(resume: Resume, analysis: JDAnalysis | None = None, *extra: str) -> list[str]:
-    """What keeps its own spelling: the employers, the schools, the hiring company and manager (each also in its
-    short form), and the posting's own keywords, exactly as the posting spells them, so an ATS that searches for
-    them letter for letter finds them."""
+_PERSON_TITLES = frozenset({"mr", "mrs", "ms", "mx", "dr", "prof", "sir", "dame"})
+
+
+def known_names(resume: Resume, analysis: JDAnalysis | None = None, company: str = "", manager: str = "") -> list[str]:
+    """What keeps its own spelling: the employers, the schools, the hiring company (each also in its short form) and
+    the hiring manager, also by each part of their name ('Ms. Gray')."""
     names = [c.name for c in resume.profile.companies] + [e.school for e in resume.profile.education]
     if analysis is not None:
         names.append(analysis.company)
-    kept = [form for name in [*names, *extra] if name and name.strip() for form in _name_forms(name)]
-    return kept + _posting_terms(analysis)
+    kept = [form for name in [*names, company, manager] if name and name.strip() for form in _name_forms(name)]
+    for hiring in (company, analysis.company if analysis is not None else ""):  # 'Color' for 'Color Health, Inc.'
+        words = _name_forms(hiring)[-1].split() if hiring and hiring.strip() else []
+        if len(words) > 1 and words[0][:1].isupper() and len(words[0]) > 2:
+            kept.append(words[0])
+    kept += [part for part in re.findall(r"[A-Z][A-Za-z'\u2019-]+", manager or "") if part.lower() not in _PERSON_TITLES]
+    return kept
+
+
+def posting_terms(analysis: JDAnalysis | None) -> list[str]:
+    """The job post's own keywords: written as the post spells them, so an ATS that searches for them letter for
+    letter finds them."""
+    return _posting_terms(analysis)
 
 
 def skill_terms(resume: Resume, analysis: JDAnalysis | None = None) -> list[str]:
-    """Terms changed to the style even when capitalised inside a sentence ('led Data Modeling'): the resume's skills,
-    the role it aims at, its headline and its job titles."""
-    terms = [skill for group in resume.skills for skill in group.skills]
-    terms += [resume.headline, *(exp.job_title for exp in resume.experience)]
+    """Skills, changed to the style even when capitalised inside a sentence ('led Data Modeling')."""
+    return [skill for group in resume.skills for skill in group.skills if skill and skill.strip()]
+
+
+def role_terms(resume: Resume, analysis: JDAnalysis | None = None) -> list[str]:
+    """The role the resume aims at, its headline and its job titles: changed to the style everywhere, even where a
+    word looks like part of a product's name ('Senior Data Modeler' -> 'Senior Data Modeller')."""
+    terms = [resume.headline, *(exp.job_title for exp in resume.experience)]
     if analysis is not None:
-        terms += [analysis.target_role, _without_level(analysis.target_role)]
+        terms += [analysis.target_role, _without_level(analysis.target_role), analysis.general_role]
     return [term for term in terms if term and term.strip()]
 
 
 def spell_resume(resume: Resume, style: str, analysis: JDAnalysis | None = None,
                  names: tuple[str, ...] = ()) -> list[tuple[str, str]]:
-    """Every word the model wrote in the run's style: "us" (American) or "eu" (British). The profile's facts (name,
-    employers, schools) are never touched. Returns the changes."""
-    keep, terms = known_names(resume, analysis, *names), skill_terms(resume, analysis)
+    """Every word the model wrote in the run's style: "us" (American) or "eu" (British), the job post's keywords as
+    the post spells them. The profile's facts (name, employers, schools) are never touched. Returns the changes."""
+    keep, exact = known_names(resume, analysis, *names), posting_terms(analysis)
+    terms, roles = skill_terms(resume, analysis), role_terms(resume, analysis)
     changes: list[tuple[str, str]] = []
 
-    def convert(text: str, title: bool) -> str:
-        new, done = spelling.convert_and_list(text, style, keep, terms, title)
+    def convert(text: str, title: bool, role_spans: list[str], brand: bool = False) -> str:
+        new, done = spelling.convert_and_list(text, style, keep, terms, title, exact=exact, roles=role_spans,
+                                              brand=brand)
         changes.extend(done)
         return new
 
-    resume.headline = convert(resume.headline, True)
+    resume.headline = convert(resume.headline, True, roles)
     seen: set[str] = set()
     for group in resume.skills:
-        group.category = convert(group.category, True)
+        brand = spelling.names_brand(group.category)  # 'AWS': 'Organizations', 'Compute Optimizer'
+        group.category = convert(group.category, True, [])
         items = []
-        for item in (convert(skill, True) for skill in group.skills):
+        for item in (convert(skill, True, [], brand) for skill in group.skills):
             if item.lower() not in seen:  # 'Data Visualisation' twice once both spellings are one
                 seen.add(item.lower())
                 items.append(item)
         group.skills = items
     resume.skills = [group for group in resume.skills if group.skills]
-    resume.summary = convert(resume.summary, False)
+    resume.summary = convert(resume.summary, False, roles)
     for exp in resume.experience:
-        exp.job_title = convert(exp.job_title, True)
-        exp.bullets = [convert(bullet, False) for bullet in exp.bullets]
+        exp.job_title = convert(exp.job_title, True, roles)
+        exp.bullets = [convert(bullet, False, roles) for bullet in exp.bullets]
     return changes
 
 
-def spell_letter(letter: CoverLetter, style: str, keep: list[str], terms: list[str]) -> None:
-    """The cover letter's paragraphs in the run's style, 'my resume' called a CV in EU style, and the sign-off of
-    that style ('Kind regards,' / 'Sincerely,'). The greeting holds names and stays."""
-    letter.paragraphs = [spelling.cv_wording(spelling.convert(paragraph, style, keep, terms), style)
+def spell_letter(letter: CoverLetter, style: str, keep: list[str], terms: list[str], exact: list[str] | None = None,
+                 roles: list[str] | None = None) -> None:
+    """The cover letter's paragraphs in the run's style (the job post's keywords as the post spells them), 'my
+    resume' called a CV in EU style, and the sign-off of that style ('Kind regards,' / 'Sincerely,'). The greeting
+    holds names and stays."""
+    letter.paragraphs = [spelling.cv_wording(spelling.convert(paragraph, style, keep, terms, exact=exact or [],
+                                                              roles=roles or []), style)
                          for paragraph in letter.paragraphs]
     letter.closing = spelling.sign_off(letter.closing, style)
 
 
 def spelling_problems(resume: Resume, letter: CoverLetter | None, style: str, analysis: JDAnalysis | None = None,
                       names: tuple[str, ...] = ()) -> list[str]:
-    """Words in the other spelling style: the model's text is converted, so these come from the user's own edits."""
-    keep, terms = known_names(resume, analysis, *names), skill_terms(resume, analysis)
-    places = [(resume.headline, True), *((skill, True) for group in resume.skills for skill in group.skills),
-              *((exp.job_title, True) for exp in resume.experience), (resume.summary, False),
-              *((bullet, False) for exp in resume.experience for bullet in exp.bullets)]
+    """Words in the other spelling style: the model's text is converted, so these come from the user's own edits.
+    The job post's keywords keep the post's spelling on purpose and are not reported, in whatever case the post or
+    the text writes them ('Data Modeling' in the post, 'data modeling' in a sentence)."""
+    keep, exact = known_names(resume, analysis, *names), posting_terms(analysis)
+    terms, roles = skill_terms(resume, analysis), role_terms(resume, analysis)
+    places = [(resume.headline, True, roles, False),
+              *((skill, True, [], spelling.names_brand(group.category)) for group in resume.skills
+                for skill in group.skills),
+              *((exp.job_title, True, roles, False) for exp in resume.experience), (resume.summary, False, roles, False),
+              *((bullet, False, roles, False) for exp in resume.experience for bullet in exp.bullets)]
     if letter is not None:
-        places += [(paragraph, False) for paragraph in letter.paragraphs]
-    found = [word for text, title in places for word in spelling.other_style_words(text, style, keep, terms, title)]
+        places += [(paragraph, False, roles, False) for paragraph in letter.paragraphs]
+    found = [word for text, title, role_spans, brand in places
+             for word in spelling.other_style_words(text, style, keep, terms, title, roles=role_spans, brand=brand,
+                                                    exact=exact)]
     return list(dict.fromkeys(found))
 
 

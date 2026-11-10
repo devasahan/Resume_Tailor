@@ -52,6 +52,9 @@ class Profile(BaseModel):
 class JDAnalysis(BaseModel):
     company: str = ""  # hiring company as the JD names it; "" if it does not (default keeps older runs loadable)
     target_role: str
+    # The most similar common title, without the specialty that makes the posting's title a special one ('AI
+    # Engineer' for 'Voice AI Engineer'): the headline, the summary and the job titles use it. "" in older runs.
+    general_role: str = ""
     seniority: str
     domain: str
     must_have_skills: list[str]

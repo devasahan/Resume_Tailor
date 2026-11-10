@@ -259,6 +259,7 @@ async def run_tailor(
             validate.clean_analysis(out.jd_analysis)
             resume = validate.build_resume(profile, out)
             validate.short_role_headline(resume)
+            validate.general_role_fixes(resume, out.jd_analysis)  # 'Voice AI Engineer' -> 'AI Engineer'
             notes = validate.fix_title_regressions(resume)
             notes += validate.role_level_fixes(resume, out.jd_analysis)
             validate.spell_resume(resume, spelling, out.jd_analysis, (company_name, hiring_manager))
@@ -381,6 +382,15 @@ async def run_tailor(
                     "Some bullets mention tools that job could not really have used: " + " ".join(era)
                     + " Move each one to a later job where it was common (AI tools only to the one or two most recent "
                     "jobs), or replace it with a tool of that time; keep the same number of bullets per employer."
+                )
+            special = validate.specialty_problems(value[1], value[0].jd_analysis)
+            if special:
+                common = validate.common_title(value[0].jd_analysis)
+                feedback.append(
+                    f"The {' and the '.join(special)} name{'s' if len(special) == 1 else ''} the posting's specialty "
+                    f"'{validate.specialty(value[0].jd_analysis)}', which belongs only in the bullets: the headline, "
+                    f"summary and job titles use the common title '{common[1]}' (the COMMON TITLE rule). Rewrite "
+                    "them without it, keeping their length and everything else they say."
                 )
             titles = validate.title_growth_problems(value[1])
             if titles:
@@ -517,7 +527,8 @@ async def _cover_letter(
     steps = steps or Steps()
     resume, style = result.resume, result.spelling or "us"
     keep = validate.known_names(resume, result.analysis, company_name, hiring_manager)
-    terms = validate.skill_terms(resume, result.analysis)
+    terms, roles = validate.skill_terms(resume, result.analysis), validate.role_terms(resume, result.analysis)
+    exact = validate.posting_terms(result.analysis)
 
     def parse(data: dict) -> CoverLetter:
         raw = CoverLetterOut.model_validate(data)
@@ -526,7 +537,7 @@ async def _cover_letter(
             greeting=greeting, paragraphs=paragraphs, closing=closing,
             company_name=company_name, hiring_manager=hiring_manager,
         )
-        validate.spell_letter(letter, style, keep, terms)  # the run's US or EU style, its sign-off, CV or resume
+        validate.spell_letter(letter, style, keep, terms, exact, roles)  # the run's style, its sign-off, CV or resume
         return letter
 
     second = Outcome()

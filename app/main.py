@@ -374,6 +374,11 @@ def document_word(result: TailorResult) -> str:
     return "CV" if result.spelling == "eu" else "Resume"
 
 
+def document_lang(result: TailorResult) -> str:
+    """The language the PDF and DOCX files declare: British English for an EU style run."""
+    return "en-GB" if result.spelling == "eu" else "en-US"
+
+
 def download_name(result: TailorResult, ext: str, cover: bool = False) -> str:
     """The usual pattern for job applications: the name on the resume, then the document. 'Jordan_Rivera_Resume.pdf'
     and 'Jordan_Rivera_Cover_Letter.pdf'. No company in it, so a file sent to the wrong company does not show it."""
@@ -1065,7 +1070,7 @@ def create_app(db: Database | None = None, registry: Registry | None = None, rou
         result = load_run(run_id, user)
         if result.resume is None or result.cover_letter is None:
             raise HTTPException(404, "No cover letter in this run.")
-        pdf, _ = render_cover_pdf(result.resume, result.cover_letter, result.style.paper)
+        pdf, _ = render_cover_pdf(result.resume, result.cover_letter, result.style.paper, document_lang(result))
         name = download_name(result, "pdf", cover=True)
         if download:
             log_download(user, run_id, result, "cover_letter", "pdf", name)
@@ -1078,7 +1083,7 @@ def create_app(db: Database | None = None, registry: Registry | None = None, rou
             raise HTTPException(404, "No cover letter in this run.")
         name = download_name(result, "docx", cover=True)
         log_download(user, run_id, result, "cover_letter", "docx", name)
-        letter = cover_docx(result.resume, result.cover_letter, result.style.paper)
+        letter = cover_docx(result.resume, result.cover_letter, result.style.paper, document_lang(result))
         return file_response(letter, DOCX, "attachment", name)
 
     @app.delete("/api/data", dependencies=[Depends(admin_user)])

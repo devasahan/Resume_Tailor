@@ -310,6 +310,7 @@ class FakeClient(LLMClient):
             "jd_analysis": {
                 "company": guess_company(jd),
                 "target_role": target,
+                "general_role": base,
                 "seniority": seniority,
                 "domain": "General",
                 "must_have_skills": keywords[:6],

@@ -106,7 +106,7 @@ async def _bakeoff(args, registry: Registry, db: Database, router: Router, profi
             if r.status == "ok" and r.resume:
                 folder = out / jd_path.stem
                 folder.mkdir(exist_ok=True)
-                pdf, _ = render_resume_pdf(r.resume, r.style)
+                pdf, _ = render_resume_pdf(r.resume, r.style, "CV" if r.spelling == "eu" else "Resume")
                 (folder / f"{r.requested_model}.pdf").write_bytes(pdf)
     with (out / "results.csv").open("w", newline="", encoding="utf-8") as fh:
         writer = csv.DictWriter(fh, fieldnames=list(rows[0].keys()))

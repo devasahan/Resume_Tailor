@@ -271,6 +271,8 @@ def test_an_eu_style_file_is_titled_cv_inside_too(client):
     docx = client.get(f"/api/runs/{run['run_id']}/resume.docx").content
     assert PdfReader(io.BytesIO(pdf)).metadata.title == "Jordan Rivera - CV"
     assert Document(io.BytesIO(docx)).core_properties.title == "Jordan Rivera - CV"
+    assert PdfReader(io.BytesIO(pdf)).trailer["/Root"]["/Lang"] == "en-GB"  # British English, also for screen readers
+    assert Document(io.BytesIO(docx)).core_properties.language == "en-GB"
 
 
 def test_keywords_match_in_either_spelling():
@@ -604,3 +606,390 @@ def test_the_prompts_name_the_recruiters_examples():
         assert '"improved operational efficiency"' in text and '"increased decision-making"' in text
         assert 'such as "utilise"' in text and "leverage, utilize, spearhead, seamless, robust" in text
 
+
+# ------------------------------------------------------------------ a second review: dashes
+@pytest.mark.parametrize("given,expected", [
+    # a dash after 'from A to B', after punctuation, or before a new point is punctuation, never a range
+    ("Brought monthly AWS spend from $18,600 to $12,400 — $74,400 saved a year.",
+     "Brought monthly AWS spend from $18,600 to $12,400, $74,400 saved a year."),
+    ("Cut failed nightly runs from 101 to 83 — 18 fewer each month.",
+     "Cut failed nightly runs from 101 to 83, 18 fewer each month."),
+    ("Cut costs by 22% — 9% more than planned.", "Cut costs by 22%, 9% more than planned."),
+    ("Launched the analytics portal in 2023 — now used by 40 teams.",
+     "Launched the analytics portal in 2023, now used by 40 teams."),
+    ("Built the fraud model in 2022 — today it screens 3M payments a day.",
+     "Built the fraud model in 2022, today it screens 3M payments a day."),
+    ("I joined Northwind in 2019 — in 2022 I took over the data platform.",
+     "I joined Northwind in 2019, in 2022 I took over the data platform."),
+    ("We moved to Snowflake in 2021. — 2022 brought the dbt rewrite.",
+     "We moved to Snowflake in 2021. 2022 brought the dbt rewrite."),
+    ("Cut report pages from 120 to 45, — 75 fewer to read.", "Cut report pages from 120 to 45, 75 fewer to read."),
+    # ranges, also with a unit on one end, money of two sizes, version numbers and two-word ends
+    ("Grew revenue 10 – 20% a quarter.", "Grew revenue 10-20% a quarter."),
+    ("Made dashboard queries 3 – 5x faster.", "Made dashboard queries 3-5x faster."),
+    ("Closed deals of $500K – $2M each.", "Closed deals of $500K-$2M each."),
+    ("Supported Python 3.8 – 3.12 in CI.", "Supported Python 3.8-3.12 in CI."),
+    ("At Northwind (Jan 2021 – Mar 2024), I rebuilt the pipeline.",
+     "At Northwind (Jan 2021 to Mar 2024), I rebuilt the pipeline."),
+    ("Ran planning from Q1 2023 – Q2 2024.", "Ran planning from Q1 2023 to Q2 2024."),
+    ("Handled escalations (Tier 1 – Tier 3) for 40 accounts.", "Handled escalations (Tier 1 to Tier 3) for 40 accounts."),
+    ("Ran it (2021 – now) for finance.", "Ran it (2021-now) for finance."),
+    # flags after a dash, doubled dashes, list markers, line breaks, thin spaces and the minus sign
+    ("Gave on-call a preview mode — --dry-run — before every Terraform apply.",
+     "Gave on-call a preview mode, --dry-run, before every Terraform apply."),
+    ("Led the migration — — of 14 services.", "Led the migration, of 14 services."),
+    ("Airflow —- no", "Airflow, no"), ("Airflow ---- no", "Airflow, no"), ("- Led the data team", "Led the data team"),
+    ("(— see below)", "(see below)"),
+    ("I'd bring three things:\n- Airflow DAGs that run on time\n- dbt models finance trusts",
+     "I'd bring three things: Airflow DAGs that run on time, dbt models finance trusts"),
+    ("I build pipelines.\nI also mentor.", "I build pipelines. I also mentor."),
+    ("Rebuilt the billing pipeline\u2009—\u2009cutting failed runs by 18%.",
+     "Rebuilt the billing pipeline, cutting failed runs by 18%."),
+    ("Turned net revenue retention from \u22122% to +6% in two quarters.",
+     "Turned net revenue retention from -2% to +6% in two quarters."),
+])
+def test_a_dash_before_a_new_point_is_a_comma_and_a_range_goes_up(given, expected):
+    assert validate.clean_prose(given) == expected and validate.clean_prose(expected) == expected
+
+
+def test_an_em_dash_typed_in_the_editor_is_noted_never_glued_into_one_word(profile):
+    out = make_output()
+    out.sections.experience[0].bullets = [
+        "Rebuilt the billing pipeline—cutting failed runs by 17.8% (from 101 to 83 a month).",
+        "Grew revenue 10 - 20% a quarter for three product lines.",
+    ]
+    resume = validate.build_resume(profile, out, from_model=False)
+    assert resume.experience[0].bullets[0].startswith("Rebuilt the billing pipeline - cutting failed runs")
+    assert validate.dash_problems(resume) == ["'the billing pipeline - cutting failed runs' (Northwind Labs)"]
+
+
+def test_many_dashes_take_linear_time():
+    import time
+
+    started = time.perf_counter()
+    assert validate.fix_dashes("a — " * 20000).count(",") == 19999
+    assert validate.fix_dashes("| --- " * 10000).startswith("|, |")
+    assert time.perf_counter() - started < 1.5
+
+
+# ------------------------------------------------------------------ a second review: vague results
+@pytest.mark.parametrize("text,vague", [
+    ("Results-driven Data Engineer with 7+ years of Python and SQL pipelines.", True),  # a cliche, whatever follows
+    ("Drove alignment between B2B sales and product teams.", True),  # B2B, Q3, S3, EC2, GPT-4 and years are no figures
+    ("Improved operational efficiency for the Q3 close.", True),
+    ("Enhanced cross-functional collaboration with the S3 and EC2 platform teams.", True),
+    ("Improved team productivity with GPT-4 coding assistants.", True),
+    ("Drove alignment on the 2024 roadmap with sales and finance.", True),
+    ("Improved operational efficiency for the finance team, and migrated 14 Airflow DAGs to Dagster.", True),
+    ("Improved the overall efficiency of our operations.", True),  # 'of' a generic owner is still vague
+    ("Boosted the overall performance of the business.", True),
+    ("Enhanced the productivity of the engineering organization.", True),
+    ("Drove alignment based on shared OKRs with sales.", True),
+    ("Improved the performance of the checkout API with Redis caching.", False),
+    ("Improved team productivity by 18.3% (from 11 to 13 tickets a sprint).", False),
+    ("Added value objects for money and currency in the billing domain.", False),  # technical terms
+    ("Added value-based pricing tiers for enterprise customers.", False),
+    ("Optimized performance-critical code paths in the C++ order router.", False),
+    ("Improved performance monitoring for the checkout service with Datadog APM.", False),
+])
+def test_a_vague_result_needs_a_real_figure_in_its_own_clause(text, vague):
+    assert bool(validate._plain_problems([("bullet", text)])) is vague
+
+
+# ------------------------------------------------------------------ a second review: percentages and their bases
+@pytest.mark.parametrize("text", [
+    "Lifted trial-to-paid conversion by 18.2% (from 22% to 26%).",
+    "Raised test coverage by 42.6% (from 61% to 87%).",
+    "Lifted conversion by 18.2%, from 22% to 26%.",
+    "Cut API latency by 21% (p95 from 820 to 648 ms) with Redis caching.",
+    "Cut queue time by 22% (down from 41 to 32 seconds).",
+    "Cut AWS spend by 17.7% ($41,300 a year, from $232K to $191K).",
+    "Cut p95 latency by 21% (41 services, from 820 to 648 ms).",
+    "Cut build time from 14 to 11 minutes (21% faster) with remote caching.",
+    "Cut p95 latency from 820 to 648 ms (a 21% drop) with Redis.",
+    "Lifted trial-to-paid conversion by 12.9%, from 3.1% to 3.5%.",
+    "Lifted trial-to-paid conversion by 12.9% (3.1% to 3.5%).",
+    "Raised trial-to-paid conversion from 3.1% to 3.5%, a 12.9% lift.",
+    "Cut AWS spend by 17.8%, saving the company $41,300 a year.",
+    "Cut AWS spend by 17.8%, a saving of $41,300 a year.",
+    "Cut AWS spend by 17.8%, which saved $41,300 a year.",
+    "Cut AWS spend by 17.8% for $41,300 in annual savings.",
+    "Cut p95 latency by 21% for 4.6K merchants (from 820 to 648 ms).",
+    "Saved $41.3K a year on AWS, a 17.8% cut.",
+    "Cut p95 latency by 31.7% (from 1.2 seconds to 820 milliseconds) with Redis.",
+    "Grew monthly active users by 22.4% (from 980K to 1.2 million).",
+    "Grew GMV by 22.4% (from £980m to £1.2bn).",
+    "Cut build time by 48.8% (from 1h 20m to 41m).",
+    "Made report generation 140% faster (from 12 to 5 minutes).",
+    "Kept checkout up 99.95% through Black Friday traffic.",
+    "Cut errors to 0.3% and raised test coverage from 61% to 87%.",
+])
+def test_a_base_written_in_any_usual_way_counts_and_agrees(text):
+    assert validate.unbased_percentages(text) == [] and validate.base_mismatches(text) == []
+
+
+@pytest.mark.parametrize("text,found", [
+    ("Cut latency by 21% and saved $41,300.", ["by 21%"]),  # the saving is its own claim, not the latency's base
+    ("Cut AWS spend by 17.8% ($41,300 a year) and made nightly jobs 21% faster.", ["21% faster"]),
+    ("Cut queue time by 22%, from 41 to 32 seconds, and made builds 21% faster.", ["21% faster"]),
+    ("Rightsized EC2 fleets, delivering a 17.8% cost reduction.", ["17.8% cost reduction"]),
+    ("Cut AWS spend 17.8% by rightsizing EC2 and RDS.", ["Cut AWS spend 17.8%"]),
+    ("Reduced p95 latency 21% with Redis caching.", ["Reduced p95 latency 21%"]),
+    ("Delivered 12.6% year-on-year growth in the EMEA region.", ["12.6% year-on-year growth"]),
+    ("Achieved a reduction of 17.8% in monthly AWS spend.", ["reduction of 17.8%"]),
+    ("Saved 17.8% on monthly AWS spend by rightsizing.", ["Saved 17.8%"]),
+    ("Grew enterprise ARR by 31.7% from 2021 to 2023 by adding usage-based pricing.", ["by 31.7%"]),  # years: no base
+    ("Grew enterprise ARR by 31.7% (2021 to 2023).", ["by 31.7%"]),
+])
+def test_a_percentage_without_its_own_base_is_found_however_it_is_worded(text, found):
+    assert validate.unbased_percentages(text) == found
+
+
+def test_only_the_posts_own_change_figures_count_as_the_companys(profile):
+    jd = "Up to 20% travel. Benefits: a 4% 401(k) match and a 15% bonus target. We grew 40% last year."
+    letter = CoverLetter(greeting="Dear Hiring Manager,", closing="Sincerely,", paragraphs=[
+        "At Northwind Labs I cut nightly ETL runtime by 20% by moving the largest Airflow jobs to Spark.",
+        "Your team grew revenue 40% last year, and I would like to help it grow again.",
+    ])
+    resume = validate.build_resume(profile, make_output())
+    assert validate.unbased_percentage_problems(resume, letter, jd) == ["'by 20%' (cover letter paragraph 1)"]
+
+
+@pytest.mark.parametrize("token,round_figure", [
+    ("$7K", True), ("$7,000", True), ("$3M", True), ("$3,000,000", True), ("$40,000", True),
+    ("$41.3M", False), ("$41,300,000", False), ("$2,400,000", False), ("$41,300", False),
+])
+def test_money_reads_as_round_or_not_the_same_with_or_without_a_suffix(token, round_figure):
+    assert validate.is_round_figure(token) is round_figure
+
+
+def test_digits_inside_names_are_not_figures():
+    assert not validate.has_figure("Moved billing jobs to EC2 spot instances and S3 lifecycle rules.")
+    assert validate._numbers_in("Ran Microsoft 365 for Fortune 500 retailers, cutting p95 by 21.3% (from 820 to "
+                                "645.6 ms) on Postgres 15. Built 40 pipelines.") == ["21.3%", "820", "645.6", "40"]
+
+
+def test_huge_numbers_never_crash_or_stall_the_figure_checks():
+    import time
+
+    started = time.perf_counter()
+    validate.unbased_percentages("9" * 4000 + "% faster")
+    assert validate.is_round_figure("1" * 5000) is False and validate.has_figure("1" * 5000)
+    assert time.perf_counter() - started < 0.5
+
+
+# ------------------------------------------------------------------ a second review: spelling
+def _posting(target_role="Senior Data Engineer", keywords=()):
+    from app.schemas import JDAnalysis
+
+    return JDAnalysis(target_role=target_role, seniority="Senior", domain="Data", must_have_skills=list(keywords),
+                      nice_to_have_skills=[], keywords=list(keywords), key_responsibilities=["Build pipelines"])
+
+
+@pytest.mark.parametrize("style,model_wrote,post_says", [
+    ("eu", "data modelling and query optimisation", "data modeling and query optimization"),  # a US post
+    ("us", "data modeling and query optimization", "data modelling and query optimisation"),  # a UK post
+])
+def test_the_posts_keywords_take_the_posts_spelling_whatever_the_model_wrote(profile, style, model_wrote, post_says):
+    keywords = ["data modeling", "query optimization"] if style == "eu" else ["data modelling", "query optimisation"]
+    out = make_output(summary=f"I own {model_wrote} for a warehouse used by 38 analysts, and I organize reviews.")
+    out.jd_analysis = _posting(keywords=keywords)
+    resume = validate.build_resume(profile, out)
+    validate.spell_resume(resume, style, out.jd_analysis)
+    organise = "organise" if style == "eu" else "organize"
+    assert resume.summary == f"I own {post_says} for a warehouse used by 38 analysts, and I {organise} reviews."
+    assert validate.spelling_problems(resume, None, style, out.jd_analysis) == []
+
+
+def test_a_job_title_follows_the_style_even_where_it_reads_like_a_products_name(profile):
+    out = make_output(summary="Data Modeler with 8 years of dimensional modeling. As a Senior Data Modeler I organized "
+                              "140 metrics.", headline="Data Modeler")
+    out.sections.experience[0].job_title = "Senior Data Modeler"
+    out.jd_analysis = _posting(target_role="Senior Data Modeler")
+    resume = validate.build_resume(profile, out)
+    validate.spell_resume(resume, "eu", out.jd_analysis)
+    assert resume.experience[0].job_title == "Senior Data Modeller"
+    assert resume.summary == ("Data Modeller with 8 years of dimensional modelling. As a Senior Data Modeller I "
+                              "organised 140 metrics.")
+
+
+@pytest.mark.parametrize("group,skill,expected", [
+    ("AWS", "Organizations", "Organizations"), ("AWS", "Compute Optimizer", "Compute Optimizer"),
+    ("AWS", "Personalize", "Personalize"), ("Azure", "Security Center", "Security Center"),
+    ("Cloud", "AWS (Organizations, IAM, Control Tower)", "AWS (Organizations, IAM, Control Tower)"),
+    ("Cloud", "AWS: Organizations, Compute Optimizer", "AWS: Organizations, Compute Optimizer"),
+    ("Endpoints", "System Center Configuration Manager (SCCM)", "System Center Configuration Manager (SCCM)"),
+    ("Data", "Spark Catalyst Optimizer", "Spark Catalyst Optimizer"),
+    ("Data", "Snowflake Data Modeling", "Snowflake Data Modelling"),  # the activity follows the style
+    ("BI", "Tableau Visualization", "Tableau Visualisation"), ("Data", "Data Catalog", "Data Catalogue"),
+])
+def test_a_brands_products_keep_their_names_and_activities_follow_the_style(group, skill, expected):
+    assert spelling.convert(skill, "eu", title=True, brand=spelling.names_brand(group)) == expected
+
+
+@pytest.mark.parametrize("given,expected", [
+    ("Implemented the OAuth 2.0 /authorize and /token endpoints.", None),
+    ("Internationalized the checkout with @angular/localize.", "Internationalised the checkout with @angular/localize."),
+    ("Replaced pandas apply() with normalize(df) for speed.", None),
+    ("Sanitized user HTML with sanitize-html.", "Sanitised user HTML with sanitize-html."),
+    ("Ran npm run optimize in CI.", None),
+    ("Owned SQL/modeling/visualization for 38 analysts.", "Owned SQL/modelling/visualisation for 38 analysts."),
+])
+def test_endpoints_calls_scripts_and_packages_keep_their_spelling(given, expected):
+    assert spelling.convert(given, "eu") == (expected or given)
+
+
+def test_all_caps_keywords_match_in_either_spelling():
+    assert validate.mentions("Led data modelling and query optimisation.", "DATA MODELING")
+    assert validate.mentions("Led data modelling and query optimisation.", "QUERY OPTIMIZATION")
+
+
+def test_the_hiring_managers_name_keeps_its_spelling_after_a_title(profile):
+    resume = validate.build_resume(profile, make_output())
+    eu_keep = validate.known_names(resume, None, "Northbeam Data", "Avery Gray")
+    text = "Thank you, Ms. Gray, for reading this. I would value Dr. Gray's view on the gray-box tests."
+    assert spelling.convert(text, "eu", eu_keep) == text.replace("gray-box", "grey-box")
+    us_keep = validate.known_names(resume, None, "Northbeam Data", "Sam Grey")
+    assert spelling.convert("As Mr. Grey said, the grey-box tests matter.", "us", us_keep) == (
+        "As Mr. Grey said, the gray-box tests matter.")
+
+
+def test_a_one_word_name_keeps_only_its_capitalised_form():
+    text = "Color's mission is why I apply. I built color-coded dashboards and led a data center move."
+    assert spelling.convert(text, "eu", ["Color", "Center"]) == (
+        "Color's mission is why I apply. I built colour-coded dashboards and led a data centre move.")
+
+
+def test_the_hiring_companys_first_word_is_its_name_too(profile):
+    keep = validate.known_names(validate.build_resume(profile, make_output()), None, "Color Health, Inc.", "")
+    assert spelling.convert("Color's mission is why I apply.", "eu", keep) == "Color's mission is why I apply."
+
+
+def test_a_uk_post_naming_us_products_reads_as_british():
+    assert spelling.detect("London. You will optimise our AWS Organizations set-up and Azure Security Center alerts, "
+                           "organise on-call, and model behaviour.") == "eu"
+
+
+@pytest.mark.parametrize("given,expected", [
+    ("Please find my updated resume attached.", "Please find my updated CV attached."),
+    ("As my resume demonstrates, I build pipelines.", "As my CV demonstrates, I build pipelines."),
+    ("My resume reflects 8 years of work.", "My CV reflects 8 years of work."),
+    ("I built the resume and application data models.", None),
+    ("I wrote the resume to job matching service.", None),
+    ("I built my resume parser in Python.", None),
+])
+def test_an_eu_letter_says_cv_only_where_it_means_the_document(given, expected):
+    assert spelling.cv_wording(given, "eu") == (expected or given)
+
+
+@pytest.mark.parametrize("closing", ["Respectfully yours,", "Yours truly,"])
+def test_american_sign_offs_become_kind_regards_in_eu_style(closing):
+    assert spelling.sign_off(closing, "eu") == "Kind regards," and spelling.sign_off(closing, "us") == closing
+
+
+@pytest.mark.parametrize("us,eu", [
+    ("hospitalization", "hospitalisation"), ("immunization", "immunisation"), ("privatization", "privatisation"),
+    ("externalized", "externalised"), ("relabeling", "relabelling"), ("mislabeling", "mislabelling"),
+    ("trialed", "trialled"), ("overanalyzed", "overanalysed"), ("endeavoring", "endeavouring"),
+    ("marshaling", "marshalling"),
+])
+def test_more_words_follow_the_style_both_ways(us, eu):
+    assert spelling.convert(us, "eu") == eu and spelling.convert(eu, "us") == us
+
+
+@pytest.mark.parametrize("eu,us", [("benefitting", "benefiting"), ("centimetres", "centimeters"),
+                                   ("millimetres", "millimeters")])
+def test_british_only_words_become_american(eu, us):
+    assert spelling.convert(eu, "us") == us
+
+
+# ------------------------------------------------------------------ cases from sentences written from the rules alone
+def test_an_ellipsis_or_an_emoji_leaves_no_trace():
+    assert validate.clean_prose("I automated reconciliations, accruals and more… — saving the team 20 hours a month.") == (
+        "I automated reconciliations, accruals and more... saving the team 20 hours a month.")
+    assert validate.clean_prose("✔️ Cut month-end close from 9 to 5 days") == "Cut month-end close from 9 to 5 days"
+
+
+@pytest.mark.parametrize("text,unbased,mismatched", [
+    ("Moved CI builds from 41 to 32 minutes and drove a 30% drop in flaky test reruns.", ["30% drop"], []),
+    ("Cut invoice processing by 40% (from $6.20 to 3 minutes per invoice) with UiPath bots.", [], []),
+    ("Investigated a 6% decline rate on Stripe card payments.", [], []),  # a rate is a level
+    ("Grew organic signups by 1,200% after launching programmatic SEO pages.", ["by 1,200%"], []),
+    ("Grew signups by 1,200% (from 100 to 1,300 a week).", [], []),
+])
+def test_a_base_belongs_to_its_own_clause_and_figures_with_commas_count(text, unbased, mismatched):
+    assert validate.unbased_percentages(text) == unbased and validate.base_mismatches(text) == mismatched
+
+
+# ------------------------------------------------------------------ a special posting title is never copied
+def _analysis(target_role, general_role=""):
+    from app.schemas import JDAnalysis
+
+    return JDAnalysis(target_role=target_role, general_role=general_role, seniority="Senior", domain="AI",
+                      must_have_skills=["Python"], nice_to_have_skills=[], keywords=["Python"],
+                      key_responsibilities=["Build voice agents"])
+
+
+def test_a_special_posting_title_becomes_its_common_title_everywhere_but_the_bullets(profile):
+    analysis = _analysis("Senior Voice AI Engineer", "AI Engineer")
+    out = make_output(headline="Voice AI Engineer", summary="Voice AI Engineer with 7+ years of experience building "
+                      "Python services. As a Voice AI Engineer I shipped 4 agents.")
+    out.sections.experience[0].job_title = "Senior Voice AI Engineer"
+    out.sections.experience[0].bullets = ["Built voice agents in Python for 3 call centers.", "Ran the voice AI rollout."]
+    resume = validate.build_resume(profile, out)
+    validate.short_role_headline(resume)
+    validate.general_role_fixes(resume, analysis)
+    assert resume.headline == "AI Engineer"
+    assert resume.summary == ("AI Engineer with 7+ years of experience building Python services. As an AI Engineer I "
+                              "shipped 4 agents.")
+    assert [exp.job_title for exp in resume.experience] == ["Senior AI Engineer", "Engineer 1", "Engineer 2"]
+    assert resume.experience[0].bullets[1] == "Ran the voice AI rollout."  # the specialty stays in the bullets
+    assert validate.specialty_problems(resume, analysis) == []
+    resume.summary += " I build voice agents."
+    assert validate.specialty_problems(resume, analysis) == ["summary"]
+
+
+@pytest.mark.parametrize("target,general", [("Senior Data Engineer", "Data Engineer"), ("AI Engineer II", "AI Engineer"),
+                                            ("Voice AI Engineer", ""), ("Data Engineer", "Data Engineer")])
+def test_a_common_posting_title_or_an_older_run_changes_nothing(profile, target, general):
+    out = make_output(headline="Data Engineer", summary="Senior Data Engineer with 7+ years of Python and SQL.")
+    resume = validate.build_resume(profile, out)
+    validate.general_role_fixes(resume, _analysis(target, general))
+    assert resume.headline == "Data Engineer" and resume.summary == "Senior Data Engineer with 7+ years of Python and SQL."
+    assert validate.common_title(_analysis(target, general)) == ("", "") and validate.specialty(_analysis(target, general)) == ""
+
+
+class SpecialPost(LLMClient):
+    """The first draft copies a special posting title ('Voice AI Engineer') and names its specialty in the summary."""
+
+    def __init__(self, inner):
+        self.inner, self.prompts = inner, []
+
+    async def generate_structured(self, **kwargs):
+        self.prompts.append(kwargs["user"])
+        result = await self.inner.generate_structured(**kwargs)
+        if kwargs["schema_name"] == "tailor_output" and RETRY_MARKER not in kwargs["user"]:
+            result.data["jd_analysis"].update(target_role="Voice AI Engineer", general_role="AI Engineer")
+            sections = result.data["sections"]
+            sections["headline"] = "Voice AI Engineer"
+            rest = sections["summary"].split(" with ", 1)[1].replace("delivering ", "delivering voice agents, ", 1)
+            sections["summary"] = "Voice AI Engineer with " + rest
+            sections["experience"][0]["job_title"] = "Senior Voice AI Engineer"
+        return result
+
+
+def test_a_run_never_copies_a_special_title_and_keeps_its_specialty_out_of_the_summary(router, db, registry, profile, jd):
+    client = SpecialPost(FakeClient(registry.get("demo-concise")))
+    router.overrides["demo-concise"] = client
+    result = tailor(router, db, profile, jd)
+    assert result.status == "ok" and result.retries == 1  # one fix round, for the summary's 'voice'
+    assert "the posting's specialty 'Voice'" in client.prompts[1] and "COMMON TITLE" in client.prompts[1]
+    assert result.resume.headline == "AI Engineer" and "voice" not in result.resume.summary.lower()
+    assert not any("Voice" in exp.job_title for exp in result.resume.experience)
+
+
+def test_the_prompt_asks_for_the_common_title():
+    text = tailor_system("estimate")
+    assert "COMMON TITLE: some posting titles are special ones" in text
+    assert '"AI Engineer" for "Voice AI Engineer" or "Conversational AI Engineer"' in text
+    assert "show it only in the bullets" in text and "never a special title" in text

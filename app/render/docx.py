@@ -25,13 +25,22 @@ from .pdf import (
 PAPER = {"Letter": (Inches(8.5), Inches(11)), "A4": (Inches(8.27), Inches(11.69))}
 
 
-def _setup(style: FitStyle, margin_in: float, font_pt: float, *, author: str, title: str) -> Document:
+def _setup(style: FitStyle, margin_in: float, font_pt: float, *, author: str, title: str,
+           lang: str = "en-US") -> Document:
     doc = Document()
     # python-docx's template says "python-docx" and a 2013 date; use the candidate's own details instead
     props, now = doc.core_properties, datetime.now(UTC).replace(microsecond=0)
     props.author = props.last_modified_by = author
-    props.title, props.comments = title, ""
+    props.title, props.comments, props.language = title, "", lang
     props.created = props.modified = now
+    # The text's own language, which Word proofs it in (en-GB: 'optimise' is right); the template says en-US
+    defaults = doc.styles.element.find(f"{qn('w:docDefaults')}/{qn('w:rPrDefault')}/{qn('w:rPr')}")
+    if defaults is not None:
+        language = defaults.find(qn("w:lang"))
+        if language is None:
+            language = OxmlElement("w:lang")
+            defaults.append(language)
+        language.set(qn("w:val"), lang)
     section = doc.sections[0]
     section.page_width, section.page_height = PAPER[style.paper]
     for side in ("left_margin", "right_margin", "top_margin", "bottom_margin"):
@@ -83,7 +92,8 @@ def _row(doc: Document, left: list[Run], right: str, text_width, space_before: f
 
 def resume_docx(resume: Resume, style: FitStyle, document: str = "Resume") -> bytes:
     p = resume.profile
-    doc = _setup(style, style.margin_in, style.font_pt, author=p.name, title=f"{p.name} - {document}")
+    doc = _setup(style, style.margin_in, style.font_pt, author=p.name, title=f"{p.name} - {document}",
+                 lang="en-GB" if document == "CV" else "en-US")
     text_width = PAPER[style.paper][0] - Inches(style.margin_in * 2)
     normal = doc.styles["Normal"].paragraph_format
     normal.line_spacing = 1.04  # the PDF's line height (1.27 x the font size), so Word keeps the same page count
@@ -142,11 +152,11 @@ def resume_docx(resume: Resume, style: FitStyle, document: str = "Resume") -> by
     return buffer.getvalue()
 
 
-def cover_docx(resume: Resume, letter: CoverLetter, paper: str = "Letter") -> bytes:
+def cover_docx(resume: Resume, letter: CoverLetter, paper: str = "Letter", lang: str = "en-US") -> bytes:
     """The same letter as the PDF: the resume's header, a rule, then the letter from its greeting to the signature."""
     p = resume.profile
     style = FitStyle(font_pt=11, margin_in=1.0, paper=paper)  # type: ignore[arg-type]
-    doc = _setup(style, 1.0, 11, author=p.name, title=f"{p.name} - Cover Letter")
+    doc = _setup(style, 1.0, 11, author=p.name, title=f"{p.name} - Cover Letter", lang=lang)
     doc.styles["Normal"].paragraph_format.line_spacing = 1.15
 
     def centered(text: str, size: float, bold: bool, before: float = 0.0):
