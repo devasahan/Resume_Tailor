@@ -4,9 +4,11 @@ meanwhile:
 
 - CPU used: the work itself.
 - waited for a CPU: time the process's threads were ready to run but got no CPU (a busy shared machine, a lower
-  priority or a CPU limit), from /proc/self/task/*/schedstat.
+  priority or a CPU limit), from /proc/self/task/*/schedstat. Summed over threads, so it can pass the wall time; a
+  thread that ended during the job takes its share along.
 - quota throttled: time the CPU limit of the process's own cgroup held it back (cpu.stat).
-- database and fonts loaded: how many database steps and font loads ran, and how long they took in all.
+- database and fonts loaded: how many database steps and font loads ran, and how long they took in all (reading the
+  fonts again while a PDF file is written counts in that step, not here).
 
 A step much longer than these explain was waiting on something else: storage outside the database and fonts, a lock,
 or the host pausing the process. Each figure covers the whole process, so other requests at the same time count too.
@@ -80,7 +82,8 @@ def _cpu_stat_files() -> list[Path]:
         if not controllers:  # cgroup v2: one tree for every controller
             files += [CGROUP_ROOT / inside / "cpu.stat.local", CGROUP_ROOT / inside / "cpu.stat"]
         elif "cpu" in controllers.split(","):  # cgroup v1: the cpu controller's own tree
-            files += [CGROUP_ROOT / folder / inside / "cpu.stat" for folder in (controllers, "cpu", "cpu,cpuacct")]
+            files += [CGROUP_ROOT / folder / inside / name
+                      for folder in (controllers, "cpu", "cpu,cpuacct") for name in ("cpu.stat.local", "cpu.stat")]
     files += [CGROUP_ROOT / "cpu.stat", CGROUP_ROOT / "cpu" / "cpu.stat", CGROUP_ROOT / "cpu,cpuacct" / "cpu.stat"]
     return list(dict.fromkeys(files))
 
@@ -103,31 +106,43 @@ def throttled_seconds() -> float | None:
     return None
 
 
-def waited_for_cpu_seconds() -> float | None:
-    """How long this process's threads have been ready to run but waiting for a CPU, summed over the threads alive
-    now (the second figure of each thread's schedstat, in nanoseconds), or None when Linux does not say."""
+def cpu_waits() -> dict[str, int] | None:
+    """How long each thread of this process has been ready to run but waiting for a CPU, in nanoseconds, by thread id
+    (the second figure of its schedstat), or None when Linux does not say."""
     try:
         threads = list(PROC_TASKS.iterdir())
     except OSError:
         return None
-    total, seen = 0, False
+    waits = {}
     for thread in threads:
         fields = (_read(thread / "schedstat") or "").split()
         if len(fields) >= 2 and fields[1].isdigit():
-            total, seen = total + int(fields[1]), True
-    return total / 1e9 if seen else None
+            waits[thread.name] = int(fields[1])
+    return waits or None
+
+
+def waited_for_cpu_seconds() -> float | None:
+    """The same, summed over the threads alive now, in seconds."""
+    waits = cpu_waits()
+    return sum(waits.values()) / 1e9 if waits is not None else None
+
+
+def waited_since(before: dict[str, int], now: dict[str, int]) -> float:
+    """Seconds the threads waited for a CPU between two cpu_waits() readings. Each thread counts from its own earlier
+    figure (a new thread from 0), so a thread that ended in between takes only its own share along."""
+    return sum(max(0, wait - before.get(thread, 0)) for thread, wait in now.items()) / 1e9
 
 
 @dataclass(frozen=True)
 class Snapshot:
     cpu: float
-    waited: float | None
+    waits: dict[str, int] | None
     throttled: float | None
     tallies: tuple[tuple[int, float], ...]
 
 
 def snapshot() -> Snapshot:
-    return Snapshot(time.process_time(), waited_for_cpu_seconds(), throttled_seconds(),
+    return Snapshot(time.process_time(), cpu_waits(), throttled_seconds(),
                     tuple((tally.count, tally.seconds) for tally in TALLIES))
 
 
@@ -136,8 +151,8 @@ def report(steps: Steps, before: Snapshot) -> str:
     fonts loaded 4 times 0.2s'. A figure the host does not provide is left out."""
     now = snapshot()
     figures = [f"CPU used {now.cpu - before.cpu:.1f}s"]
-    if now.waited is not None and before.waited is not None:  # a thread that ended takes its wait along: never < 0
-        figures.append(f"waited for a CPU {max(0.0, now.waited - before.waited):.1f}s")
+    if now.waits is not None and before.waits is not None:
+        figures.append(f"waited for a CPU {waited_since(before.waits, now.waits):.1f}s")
     if now.throttled is not None and before.throttled is not None:
         figures.append(f"quota throttled {max(0.0, now.throttled - before.throttled):.1f}s")
     parts = [steps.summary() or "no steps", ", ".join(figures)]

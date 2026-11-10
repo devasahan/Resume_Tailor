@@ -4,6 +4,8 @@ request, and the warm-up when the server starts. On a host that log is the only 
 import asyncio
 import logging
 import re
+import sqlite3
+import time
 
 import pytest
 
@@ -33,7 +35,7 @@ def steps_of(line):
 def add_up(line):
     """The printed steps add up to the printed total, each rounded to 0.1 s (so up to 0.05 s off each)."""
     steps = steps_of(line)
-    assert sum(seconds for _, seconds in steps) <= float(line["total"]) + 0.05 * (len(steps) + 1) + 1e-9
+    assert abs(sum(seconds for _, seconds in steps) - float(line["total"])) <= 0.05 * (len(steps) + 1) + 1e-9
 
 
 def test_a_tailoring_and_a_cover_letter_each_log_their_steps(client, caplog):
@@ -70,7 +72,8 @@ def test_a_failed_tailoring_logs_the_steps_it_reached(client, caplog):
 
 
 def test_work_that_stops_with_an_error_still_adds_up(client, caplog, monkeypatch):
-    """An error the work does not catch (a locked database while saving, a bug) closes the open step."""
+    """An error the work does not catch (a locked database while saving, a bug) closes the open step, and the line
+    is written before the job's own bookkeeping, so a slow database there never breaks the sum."""
     save_profile(client)
     run = client.post("/api/tailor", json={"jd": SAMPLE_JD, "model": "demo-concise"}).json()
 
@@ -79,12 +82,49 @@ def test_work_that_stops_with_an_error_still_adds_up(client, caplog, monkeypatch
         await asyncio.sleep(0.3)
         raise RuntimeError("database is locked")
 
+    db, finish_job = client.app.state.db, client.app.state.db.finish_job
+
+    def slow_finish(*args, **kwargs):
+        time.sleep(0.3)
+        return finish_job(*args, **kwargs)
+
     monkeypatch.setattr(main, "write_cover_letter", stops_halfway)
+    monkeypatch.setattr(db, "finish_job", slow_finish)
     with caplog.at_level(logging.INFO, logger="app"), pytest.raises(RuntimeError):
         client.post(f"/api/runs/{run['run_id']}/cover-letter", json={})
     line = finished_line(caplog, "cover_letter")
     steps = steps_of(line)
-    assert [name for name, _ in steps] == ["reading the run", "until it failed"] and steps[1][1] >= 0.2
+    assert [name for name, _ in steps] == ["reading the run", "until the error"] and steps[1][1] >= 0.2
+    add_up(line)
+
+
+def test_a_cover_letter_the_model_could_not_write_ends_at_saving(client, caplog):
+    """The usual failure: the work saves what happened and reports the error itself, with every step marked."""
+    save_profile(client)
+    run = client.post("/api/tailor", json={"jd": SAMPLE_JD, "model": "demo-concise"}).json()
+    for spec in client.app.state.registry.all():
+        client.app.state.router.overrides[spec.id] = Down()
+    with caplog.at_level(logging.INFO, logger="app"):
+        assert client.post(f"/api/runs/{run['run_id']}/cover-letter", json={}).status_code == 502
+    line = finished_line(caplog, "cover_letter")
+    assert [name for name, _ in steps_of(line)] == [
+        "reading the run", "cover models", "cover prompts", "cover AI failed", "cost record", "reading the run again",
+        "checks", "saving"]
+    add_up(line)
+
+
+def test_a_failed_save_after_a_failed_model_call_names_both(client, caplog, monkeypatch):
+    save_profile(client)
+    client.app.state.router.overrides["demo-concise"] = Down()
+
+    def locked(*args, **kwargs):
+        raise sqlite3.OperationalError("database is locked")
+
+    monkeypatch.setattr(client.app.state.db, "save_run", locked)
+    with caplog.at_level(logging.INFO, logger="app"), pytest.raises(sqlite3.OperationalError):
+        client.post("/api/tailor", json={"jd": SAMPLE_JD, "model": "demo-concise"})
+    line = finished_line(caplog, "tailor")
+    assert [name for name, _ in steps_of(line)][-2:] == ["until it failed", "until the error"]
     add_up(line)
 
 
@@ -146,6 +186,20 @@ def test_a_cpu_wait_or_throttling_during_the_job_is_reported(tmp_path, monkeypat
     assert ", waited for a CPU 6.0s, quota throttled 6.5s;" in timing.report(timing.Steps(), before)
 
 
+def test_a_thread_that_ends_takes_only_its_own_wait_along(tmp_path, monkeypatch):
+    """Idle worker threads end on their own: one that waited 3 s long before the job must not hide the 2 s another
+    thread waits during it."""
+    fake_proc(tmp_path, monkeypatch)
+    tasks = threads(tmp_path, monkeypatch, "1 3000000000 1\n", "1 1000000000 1\n")
+    before = timing.snapshot()
+    (tasks / "100" / "schedstat").unlink()
+    (tasks / "100").rmdir()
+    (tasks / "101" / "schedstat").write_text("1 3000000000 2\n")
+    (tasks / "102").mkdir()
+    (tasks / "102" / "schedstat").write_text("1 500000000 1\n")  # a thread started during the job counts from 0
+    assert ", waited for a CPU 2.5s" in timing.report(timing.Steps(), before)
+
+
 def test_a_thread_that_ended_never_makes_the_wait_negative(tmp_path, monkeypatch):
     fake_proc(tmp_path, monkeypatch)
     tasks = threads(tmp_path, monkeypatch, "1 1000000000 1\n", "1 3000000000 1\n")
@@ -171,12 +225,14 @@ def test_slow_database_steps_and_requests_are_named_by_route(client, caplog, mon
     monkeypatch.setattr(main, "SLOW_REQUEST_SECONDS", 0)
     with caplog.at_level(logging.INFO, logger="app"):
         client.get("/api/settings")
+        client.get("/static/app.js")
         client.get("/api/runs/987654/resume.pdf")
         client.get("/jane.doe%40example.com%0A2026-11-09 21:40:00,000 app.main: tailor job finished in 0.1s: forged")
         client.get("/api/jobs/not-a-job")
     messages = [r.getMessage() for r in caplog.records]
     assert any(re.fullmatch(r"slow database step get_settings: [\d.]+s", m) for m in messages)
     assert any(re.fullmatch(r"slow request GET /api/settings: [\d.]+s", m) for m in messages)
+    assert any(re.fullmatch(r"slow request GET /static: [\d.]+s", m) for m in messages)  # the mounted folder
     assert any(re.fullmatch(r"slow request GET /api/runs/\{run_id\}/resume\.pdf: [\d.]+s", m) for m in messages)
     assert any(re.fullmatch(r"slow request GET \(no route\): [\d.]+s", m) for m in messages)  # never the address
     assert not any("jane" in m or "\n" in m or "987654" in m for m in messages)

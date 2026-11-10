@@ -24,6 +24,7 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from pydantic import BaseModel, Field
 from starlette.exceptions import HTTPException as StarletteHTTPException
+from starlette.routing import Mount
 
 from . import auth, config, timing
 from .llm.base import CostCapError, LLMError
@@ -284,8 +285,8 @@ def warm_up() -> None:
                                          bullets=["Built a sample service used by 1,000 people, cutting load time by 20%."])],
         )
         render_resume_pdf(sample, FitStyle())
-    except Exception:
-        log.exception("Warm-up failed; the first tailoring will do this work instead")
+    except Exception as exc:
+        log.exception("Warm-up failed (%s); the first tailoring will do this work instead", type(exc).__name__)
         return
     timing_log.info("warm-up done in %.1fs (%d prompt files, the font and page layout code)",
                     time.perf_counter() - began, prompt_files)
@@ -310,8 +311,19 @@ class SlowRequestLog:
         finally:
             took = time.perf_counter() - began
             if took >= SLOW_REQUEST_SECONDS and not scope["path"].startswith("/api/jobs/"):
-                route = getattr(scope.get("route"), "path", None) or "(no route)"  # set by the router it went to
-                timing_log.info("slow request %s %s: %.1fs", scope["method"], route, took)
+                timing_log.info("slow request %s %s: %.1fs", scope["method"], route_name(scope), took)
+
+
+def route_name(scope) -> str:
+    """The route a request went to, as the app declares it: FastAPI records the API route it matched; a mounted folder
+    (/static) is named by its mount. Otherwise '(no route)': an unknown address, or a login redirect."""
+    route = getattr(scope.get("route"), "path", None)
+    if route:
+        return route
+    for mounted in getattr(scope.get("app"), "routes", ()):
+        if isinstance(mounted, Mount) and scope["path"].startswith(mounted.path + "/"):
+            return mounted.path
+    return "(no route)"
 _proxy_logged = False
 
 
@@ -539,8 +551,10 @@ def create_app(db: Database | None = None, registry: Registry | None = None, rou
             try:
                 try:
                     result = await work(steps)
+                except JobFailed:  # the work ended normally with an error to show: its steps are all marked
+                    raise
                 except BaseException:
-                    steps.mark("until it failed")  # from the last step the work finished to where it stopped
+                    steps.mark("until the error")  # from the last step the work finished to where it stopped
                     raise
                 finally:  # before the job's own bookkeeping below, so the steps add up to the time logged
                     beating.cancel()
