@@ -23,6 +23,7 @@ async def compare(
     hiring_manager: str = "",
     concurrency: int = 6,
     save: bool = True,
+    spelling: str = "us",
 ) -> list[TailorResult]:
     """Fallback is off here: each result must show what that model alone produced."""
     gate = asyncio.Semaphore(concurrency)
@@ -32,7 +33,7 @@ async def compare(
             return await run_tailor(
                 router, db, profile=profile, profile_id=profile_id, jd=jd, hints=hints, model_id=model_id,
                 allow_fallback=False, cover_letter=cover_letter, company_name=company_name,
-                hiring_manager=hiring_manager, save=save,
+                hiring_manager=hiring_manager, save=save, spelling=spelling,
             )
 
     return list(await asyncio.gather(*(one(m) for m in model_ids)))

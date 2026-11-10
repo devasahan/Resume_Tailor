@@ -28,6 +28,7 @@ from ..schemas import (
     TailorOutput,
     TailorRevision,
 )
+from . import spelling
 from .facts import months_phrase, parse_point, stay_months
 
 _PUNCT_MAP = str.maketrans(
@@ -47,6 +48,73 @@ def clean_text(text: str) -> str:
 
 def clean_bullet(text: str) -> str:
     return clean_text(_BULLET_LEAD.sub("", text))
+
+
+# A dash used as punctuation ("Built X — cutting Y", "X -- Y", "X - Y") is a well-known sign of AI-written text
+# (a recruiter's advice): it becomes a comma, and the prompt asks for a full stop or a comma in the first place.
+# Hyphens inside words (event-driven), number ranges (5-10, 2019-2021), "Python- and SQL-based", "-12%" and
+# command-line flags (--refresh-only) stay.
+_RANGE_DASH = re.compile(r"(?<=\d)[ \t]*(?:[\u2012\u2013\u2014\u2015]|-{1,3})[ \t]*(?=[$€£]?\d|[A-Z]{1,2}\d)")
+_CLI_FLAG = re.compile(r"(?<=\s)--?(?=[a-z])")
+_DASH_PUNCT = re.compile(
+    r"[ \t]*[\u2014\u2015]+[ \t]*"  # an em dash or a horizontal bar, with any spacing
+    r"|(?<=\S)[ \t]*-{2,}[ \t]*(?=\S)"  # "--" or "---" between words
+    r"|(?<=\S)[ \t]+[\u2012\u2013-][ \t]+(?=\S)"  # an en dash or a hyphen with spaces on both sides
+)
+_DASH_TIDY = (
+    (re.compile(r"\s*,(?:\s*,)+"), ","),  # ", ," -> ","
+    (re.compile(r"\s+,"), ","),  # "word ," -> "word,"
+    (re.compile(r",\s*([.;:!?)\]])"), r"\1"),  # ",." -> "."
+    (re.compile(r"([(\[:;])\s*,\s*"), r"\1 "),  # ": ," -> ": "
+    (re.compile(r"\(\s+"), "("),
+    (re.compile(r"^\s*,\s*|\s*,\s*$"), ""),  # no comma at either end
+)
+
+
+def fix_dashes(text: str) -> str:
+    """Dashes used as punctuation become commas; number ranges lose their spaces ("2019 - 2021" -> "2019-2021").
+    Run on the model's own text before clean_text, which turns any dash into a plain hyphen."""
+    kept: list[str] = []
+
+    def hide(match: re.Match) -> str:
+        kept.append(match.group(0))
+        return f"\0{len(kept) - 1}\0"
+
+    text = _DASH_PUNCT.sub(", ", _RANGE_DASH.sub("-", _CLI_FLAG.sub(hide, text)))
+    for pattern, replacement in _DASH_TIDY:
+        text = pattern.sub(replacement, text)
+    return re.sub(r"\0(\d+)\0", lambda match: kept[int(match.group(1))], text)
+
+
+def clean_prose(text: str) -> str:
+    """The model's summary, bullet or letter paragraph: no dash punctuation, then clean_text."""
+    return clean_text(fix_dashes(text))
+
+
+def prose_places(resume: Resume, letter: CoverLetter | None = None) -> list[tuple[str, str]]:
+    """(where, text) for every sentence-like part a recruiter reads: the summary, each bullet (by employer) and the
+    cover letter's paragraphs."""
+    places = [("summary", resume.summary)] + [
+        (resume.profile.companies[exp.company_index].name, bullet) for exp in resume.experience for bullet in exp.bullets
+    ]
+    if letter is not None:
+        places += [(f"cover letter paragraph {number}", paragraph)
+                   for number, paragraph in enumerate(letter.paragraphs, 1)]
+    return places
+
+
+def dash_problems(resume: Resume, letter: CoverLetter | None = None) -> list[str]:
+    """Dashes used as punctuation that are still in the text: the model's text loses them (fix_dashes), so these
+    come from the user's own edits. A number range ("2019 - 2021") is not one."""
+    problems: list[str] = []
+    for where, text in prose_places(resume, letter):
+        for match in _DASH_PUNCT.finditer(text):
+            before, after = text[: match.start()], text[match.end():]
+            if re.search(r"\d$", before) and re.match(r"[$€£]?\d|[A-Z]{1,2}\d", after):
+                continue
+            problems.append(f"'{' '.join(before.split()[-3:])} {match.group(0).strip()} {' '.join(after.split()[:3])}'"
+                            f" ({where})")
+    return problems
 
 
 def word_count(text: str) -> int:
@@ -238,8 +306,11 @@ def clean_analysis(analysis: JDAnalysis) -> JDAnalysis:
 
 
 # ------------------------------------------------------------------ merge
-def build_resume(profile: Profile, out: TailorOutput) -> Resume:
-    """Raise ValueError (retried by the pipeline with this message) if the output cannot be used."""
+def build_resume(profile: Profile, out: TailorOutput, from_model: bool = True) -> Resume:
+    """Raise ValueError (retried by the pipeline with this message) if the output cannot be used. The model's summary
+    and bullets lose their dash punctuation; text the user typed in the editor (from_model=False) is kept as typed
+    (run_checks notes its dashes)."""
+    prose = clean_prose if from_model else clean_text
     sections = out.sections
     n = len(profile.companies)
     indices = [e.company_index for e in sections.experience]
@@ -249,7 +320,7 @@ def build_resume(profile: Profile, out: TailorOutput) -> Resume:
             f"(got {sorted(indices)})."
         )
     headline = clean_text(sections.headline)
-    summary = clean_text(sections.summary)
+    summary = prose(sections.summary)
     if not headline or not summary:
         raise ValueError("`headline` and `summary` must not be empty.")
 
@@ -270,7 +341,7 @@ def build_resume(profile: Profile, out: TailorOutput) -> Resume:
     experience: list[ResumeExperience] = []
     for entry in sorted(sections.experience, key=lambda e: e.company_index):
         title = clean_text(entry.job_title)
-        bullets = [b for b in (clean_bullet(x) for x in entry.bullets) if b]
+        bullets = [b for b in (prose(_BULLET_LEAD.sub("", x)) for x in entry.bullets) if b]
         if not title or len(title) > 80:
             raise ValueError(f"Job title for company_index {entry.company_index} is empty or too long.")
         if not bullets:
@@ -373,7 +444,15 @@ def contains_term(text: str, term: str) -> bool:
 
 
 def _word_pattern(word: str, last: bool) -> str:
-    """One word of a term; the last one also matches its plural or singular ('API' ~ 'APIs', 'pipelines')."""
+    """One word of a term, in either spelling style ('optimisation' ~ 'optimization'); the last one also matches its
+    plural or singular ('API' ~ 'APIs', 'pipelines')."""
+    forms = spelling.twins(word) if word.isalpha() and len(word) > 3 and not word.isupper() else ()
+    if len(forms) > 1:
+        return "(?:" + "|".join(_one_word_pattern(form, last) for form in sorted(forms)) + ")"
+    return _one_word_pattern(word, last)
+
+
+def _one_word_pattern(word: str, last: bool) -> str:
     if not last or not word.isalpha():  # 'Node.js', 'CI/CD' stay literal
         return re.escape(word)
     if word.isupper() or len(word) <= 3:  # acronyms: 'API' ~ 'APIs'
@@ -450,7 +529,7 @@ def keyword_coverage(resume: Resume, analysis: JDAnalysis) -> Coverage:
 MIN_SUMMARY_WORDS = 55
 MIN_BULLET_WORDS = 15
 WEAK_OPENERS = (
-    "responsible for", "worked on", "helped", "assisted", "participated in", "involved in", "utilized",
+    "responsible for", "worked on", "helped", "assisted", "participated in", "involved in", "utilized", "utilised",
     "build and maintain", "built and maintained",
 )
 
@@ -496,9 +575,16 @@ def _word_spans(text: str) -> list[tuple[str, int, int]]:
     return [(m.group(0).lower(), m.start(), m.end()) for m in _WORD_PART.finditer(text)]
 
 
+def _in_either_spelling(item: str, text: str) -> bool:
+    """The item appears in the text, in either spelling style (a JD skill the run spelled the other way)."""
+    return item.lower() in text.lower() or spelling.us_text(item) in spelling.us_text(text)
+
+
 def _stem(word: str) -> str:
     """One form for 'contribute', 'contributes', 'contributed' and 'contributing' (and 'identify', 'identified';
-    'focus', 'focused'; 'need', 'needed'), so a copy is found in any tense."""
+    'focus', 'focused'; 'need', 'needed'), so a copy is found in any tense, and in either spelling style
+    ('optimised' ~ 'optimized')."""
+    word = spelling.us_word(word)
     if len(word) > 4 and word.endswith(("ies", "ied")):
         return word[:-3] + "y"
     for suffix in ("ing", "ed", "es", "e", "s"):
@@ -584,7 +670,7 @@ def repeated_phrase_problems(resume: Resume, analysis: JDAnalysis) -> list[str]:
 
 _QUALITY_WORDS = re.compile(
     r"\b(scalable(?!\s+vector\s+graphics)|maintainable|low[\s-]+maintenance|high[\s-]+quality"
-    r"|robust(?!\s+(?:control|optimization|statistics|regression)\b)|reliable)\b",
+    r"|robust(?!\s+(?:control|optimi[sz]ation|statistics|regression)\b)|reliable)\b",
     re.IGNORECASE,
 )
 
@@ -598,40 +684,67 @@ def quality_skill_problems(resume: Resume) -> list[str]:
 # Words that make a resume read as machine-written or as marketing copy (the prompt's PLAIN WORDS rule). Words
 # with an everyday technical meaning stay allowed: orchestration (Kubernetes), dynamic (pricing), enhance.
 _BUZZ = re.compile(
-    r"\b(?:leverag(?:e|ed|es|ing)|utiliz(?:e|ed|es|ing|ation)|spearhead(?:ed|s|ing)?|seamless(?:ly)?|robust(?:ly|ness)?"
+    r"\b(?:leverag(?:e|ed|es|ing)|utili[sz](?:e|ed|es|ing|ation)|spearhead(?:ed|s|ing)?|seamless(?:ly)?|robust(?:ly|ness)?"
     r"|cutting[\s-]edge|state[\s-]of[\s-]the[\s-]art|synerg(?:y|ies|istic)|holistic(?:ally)?|innovative|transformative"
     r"|pivotal|paradigm|best[\s-]in[\s-]class|world[\s-]class|game[\s-]chang(?:er|ing)|delv(?:e|ed|es|ing)"
     r"|foster(?:ed|s|ing)?|empower(?:ed|s|ing|ment)?|meticulous(?:ly)?|plethora|myriad|in order to|a wide range of)\b",
     re.IGNORECASE,
 )
+# A vague result says nothing a recruiter can check ("improved operational efficiency", "increased decision making"):
+# a recruiter's advice is to say what changed instead ("cut weekly reporting from 8 hours to 2"). Specific nouns stay
+# allowed: query performance, developer productivity, energy efficiency, visibility into failed payments.
+_VAGUE_VERB = (r"(?:improv(?:e|es|ed|ing)|increas(?:e|es|ed|ing)|enhanc(?:e|es|ed|ing)|boost(?:s|ed|ing)?"
+               r"|dr(?:ive|ives|ove|iving|iven)|strengthen(?:s|ed|ing)?|optimi[sz](?:e|es|ed|ing)"
+               r"|maximi[sz](?:e|es|ed|ing)|elevat(?:e|es|ed|ing))")
+_VAGUE_QUAL = (r"(?:(?:overall|operational|organi[sz]ational|business|team|process|system|cross[\s-]functional"
+               r"|cross[\s-]team|company[\s-]wide|workflow|general)\s+)?")
+_VAGUE_NOUN = (r"(?:efficienc(?:y|ies)|productivity|decision[\s-]making|collaboration|visibility(?!\s+into\b)|alignment"
+               r"|effectiveness|outcomes|agility|performance|results|engagement|value)")
+_VAGUE_RESULT = re.compile(
+    rf"\b{_VAGUE_VERB}\s+(?:(?:the|its|their)\s+)?{_VAGUE_QUAL}{_VAGUE_NOUN}\b"
+    r"|\bdata[\s-]driven\s+decision[\s-]making\b|\boperational\s+excellence\b|\bresults[\s-]driven\b"
+    r"|\bstreamlin(?:e|es|ed|ing)\s+(?:(?:the|its|their|\w+)\s+)?(?:process(?:es)?|operations|workflows?|procedures)\b"
+    r"|\bdeliver(?:s|ed|ing)?\s+(?:(?:strong|measurable|tangible|significant|real)\s+)?results\b"
+    r"|\badd(?:s|ed|ing)?\s+(?:(?:significant|real|tangible)\s+)?value\b", re.IGNORECASE)
 _ING_CLAUSE = re.compile(r",\s+(?:and\s+)?(?!during\b)[a-z]{4,}ing\b")  # ", ensuring ...", ", and enabling ..."
 MAX_ING_CLAUSES = 2  # a third in one bullet reads as a template
 MIN_PLAIN_PROBLEMS_FOR_RETRY = 2  # one stray word is only noted; it is not worth a model call
 
 
-def _plain_problems(places: list[tuple[str, str]]) -> list[str]:
-    """Buzzwords in each (where, text), and texts that chain three or more '-ing' clauses."""
+def _plain_problems(places: list[tuple[str, str]], exempt: list[str] | None = None) -> list[str]:
+    """Buzzwords and vague results in each (where, text), and texts that chain three or more '-ing' clauses. A vague
+    phrase that is itself one of the posting's terms (`exempt`: it asks for "operational excellence") is the keyword
+    the posting wants; with a verb in front ("improved operational excellence") it is still vague."""
     problems: list[str] = []
     for where, text in places:
         problems += [f"'{match.group(0)}' ({where})" for match in _BUZZ.finditer(text)]
+        problems += [f"'{match.group(0)}' ({where})" for match in _VAGUE_RESULT.finditer(text)
+                     if not any(mentions(term, match.group(0)) for term in exempt or [])]
         if len(_ING_CLAUSE.findall(text)) > MAX_ING_CLAUSES:
             problems.append(f"a chain of '-ing' clauses ({where}: '{' '.join(text.split()[:8])} ...')")
     return problems
 
 
-def plain_word_problems(resume: Resume) -> list[str]:
+def plain_word_problems(resume: Resume, analysis: JDAnalysis | None = None) -> list[str]:
     """Machine-sounding wording in the summary and the bullets: buzzwords, and bullets that chain three or more
     '-ing' clauses. Skills are a list of tool names and are not read."""
     return _plain_problems([("summary", resume.summary)] + [
         (resume.profile.companies[exp.company_index].name, bullet) for exp in resume.experience for bullet in exp.bullets
-    ])
+    ], _posting_terms(analysis))
 
 
-def cover_plain_problems(letter: CoverLetter) -> list[str]:
+def _posting_terms(analysis: JDAnalysis | None) -> list[str]:
+    if analysis is None:
+        return []
+    return [*analysis.must_have_skills, *analysis.nice_to_have_skills, *analysis.keywords]
+
+
+def cover_plain_problems(letter: CoverLetter, analysis: JDAnalysis | None = None) -> list[str]:
     """The same check on the cover letter, sentence by sentence, so a long paragraph is not read as one '-ing'
     chain."""
     return _plain_problems([(f"paragraph {number}", sentence) for number, paragraph in enumerate(letter.paragraphs, 1)
-                            for sentence in re.split(r"(?<=[.!?])\s+", paragraph) if sentence])
+                            for sentence in re.split(r"(?<=[.!?])\s+", paragraph) if sentence],
+                           _posting_terms(analysis))
 
 
 _WORD = re.compile(r"[A-Za-z][\w+#]*(?:-[\w+#]+)*")
@@ -890,7 +1003,11 @@ def is_round_figure(token: str) -> bool:
     value = int(match.group(1).replace(",", "") or 0)
     if 1900 <= value <= 2100 and token.isdigit():
         return False
-    return value >= 10 and value % 5 == 0
+    thousands = 0
+    while value >= 1000 and value % 1000 == 0:  # $41,000 reads like $41K: only its thousands count
+        value //= 1000
+        thousands += 1
+    return (value >= 10 and value % 5 == 0) or (thousands > 0 and value < 10)
 
 
 def figure_style_problems(resume: Resume, allowed_text: str) -> list[str]:
@@ -943,6 +1060,82 @@ def metric_density_problems(resume: Resume) -> list[str]:
 MIN_FIRST_BULLETS_FOR_RETRY = 2  # two jobs that open without a figure (or the most recent one) are worth the fix round
 
 
+# A percentage means little without its base ("by 20%" of 5,000 or of 500,000?), a recruiter's advice: every
+# percentage that describes a change comes with its base in absolute terms, "by 17.8% ($41,000 a year)" or
+# "by 22% (from 41 to 32 seconds)". A level ("99.9% uptime", "from 61% to 87%") needs none.
+_PCT = r"\d+(?:\.\d+)?\s?%"
+_CHANGE_PCT = re.compile(
+    rf"\bby\s+(?:(?:about|almost|nearly|over|more\s+than|up\s+to)\s+)?{_PCT}"
+    rf"|(?P<adj>{_PCT}\s+(?:faster|slower|fewer|less|lower|higher|more|smaller|larger|shorter|cheaper|quicker)\b)"
+    rf"|(?P<noun>{_PCT}\s+(?:(?:year[\s-]over[\s-]year|yoy|annual|monthly|quarterly)\s+)?"
+    r"(?:increase|decrease|reduction|improvement|growth|drop|decline|rise|gain|cut|saving|uplift|lift|boost|jump|fall)s?\b)"
+    rf"|{_PCT}\s+(?:year[\s-]over[\s-]year|yoy|quarter[\s-]over[\s-]quarter|month[\s-]over[\s-]month)\b"
+    rf"|\b(?:up|down|grew|rose|fell|dropped|declined|jumped|climbed)\s+{_PCT}", re.IGNORECASE)
+_AMOUNT = r"[$€£]?\d[\d,]*(?:\.\d+)?(?:\s?[kKmMbB]\b)?"
+_WHOLE = r"(?![\d.,]|\s?%)"  # a whole amount, not a percentage level
+_FROM_TO = re.compile(rf"\bfrom\s+(?P<was>{_AMOUNT}){_WHOLE}(?P<unit_was>\s+[a-z]+)?[^.;()]{{0,30}}?\bto\s+"
+                      rf"(?P<now>{_AMOUNT}){_WHOLE}(?P<unit_now>\s+[a-z]+)?", re.IGNORECASE)
+_FROM_TO_ANY = re.compile(rf"\bfrom\s+{_AMOUNT}\s?%?[^.;()]{{0,30}}?\bto\s+{_AMOUNT}", re.IGNORECASE)
+_NUMBER_WORDS = r"(?:[$€£]\d|(?<![\w.])\d[\d,.]*\s?(?:[a-z]+\b|%)|\bfrom\b)"
+_BASE_AFTER = re.compile(rf"^[^.;()]{{0,30}}\((?=[^()]*{_NUMBER_WORDS})[^()]*\)|^[^.;()]*?[$€£]\d|^\s*to\s+{_AMOUNT}",
+                         re.IGNORECASE)
+_MONEY_BEFORE = re.compile(r"[$€£]\d[^.;]{0,60}$")  # 'saving $41,300 a year, a 17.8% cut'
+_SENTENCE_END = re.compile(r"(?<=[.!?;])\s+")
+MIN_UNBASED_FOR_RETRY = 2  # one is only noted: like a single rounded figure, not worth a model call
+MAX_BASE_GAP = 1.0  # percentage points between a percentage and the change its base shows
+
+
+def unbased_percentages(text: str) -> list[str]:
+    """The percentages in a text that describe a change but give no base ('cut costs by 23.4%')."""
+    found: list[str] = []
+    for sentence in _SENTENCE_END.split(text):
+        for match in _CHANGE_PCT.finditer(sentence):
+            before, after = sentence[: match.start()], sentence[match.end():]
+            if _BASE_AFTER.search(after) or _FROM_TO_ANY.search(sentence):
+                continue
+            if (match.group("noun") or match.group("adj")) and _MONEY_BEFORE.search(before):
+                continue
+            found.append(match.group(0))
+    return found
+
+
+def _amount(text: str) -> float:
+    match = re.match(r"[$€£]?(\d[\d,]*(?:\.\d+)?)\s?([kKmMbB])?", text)
+    if match is None:
+        return 0.0
+    return float(match.group(1).replace(",", "")) * {"k": 1e3, "m": 1e6, "b": 1e9}.get((match.group(2) or "").lower(), 1)
+
+
+def base_mismatches(text: str) -> list[str]:
+    """'from A to B' bases that do not agree with the percentage beside them ('by 22% (from 41 to 38 seconds)')."""
+    found: list[str] = []
+    for sentence in _SENTENCE_END.split(text):
+        percents = [float(p) for p in re.findall(r"(\d+(?:\.\d+)?)\s?%", sentence)]
+        if not percents:
+            continue
+        for match in _FROM_TO.finditer(sentence):
+            unit_was, unit_now = ((match.group(g) or "").strip().lower() for g in ("unit_was", "unit_now"))
+            if unit_was and unit_now and unit_was != unit_now:
+                continue  # 'from 2 minutes to 41 seconds': not one scale
+            was, now = _amount(match.group("was")), _amount(match.group("now"))
+            if was <= 0:
+                continue
+            change = abs(was - now) / was * 100
+            if not any(abs(change - percent) <= MAX_BASE_GAP for percent in percents):
+                found.append(match.group(0).strip())
+    return found
+
+
+def unbased_percentage_problems(resume: Resume, letter: CoverLetter | None = None) -> list[str]:
+    """"'by 23.4%' (Northwind Labs)" for every percentage without its base, in the summary, the bullets and the
+    cover letter."""
+    return [f"'{found}' ({where})" for where, text in prose_places(resume, letter) for found in unbased_percentages(text)]
+
+
+def base_mismatch_problems(resume: Resume, letter: CoverLetter | None = None) -> list[str]:
+    return [f"'{found}' ({where})" for where, text in prose_places(resume, letter) for found in base_mismatches(text)]
+
+
 def first_bullet_problems(resume: Resume) -> list[str]:
     """Jobs whose first bullet carries no figure, most recent first. A recruiter's six-second scan reads only that
     bullet, so it should show the job's biggest win with its size and its result."""
@@ -992,7 +1185,7 @@ def _quoted(items: list[str]) -> str:
 def claim_flags(resume: Resume, jd: str, hints: str) -> list[Flag]:
     """Things the user did not provide and should confirm before sending the resume."""
     flags: list[Flag] = []
-    hints_l, jd_l = hints.lower(), jd.lower()
+    hints_l = hints.lower()
 
     def check_numbers(section: str, text: str) -> None:
         """One flag naming every estimate in the text (a job's first bullet gives its size and its result)."""
@@ -1018,7 +1211,7 @@ def claim_flags(resume: Resume, jd: str, hints: str) -> list[Flag]:
             check_numbers(f"experience:{exp.company_index}", bullet)
     for group in resume.skills:
         for item in group.skills:
-            if item.lower() not in jd_l and item.lower() not in hints_l:
+            if not _in_either_spelling(item, jd) and not _in_either_spelling(item, hints):
                 flags.append(
                     Flag(section="skills", text=item, level="info",
                          reason="Related skill added (not in the job description). Keep it only if you have it.")
@@ -1068,8 +1261,81 @@ def cover_flags(letter: CoverLetter, hints: str) -> list[Flag]:
     return flags
 
 
-def clean_cover_letter(greeting: str, paragraphs: list[str], closing: str) -> tuple[str, list[str], str]:
-    paras = [p for p in (drop_repeated_words(clean_text(x)) for x in paragraphs) if p]
+# ------------------------------------------------------------------ US style / EU style spelling
+def known_names(resume: Resume, analysis: JDAnalysis | None = None, *extra: str) -> list[str]:
+    """Names that keep their owner's spelling: the employers, the schools, the hiring company and manager."""
+    names = [c.name for c in resume.profile.companies] + [e.school for e in resume.profile.education]
+    if analysis is not None:
+        names.append(analysis.company)
+    return [name for name in [*names, *extra] if name and name.strip()]
+
+
+def skill_terms(resume: Resume, analysis: JDAnalysis | None = None) -> list[str]:
+    """Skill terms, changed to the style even when capitalised inside a sentence ('led Data Modeling')."""
+    terms = [skill for group in resume.skills for skill in group.skills]
+    if analysis is not None:
+        terms += [*analysis.must_have_skills, *analysis.nice_to_have_skills, *analysis.keywords]
+    return terms
+
+
+def spell_resume(resume: Resume, style: str, analysis: JDAnalysis | None = None,
+                 names: tuple[str, ...] = ()) -> list[tuple[str, str]]:
+    """Every word the model wrote in the run's style: "us" (American) or "eu" (British). The profile's facts (name,
+    employers, schools) are never touched. Returns the changes."""
+    keep, terms = known_names(resume, analysis, *names), skill_terms(resume, analysis)
+    changes: list[tuple[str, str]] = []
+
+    def convert(text: str, title: bool) -> str:
+        new, done = spelling.convert_and_list(text, style, keep, terms, title)
+        changes.extend(done)
+        return new
+
+    resume.headline = convert(resume.headline, True)
+    seen: set[str] = set()
+    for group in resume.skills:
+        group.category = convert(group.category, True)
+        items = []
+        for item in (convert(skill, True) for skill in group.skills):
+            if item.lower() not in seen:  # 'Data Visualisation' twice once both spellings are one
+                seen.add(item.lower())
+                items.append(item)
+        group.skills = items
+    resume.skills = [group for group in resume.skills if group.skills]
+    resume.summary = convert(resume.summary, False)
+    for exp in resume.experience:
+        exp.job_title = convert(exp.job_title, True)
+        exp.bullets = [convert(bullet, False) for bullet in exp.bullets]
+    return changes
+
+
+def spell_letter(letter: CoverLetter, style: str, keep: list[str], terms: list[str]) -> None:
+    """The cover letter's paragraphs in the run's style, 'my resume' called a CV in EU style, and the sign-off of
+    that style ('Kind regards,' / 'Sincerely,'). The greeting holds names and stays."""
+    letter.paragraphs = [spelling.cv_wording(spelling.convert(paragraph, style, keep, terms), style)
+                         for paragraph in letter.paragraphs]
+    letter.closing = spelling.sign_off(letter.closing, style)
+
+
+def spelling_problems(resume: Resume, letter: CoverLetter | None, style: str, analysis: JDAnalysis | None = None,
+                      names: tuple[str, ...] = ()) -> list[str]:
+    """Words in the other spelling style: the model's text is converted, so these come from the user's own edits."""
+    keep, terms = known_names(resume, analysis, *names), skill_terms(resume, analysis)
+    places = [(resume.headline, True), *((skill, True) for group in resume.skills for skill in group.skills),
+              *((exp.job_title, True) for exp in resume.experience), (resume.summary, False),
+              *((bullet, False) for exp in resume.experience for bullet in exp.bullets)]
+    if letter is not None:
+        places += [(paragraph, False) for paragraph in letter.paragraphs]
+    found = [word for text, title in places for word in spelling.other_style_words(text, style, keep, terms, title)]
+    return list(dict.fromkeys(found))
+
+
+def clean_cover_letter(
+    greeting: str, paragraphs: list[str], closing: str, from_model: bool = True
+) -> tuple[str, list[str], str]:
+    """The model's paragraphs lose their dash punctuation; text the user typed in the editor (from_model=False) is
+    kept as typed."""
+    prose = clean_prose if from_model else clean_text
+    paras = [p for p in (drop_repeated_words(prose(x)) for x in paragraphs) if p]
     if not 2 <= len(paras) <= 6:
         raise ValueError("The cover letter needs between 2 and 6 non-empty paragraphs.")
     greeting, closing = clean_text(greeting), clean_text(closing)

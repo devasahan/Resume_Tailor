@@ -1,0 +1,1 @@
+SPELLING (US style): write American English: optimize, organization, analyze, behavior, center, modeling, catalog, program, license. Write the job description's keywords in this spelling too: spelling is the only change allowed to a keyword. Names keep their owner's spelling (Unity Catalog, Google Optimize). In jd_analysis, keep the job description's own spelling.

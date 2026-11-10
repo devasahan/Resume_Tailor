@@ -75,16 +75,18 @@ def job_facts(jd: str) -> dict:
 
 # Each job's first bullet with estimated figures: the job's biggest win, with its size and its result.
 LEADS = [
-    ("Rebuilt the {k1} pipeline behind the main customer workflow for {size}, cutting failed nightly runs by {result} with staged rollouts and clear ownership.",
-     "Rebuild the {k1} pipeline behind the main customer workflow for {size}, cutting failed nightly runs by {result} with staged rollouts and clear ownership."),
-    ("Launched {k1} self-service reporting for {size}, so the time from a request to an answer dropped by {result} once shared dashboards replaced spreadsheet hand-offs.",
-     "Launch {k1} self-service reporting for {size}, so the time from a request to an answer drops by {result} as shared dashboards replace spreadsheet hand-offs."),
-    ("Moved {k1} order processing for {size} onto a versioned, tested setup, and support tickets about missing orders fell by {result} within two quarters.",
-     "Move {k1} order processing for {size} onto a versioned, tested setup, so support tickets about missing orders keep falling, by {result} so far this year."),
+    ("Rebuilt the {k1} pipeline behind the main customer workflow for {size}, cutting failed nightly runs by {result} (from {was} to {now} a month) with staged rollouts and clear ownership.",
+     "Rebuild the {k1} pipeline behind the main customer workflow for {size}, cutting failed nightly runs by {result} (from {was} to {now} a month) with staged rollouts and clear ownership."),
+    ("Launched {k1} self-service reporting for {size}, so the time from a request to an answer dropped by {result} (from {was} to {now} hours) once shared dashboards replaced spreadsheet hand-offs.",
+     "Launch {k1} self-service reporting for {size}, so the time from a request to an answer drops by {result} (from {was} to {now} hours) as shared dashboards replace spreadsheet hand-offs."),
+    ("Moved {k1} order processing for {size} onto a versioned, tested setup, and support tickets about missing orders fell by {result} (from {was} to {now} a week) within two quarters.",
+     "Move {k1} order processing for {size} onto a versioned, tested setup, so support tickets about missing orders keep falling, by {result} (from {was} to {now} a week) so far this year."),
 ]
 LEAD_SIZES = ["38 internal teams", "12.4K active users", "613 stores", "47 partner companies", "83K customers",
               "23 regional offices", "4.6K merchants", "2.3K clinics", "36 product teams"]
 LEAD_RESULTS = ["17.8%", "21%", "12.6%", "8.3%", "19%", "26.1%", "14%", "31.7%", "9.4%"]
+# Each result's base, before and after: it agrees with the percentage (101 to 83 is 17.8%), as the prompt asks
+LEAD_BASES = [(101, 83), (62, 49), (87, 76), (96, 88), (63, 51), (46, 34), (43, 37), (41, 28), (64, 58)]
 LEVELS = ["Junior", "", "Senior", "Lead", "Principal"]
 SCOPES = ["implemented", "built", "designed", "owned", "led"]
 COMPANY_RE = re.compile(
@@ -119,8 +121,8 @@ DETAILED = [
      "Migrate legacy {k1} jobs to a versioned, documented setup, running both side by side with the owning teams until every output matches, so each cut-over causes no downtime or data loss."),
     ("Streamlined recurring {k3} reporting by replacing manual spreadsheet hand-offs with a shared automated pipeline and clear ownership, so managers saw current numbers every morning instead of stale weekly exports.",
      "Streamline recurring {k3} reporting by replacing manual spreadsheet hand-offs with a shared automated pipeline and clear ownership, so managers see current numbers every morning instead of stale weekly exports."),
-    ("Increased delivery speed by 23.4% by redesigning {k1} workflows across several teams, aligning technical decisions with business goals, documenting trade-offs for stakeholders, and keeping every release predictable and well tested.",
-     "Increase delivery speed by 23.4% by redesigning {k1} workflows across several teams, aligning technical decisions with business goals, documenting trade-offs for stakeholders, and keeping every release predictable and well tested."),
+    ("Cut release lead time by 23.4% (from 47 to 36 days) by redesigning {k1} workflows across several teams, aligning technical decisions with business goals, documenting trade-offs for stakeholders, and keeping every release predictable and well tested.",
+     "Cut release lead time by 23.4% (from 47 to 36 days) by redesigning {k1} workflows across several teams, aligning technical decisions with business goals, documenting trade-offs for stakeholders, and keeping every release predictable and well tested."),
     ("Owned the day-to-day execution of {k2} initiatives from intake to hand-off, coordinating with product, operations and customer-facing teams, tracking risks openly, and communicating status in plain language to leadership.",
      "Own the day-to-day execution of {k2} initiatives from intake to hand-off, coordinating with product, operations and customer-facing teams, tracking risks openly, and communicating status in plain language to leadership."),
     ("Partnered with stakeholders to translate ambiguous requirements into clear {k3} deliverables, validating assumptions early, agreeing on acceptance criteria, and reducing late changes during delivery.",
@@ -294,7 +296,9 @@ class FakeClient(LLMClient):
                 template = now if present else past
                 bullets.append(template.format(k1=mine[j % len(mine)], k2=mine[(j + 1) % len(mine)],
                                                k3=mine[(j + 2) % len(mine)], size=LEAD_SIZES[index % len(LEAD_SIZES)],
-                                               result=LEAD_RESULTS[index % len(LEAD_RESULTS)]))
+                                               result=LEAD_RESULTS[index % len(LEAD_RESULTS)],
+                                               was=LEAD_BASES[index % len(LEAD_BASES)][0],
+                                               now=LEAD_BASES[index % len(LEAD_BASES)][1]))
             experience.append({"company_index": index, "job_title": titles[index], "bullets": bullets})
 
         groups = [

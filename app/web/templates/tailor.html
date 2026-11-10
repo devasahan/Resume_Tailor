@@ -23,6 +23,13 @@
 
     <section class="panel">
       <h2 class="card-title"><span class="step-num">3</span>Create</h2>
+      <div class="spelling">
+        <div class="tabs" role="group" aria-label="Spelling">
+          <button id="spell-us" type="button" class="on" aria-pressed="true">US style</button>
+          <button id="spell-eu" type="button" aria-pressed="false">EU style</button>
+        </div>
+        <p class="small muted" id="spell-hint">American spelling (optimization, behavior).</p>
+      </div>
       <div class="create">
         <button class="primary btn-lg" id="create" type="button" disabled><span class="icon i-spark" aria-hidden="true"></span>Create resume &amp; cover letter</button>
         <button class="link-btn" id="resume-only" type="button" disabled>Resume only</button>
@@ -65,20 +72,34 @@
 {% endblock %}
 {% block scripts %}
 <script>
-let resumes = [], current = null;  // current = { run, jd, profileId }
+let resumes = [], current = null;  // current = { run, jd, profileId, spelling }
 let working = false, letterComing = false, ticking = null;
+let spelling = 'us';  // the US style / EU style buttons: US each time the page opens
+const SPELLING_HINT = {
+  us: 'American spelling (optimization, behavior).',
+  eu: 'British spelling (optimisation, behaviour), "Kind regards," and "CV".',
+};
 
 function recall() { return recallValue('resumeId'); }  // per account, cleared at logout
 function remember(id) { rememberValue('resumeId', id); }
 function chosenId() { return Number($('#resume').value) || null; }
 function busy(on, text = '') {
   working = on;
-  for (const button of [$('#create'), $('#resume-only'), $('#add-cover'), $('#rewrite-cover')]) {
+  for (const button of [$('#create'), $('#resume-only'), $('#add-cover'), $('#rewrite-cover'), $('#spell-us'),
+    $('#spell-eu')]) {
     if (button) button.disabled = on || !resumes.length;
   }
   if ($('#status').textContent !== text) $('#status').textContent = text;  // a live region: only real changes are read out
 }
 function say(text) { $('#announce').textContent = text; }  // for screen readers: each new step, never the clock
+function chooseSpelling(style) {
+  spelling = style;
+  for (const [id, value] of [['#spell-us', 'us'], ['#spell-eu', 'eu']]) {
+    $(id).classList.toggle('on', value === style);
+    $(id).setAttribute('aria-pressed', String(value === style));
+  }
+  $('#spell-hint').textContent = SPELLING_HINT[style];
+}
 
 // The progress list: waiting (its number), working (spinner and the time so far), done, skipped or failed.
 const SAID = { working: ', in progress', done: ', done', failed: ', failed' };  // the dot shows these only by look
@@ -118,9 +139,10 @@ function showResult(run, view = 'resume') {
   $('#chips').replaceChildren(
     chip(run.pages === 1 ? '1 page' : `${run.pages} pages`, run.fits ? 'ok' : 'bad'),
     chip(`${Math.round(run.coverage.score * 100)}% keywords`, run.coverage.score >= 0.8 ? 'ok' : 'warn'),
+    chip(run.spelling === 'eu' ? 'EU style' : 'US style'),
     ME.admin ? [chip(run.served_model || run.requested_model), chip(money(run.cost_usd + (run.cover_cost_usd || 0)))] : null);
   $('#downloads').replaceChildren(
-    download(`/api/runs/${id}/resume.pdf?download=1`, 'Download resume PDF'),
+    download(`/api/runs/${id}/resume.pdf?download=1`, run.spelling === 'eu' ? 'Download CV PDF' : 'Download resume PDF'),
     run.cover_letter ? download(`/api/runs/${id}/cover.pdf?download=1`, 'Download cover letter PDF')
       : letterComing ? null
         : el('button', { class: 'outline', id: 'add-cover', type: 'button', disabled: working, onclick: () => create(true, true) },
@@ -158,14 +180,14 @@ async function tailorNow(jd) {
   const profileId = chosenId();
   let run;
   try {
-    run = await finished(await api('/api/tailor', { method: 'POST', body: { jd, profile_id: profileId } }),
+    run = await finished(await api('/api/tailor', { method: 'POST', body: { jd, profile_id: profileId, spelling } }),
       (waited, error) => busy(true, stillWorking(waited, error)));
   } catch (err) { clearResult(); throw err; }
   if (run.status === 'error') {
     clearResult();
     throw new Error(run.error || 'Tailoring failed.');
   }
-  current = { run, jd, profileId };
+  current = { run, jd, profileId, spelling };
   showResult(run);
   return run;
 }
@@ -176,7 +198,8 @@ async function create(withLetter, keepResume = false) {
   const jd = readJd();
   if (!jd) return;
   $('#messages').replaceChildren();
-  const reuse = keepResume && current && current.jd === jd && current.profileId === chosenId();
+  const reuse = keepResume && current && current.jd === jd && current.profileId === chosenId()
+    && current.spelling === spelling;  // after switching style, the resume is made again in the new style
   $('#steps').classList.remove('hidden');
   stepState('resume', reuse ? 'done' : '');
   stepState('cover', withLetter ? '' : 'skipped', withLetter ? '' : 'skipped');
@@ -252,6 +275,8 @@ if ($('#jd').value.trim()) factsTimer = setTimeout(checkFacts, FACTS_WAIT_MS);  
 
 $('#create').addEventListener('click', () => create(true));
 $('#resume-only').addEventListener('click', () => create(false));
+$('#spell-us').addEventListener('click', () => chooseSpelling('us'));
+$('#spell-eu').addEventListener('click', () => chooseSpelling('eu'));
 $('#rewrite-cover').addEventListener('click', () => create(true, true));  // a new letter for the same resume
 $('#resume').addEventListener('change', () => { remember(chosenId()); resumeNote(); });
 $('#show-resume').addEventListener('click', () => preview('resume'));

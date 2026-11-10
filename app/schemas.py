@@ -212,5 +212,6 @@ class TailorResult(BaseModel):
     company_name: str = ""  # company the user typed on the tailor form (wins over the one read from the JD)
     jd: str = ""  # the job description this run was made for (a cover letter can be written later from it)
     metrics_mode: str = ""  # the "Numbers in bullets" setting the run was made with ("" for older runs)
+    spelling: Literal["", "us", "eu"] = ""  # the Tailor page's US/EU style button ("" for older runs: US)
     career_plan: list[CareerStep] = Field(default_factory=list)  # how the model spread the JD across the jobs
     created_at: str = ""

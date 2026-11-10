@@ -31,7 +31,7 @@ from ..schemas import (
 )
 from ..storage.db import Database
 from ..timing import Steps
-from . import validate
+from . import spelling, validate
 from .facts import candidate_facts
 from .fit import (
     MAX_PAGES,
@@ -102,6 +102,9 @@ def analysis_terms(analysis: JDAnalysis) -> str:
     )
 
 
+SPELLING_NAMES = {"us": "American", "eu": "British"}
+
+
 def run_checks(result: TailorResult, jd_text: str) -> None:
     """(Re)compute coverage, ATS warnings and claim flags from the current resume text."""
     assert result.resume is not None and result.analysis is not None
@@ -116,14 +119,47 @@ def run_checks(result: TailorResult, jd_text: str) -> None:
     if phrases:
         result.ats_warnings.append("Skills written as phrases, not keywords: " + ", ".join(phrases[:6])
                                    + ". List the keyword itself (for example SQL, AWS).")
-    plain = validate.plain_word_problems(result.resume)
+    plain = validate.plain_word_problems(result.resume, result.analysis)
     if plain:
         result.ats_warnings.append("Wording that can sound machine-written: " + "; ".join(plain[:6])
                                    + ". Plain words read as your own.")
-    letter_plain = validate.cover_plain_problems(result.cover_letter) if result.cover_letter else []
+    letter_plain = validate.cover_plain_problems(result.cover_letter, result.analysis) if result.cover_letter else []
     if letter_plain:
         result.ats_warnings.append("Cover letter wording that can sound machine-written: " + "; ".join(letter_plain[:6])
                                    + ". Plain words read as your own.")
+    unbased = validate.unbased_percentage_problems(result.resume, result.cover_letter)
+    if unbased:
+        result.ats_warnings.append(
+            "Percentages without their base: " + "; ".join(unbased[:6]) + ". A recruiter asks 'of what?': add the "
+            "amount or the values before and after, for example 'by 17.8% ($41,000 a year)'."
+        )
+    mismatched = validate.base_mismatch_problems(result.resume, result.cover_letter)
+    if mismatched:
+        result.ats_warnings.append(
+            "Percentages that do not match their base: " + "; ".join(mismatched[:6]) + ". Check the numbers: from 41 "
+            "to 32 is 22%."
+        )
+    dashes = validate.dash_problems(result.resume, result.cover_letter)
+    if dashes:
+        result.ats_warnings.append("Dashes used as punctuation: " + "; ".join(dashes[:6]) + ". Recruiters read them "
+                                   "as a sign of AI-written text: use a full stop or a comma instead.")
+    if result.spelling:  # runs made before the US/EU style buttons get no spelling notes
+        style = result.spelling
+        names = (result.company_name, result.cover_letter.hiring_manager if result.cover_letter else "")
+        other = validate.spelling_problems(result.resume, result.cover_letter, style, result.analysis, names)
+        if other:
+            result.ats_warnings.append(
+                f"Words in {SPELLING_NAMES['eu' if style == 'us' else 'us']} spelling in this {style.upper()} style "
+                f"document: {', '.join(other[:8])}. Write them the {SPELLING_NAMES[style]} way, so the spelling is "
+                "the same everywhere."
+            )
+        posting = spelling.detect(jd_text)
+        if posting and posting != style:
+            result.ats_warnings.append(
+                f"This job post uses {SPELLING_NAMES[posting]} spelling, but this resume uses {style.upper()} style. "
+                "Software that searches for the post's exact words may miss a few. If the job is in "
+                + ("the UK or the EU, choose EU style." if posting == "eu" else "the US, choose US style.")
+            )
     openers = validate.first_bullet_problems(result.resume) if result.metrics_mode == "estimate" else []
     if openers:
         result.ats_warnings.append("These jobs do not open with a measured result: " + ", ".join(openers[:6])
@@ -181,9 +217,12 @@ async def run_tailor(
     hiring_manager: str = "",
     save: bool = True,
     user_id: int | None = None,
+    spelling: str = "us",
     steps: Steps | None = None,
 ) -> TailorResult:
-    """`steps` (optional) gets a mark at the end of each step, for the job's timing line in the server log."""
+    """`spelling`: "us" (American) or "eu" (British) for every word the model writes, the Tailor page's US style / EU
+    style buttons. `steps` (optional) gets a mark at the end of each step, for the job's timing line in the server
+    log."""
     started, steps = time.perf_counter(), steps or Steps()
     settings = router.settings()
     paper = settings["paper_size"]
@@ -192,7 +231,7 @@ async def run_tailor(
     facts = candidate_facts(profile, today)
     result = TailorResult(
         requested_model=model_id, prompt_version=PROMPT_VERSION, hints=hints, facts=facts, company_name=company_name,
-        jd=jd, metrics_mode=metrics_mode,
+        jd=jd, metrics_mode=metrics_mode, spelling=spelling,
     )
     outcome: Outcome = Outcome()
     notes: list[str] = []
@@ -210,16 +249,20 @@ async def run_tailor(
 
         budget = await asyncio.to_thread(plan_bullets)  # bullets per employer that fit
         steps.mark("bullet plan")
-        context = {"profile": profile.model_dump(), "jd": jd, "hints": hints, "bullets": budget, "metrics": metrics_mode}
+        context = {"profile": profile.model_dump(), "jd": jd, "hints": hints, "bullets": budget, "metrics": metrics_mode,
+                   "spelling": spelling}
 
         def build(out: TailorOutput):
             """(output, resume, notes). The analysis keeps keywords only, the headline the role's short name, and
-            titles that step down are corrected, on every draft, for free."""
+            titles that step down are corrected, on every draft, for free. Last, every word follows the spelling
+            style (after the title fixes, which match the posting's own spelling)."""
             validate.clean_analysis(out.jd_analysis)
             resume = validate.build_resume(profile, out)
             validate.short_role_headline(resume)
             notes = validate.fix_title_regressions(resume)
-            return out, resume, notes + validate.role_level_fixes(resume, out.jd_analysis)
+            notes += validate.role_level_fixes(resume, out.jd_analysis)
+            validate.spell_resume(resume, spelling, out.jd_analysis, (company_name, hiring_manager))
+            return out, resume, notes
 
         def parse(data: dict):
             return build(TailorOutput.model_validate(data))
@@ -249,9 +292,21 @@ async def run_tailor(
                     "These jobs open without a measured result: " + ", ".join(openers[:8]) + ". A recruiter reads "
                     "only the first bullet of each job in a six-second scan: rewrite it as that job's biggest win for "
                     "this JD, with its size and its result as figures (for example 'for 83K concurrent players, "
-                    "cutting queue-to-lobby time by 22%'). If a later bullet of the same job already has a figure, "
+                    "cutting queue-to-lobby time by 22% (from 41 to 32 seconds)'). If a later bullet of the same job already has a figure, "
                     "move that result into the first bullet and say the later one in words, so the job keeps at most "
                     f"{validate.MAX_FIGURE_BULLETS_PER_JOB} bullets with figures."
+                )
+            unbased = validate.unbased_percentage_problems(value[1]) if metrics_mode == "estimate" else []
+            mismatched = validate.base_mismatch_problems(value[1]) if metrics_mode == "estimate" else []
+            if len(unbased) >= validate.MIN_UNBASED_FOR_RETRY or mismatched:
+                feedback.append(
+                    "A percentage means little without its base (20% of 5,000 or of 500,000?). "
+                    + (f"These have none: {'; '.join(unbased[:8])}. Put the base in brackets right after each, the "
+                       "amount with its period or the values before and after: 'by 17.8% ($41,000 a year)', 'by 22% "
+                       "(from 41 to 32 seconds)'. " if unbased else "")
+                    + (f"These bases do not agree with their percentage: {'; '.join(mismatched[:8])}. Make the "
+                       "values match the percentage (from 41 to 32 is 22%). " if mismatched else "")
+                    + "Keep a figure the candidate gave exactly as it is."
                 )
             rounded = validate.figure_style_problems(value[1], allowed_figures)
             if len(rounded) >= 2:
@@ -312,12 +367,13 @@ async def run_tailor(
                     + ", ".join(f"'{s}'" for s in phrases[:8]) + ". Replace each one through skill_changes with the "
                     "keyword itself, as people list it on a resume (for example 'SQL', 'AWS', 'Copilot')."
                 )
-            plain = validate.plain_word_problems(value[1])
+            plain = validate.plain_word_problems(value[1], value[0].jd_analysis)
             if len(plain) >= validate.MIN_PLAIN_PROBLEMS_FOR_RETRY:
                 feedback.append(
                     "These words or patterns sound machine-written: " + "; ".join(plain[:8]) + ". Rewrite those "
                     "sentences in plain, everyday words, following the PLAIN WORDS rule, and keep what they say, the "
-                    "must-have phrases they show and the number of bullets."
+                    "must-have phrases they show and the number of bullets. Replace a vague result ('improved "
+                    "operational efficiency') with what specifically changed and for whom."
                 )
             era = validate.era_problems(value[1])
             if era:
@@ -354,7 +410,7 @@ async def run_tailor(
                 context={**context, "draft": resume.model_dump(exclude={"profile"})},  # read only by the demo models
             )
 
-        system_prompt = tailor_system(metrics_mode)
+        system_prompt = tailor_system(metrics_mode, spelling)
         user_prompt = tailor_user(jd, profile.companies, hints, facts, bullets=budget, today=today)
         steps.mark("prompts")
         await generate_validated(
@@ -373,7 +429,7 @@ async def run_tailor(
             smaller = smaller_budget(budget)
             try:
                 await generate_validated(
-                    router, [outcome.final_model_id], system=tailor_system(metrics_mode),
+                    router, [outcome.final_model_id], system=tailor_system(metrics_mode, spelling),
                     user=tailor_user(jd, profile.companies, hints, facts, shorten=True, bullets=smaller, today=today),
                     schema=schema, schema_name="tailor_output", parse=parse,
                     context={**context, "shorten": True, "bullets": smaller}, outcome=second,
@@ -459,22 +515,26 @@ async def _cover_letter(
     added to notes). A cost-cap stop here leaves the resume intact instead of failing the whole run."""
     assert result.resume is not None and result.analysis is not None
     steps = steps or Steps()
-    resume = result.resume
+    resume, style = result.resume, result.spelling or "us"
+    keep = validate.known_names(resume, result.analysis, company_name, hiring_manager)
+    terms = validate.skill_terms(resume, result.analysis)
 
     def parse(data: dict) -> CoverLetter:
         raw = CoverLetterOut.model_validate(data)
         greeting, paragraphs, closing = validate.clean_cover_letter(raw.greeting, raw.paragraphs, raw.closing)
-        return CoverLetter(
+        letter = CoverLetter(
             greeting=greeting, paragraphs=paragraphs, closing=closing,
             company_name=company_name, hiring_manager=hiring_manager,
         )
+        validate.spell_letter(letter, style, keep, terms)  # the run's US or EU style, its sign-off, CV or resume
+        return letter
 
     second = Outcome()
     try:
         chain = router.chain(model_id, allow_fallback)
         schema = strict_json_schema(CoverLetterOut)
         steps.mark("cover models")
-        system_prompt = cover_system()
+        system_prompt = cover_system(style)
         user_prompt = cover_user(jd, resume, result.analysis.target_role, company_name, hiring_manager, hints)
         steps.mark("cover prompts")
         await generate_validated(

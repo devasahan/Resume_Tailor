@@ -12,7 +12,7 @@ from pathlib import Path
 from ..pipeline.facts import bullet_caps, experience_before, months_phrase, stay_months
 from ..schemas import CareerStep, Company, JDAnalysis, Resume
 
-PROMPT_VERSION = "v25"
+PROMPT_VERSION = "v26"
 RETRY_MARKER = "Your previous answer was rejected"
 
 _DIR = Path(__file__).parent
@@ -21,8 +21,8 @@ _TOKEN = re.compile(r"\{\{(\w+)\}\}")
 SHORTEN_NOTE = (
     " The previous draft did not fit on two pages, so some employers above now get one bullet fewer. Keep every "
     "bullet at most 28 words and the summary at 60-75 words, but keep the same quality: each bullet still says "
-    "what was done, how, and what changed, and every must-have phrase from the job description still appears word "
-    "for word in the summary or a bullet."
+    "what was done, how, and what changed, each percentage keeps its base, and every must-have phrase from the job "
+    "description still appears word for word in the summary or a bullet."
 )
 
 
@@ -74,12 +74,21 @@ def describe_companies(
 
 
 METRICS_MODES = ("estimate", "hints_only")
+SPELLING_STYLES = ("us", "eu")  # the Tailor page's US style / EU style (British spelling) buttons
+SIGN_OFF = {"us": '"Sincerely,"', "eu": '"Kind regards,"'}
 
 
-def tailor_system(metrics_mode: str = "estimate") -> str:
+def _spelling_rule(spelling: str) -> str:
+    if spelling not in SPELLING_STYLES:
+        raise ValueError(f"spelling must be one of {SPELLING_STYLES}")
+    return _read(f"spelling_{spelling}.md").strip()
+
+
+def tailor_system(metrics_mode: str = "estimate", spelling: str = "us") -> str:
     if metrics_mode not in METRICS_MODES:
         raise ValueError(f"metrics_mode must be one of {METRICS_MODES}")
-    return _fill(_read("system.md"), metrics_rule=_read(f"metrics_{metrics_mode}.md").strip())
+    return _fill(_read("system.md"), metrics_rule=_read(f"metrics_{metrics_mode}.md").strip(),
+                 spelling_rule=_spelling_rule(spelling))
 
 
 def tailor_user(
@@ -121,8 +130,8 @@ def revise_user(
     )
 
 
-def cover_system() -> str:
-    return _read("cover_system.md")
+def cover_system(spelling: str = "us") -> str:
+    return _fill(_read("cover_system.md"), spelling_rule=_spelling_rule(spelling), sign_off=SIGN_OFF[spelling])
 
 
 def cover_user(jd: str, resume: Resume, role: str, company: str, manager: str, hints: str) -> str:

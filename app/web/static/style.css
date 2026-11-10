@@ -201,6 +201,8 @@ table.jobs tr:hover td { background: none; }
 @media (max-width: 960px) { .tailor-grid { grid-template-columns: 1fr; gap: 0; } }
 #jd { min-height: 300px; }
 .create { display: grid; gap: 6px; justify-items: center; }
+.spelling { display: grid; gap: 4px; justify-items: center; margin-bottom: 12px; }
+.spelling p { margin: 0; text-align: center; }
 .status { margin: 10px 0 0; text-align: center; min-height: 1em; }
 .status:empty { display: none; }
 .steps { list-style: none; margin: 16px 0 0; padding: 14px 16px; border-radius: 12px; background: var(--bg); border: 1px solid var(--line); display: grid; gap: 12px; counter-reset: step; }

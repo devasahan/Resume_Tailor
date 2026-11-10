@@ -207,7 +207,8 @@ def test_users_never_choose_the_model_or_see_its_name_or_cost(client, user_clien
     save_profile(user_client)
     assert client.put("/api/settings", json={"resume_model": "demo-detailed"}).status_code == 200
     run = tailor(user_client, model="demo-concise", compare=True).json()
-    assert set(run) == {"run_id", "status", "error", "pages", "fits", "coverage", "cover_letter", "created_at"}
+    assert set(run) == {"run_id", "status", "error", "pages", "fits", "coverage", "cover_letter", "created_at",
+                        "spelling"}
     stored = client.get(f"/api/runs/{run['run_id']}").json()
     assert stored["requested_model"] == "demo-detailed"  # the Settings model, not the one asked for
     assert user_client.post("/api/profile/parse", files={"file": ("b.txt", b"x")}, data={"model": "demo-concise"}).status_code == 403

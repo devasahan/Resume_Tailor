@@ -91,7 +91,7 @@ async def _bakeoff(args, registry: Registry, db: Database, router: Router, profi
         jd = jd_path.read_text(encoding="utf-8")
         print(f"- {jd_path.name}: running {len(ids)} model(s)...")
         results = await compare(router, db, profile=profile, profile_id=None, jd=jd, model_ids=ids, hints=hints,
-                                cover_letter=args.cover, save=False)
+                                cover_letter=args.cover, save=False, spelling=args.spelling)
         for r in results:
             verify = len([f for f in r.flags if f.level == "verify"])
             rows.append({
@@ -167,6 +167,7 @@ def main(argv: list[str] | None = None) -> int:
     bake.add_argument("--models", required=True, help="comma-separated model ids")
     bake.add_argument("--hints", help="text file with real facts about the candidate")
     bake.add_argument("--cover", action="store_true", help="also write cover letters")
+    bake.add_argument("--spelling", choices=("us", "eu"), default="us", help="US or EU (British) spelling")
     bake.add_argument("--out", default="out/bakeoff")
     bake.add_argument("--yes", action="store_true", help="skip the cost confirmation")
     bake.set_defaults(fn=cmd_bakeoff)

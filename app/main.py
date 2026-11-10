@@ -16,6 +16,7 @@ import time
 from collections import OrderedDict
 from datetime import timedelta
 from pathlib import Path
+from typing import Literal
 from urllib.parse import quote, urlsplit
 
 from fastapi import Depends, FastAPI, File, Form, HTTPException, Request, UploadFile
@@ -86,6 +87,7 @@ class TailorRequest(BaseModel):
     cover_letter: bool = False
     company_name: str = Field(default="", max_length=120)
     hiring_manager: str = Field(default="", max_length=120)
+    spelling: Literal["us", "eu"] = "us"  # the US style / EU style (British spelling) buttons
 
 
 class EditRequest(BaseModel):
@@ -179,7 +181,7 @@ def public_run(result: TailorResult) -> dict:
         "run_id": result.run_id, "status": result.status, "error": failure_message(result.error) if result.error else "",
         "pages": result.pages, "fits": result.fits, "coverage": result.coverage.model_dump(),
         "cover_letter": result.cover_letter.model_dump() if result.cover_letter else None,
-        "created_at": result.created_at,
+        "created_at": result.created_at, "spelling": result.spelling or "us",
     }
 
 
@@ -372,7 +374,7 @@ def download_name(result: TailorResult, ext: str, cover: bool = False) -> str:
     and 'Jordan_Rivera_Cover_Letter.pdf'. No company in it, so a file sent to the wrong company does not show it."""
     assert result.resume is not None
     name = file_part(person_name(result.resume.profile.name), 60)
-    kind = "Cover_Letter" if cover else "Resume"
+    kind = "Cover_Letter" if cover else "CV" if result.spelling == "eu" else "Resume"
     return f"{name}_{kind}.{ext}" if name else f"{kind}.{ext}"
 
 
@@ -933,7 +935,7 @@ def create_app(db: Database | None = None, registry: Registry | None = None, rou
             router, db, profile=profile, profile_id=profile_id, jd=body.jd, hints=body.hints, model_id=model_id,
             allow_fallback=not compare, cover_letter=body.cover_letter, cover_model_id=cover_model,
             company_name=body.company_name.strip(), hiring_manager=body.hiring_manager.strip(), user_id=user.id,
-            steps=steps,
+            spelling=body.spelling, steps=steps,
         ))
 
     @app.get("/api/jobs/{job_id}")
@@ -978,12 +980,14 @@ def create_app(db: Database | None = None, registry: Registry | None = None, rou
                         headline=body.headline, summary=body.summary, skills=body.skills, experience=body.experience
                     ),
                 ),
+                from_model=False,  # the user's own words: kept as typed, run_checks notes what to look at
             )
             if result.cover_letter and body.cover_paragraphs is not None:
                 greeting, paragraphs, closing = validate.clean_cover_letter(
                     body.cover_greeting or result.cover_letter.greeting,
                     body.cover_paragraphs,
                     body.cover_closing or result.cover_letter.closing,
+                    from_model=False,
                 )
                 result.cover_letter.greeting, result.cover_letter.paragraphs, result.cover_letter.closing = (
                     greeting, paragraphs, closing,
