@@ -304,9 +304,9 @@ class Sheet:
 
 
 # ---------------------------------------------------------------------- resume
-def render_resume_pdf(resume: Resume, style: FitStyle) -> tuple[bytes, int]:
-    """Return (pdf bytes, page count)."""
-    return resume_sheet(resume, style).finish()
+def render_resume_pdf(resume: Resume, style: FitStyle, document: str = "Resume") -> tuple[bytes, int]:
+    """Return (pdf bytes, page count). `document` names it in the file's title: "Resume", or "CV" in EU style."""
+    return resume_sheet(resume, style, document).finish()
 
 
 def resume_layout(resume: Resume, style: FitStyle) -> tuple[int, float]:
@@ -331,10 +331,10 @@ def job_header(company: Company, title: str, stacked: bool) -> list[tuple[list[R
     return [([Run(company.name, True), Run(" | "), Run(title, italic=True), Run(place)], dates)]
 
 
-def resume_sheet(resume: Resume, style: FitStyle) -> Sheet:
+def resume_sheet(resume: Resume, style: FitStyle, document: str = "Resume") -> Sheet:
     """The resume laid out on pages: `pdf.page` pages, `last_page_fill()`, and the file from `finish()`."""
     p = resume.profile
-    sheet = Sheet(style.paper, style.margin_in * 72, style.font_pt, RESUME_LINE, f"{p.name} - Resume", p.name)
+    sheet = Sheet(style.paper, style.margin_in * 72, style.font_pt, RESUME_LINE, f"{p.name} - {document}", p.name)
     size = sheet.size
 
     # Header: name, then the headline, then the contact line.

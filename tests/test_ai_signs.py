@@ -60,6 +60,23 @@ def edit_body(run: dict, **changes) -> dict:
     ("it - on time.", "it, on time."), ("results —", "results"), ("— Senior", "Senior"),
     ("Done, — fast", "Done, fast"), ("Done —.", "Done."), ("Fixed it: — all", "Fixed it: all"),
     ("2019 - 2021", "2019-2021"), ("Q1 – Q3", "Q1-Q3"), ("FY23 — FY24", "FY23-FY24"),
+    # a number before the dash and another after it is no range unless both look alike
+    ("Cut failed nightly runs from 101 to 83 — 17.8% fewer — with staged rollouts.",
+     "Cut failed nightly runs from 101 to 83, 17.8% fewer, with staged rollouts."),
+    ("Saved $41,300 — 17.8% of the annual AWS bill — by rightsizing EC2.",
+     "Saved $41,300, 17.8% of the annual AWS bill, by rightsizing EC2."),
+    ("Led the move to Kubernetes in 2022 — 14 services in 3 months.", "Led the move to Kubernetes in 2022, 14 services in 3 months."),
+    # ranges between like values lose their spaces
+    ("Handled 10K – 50K events per second.", "Handled 10K-50K events per second."),
+    ("Closed deals of $5M – $10M each.", "Closed deals of $5M-$10M each."), ("Grew revenue 5% – 10% a quarter.", "Grew revenue 5%-10% a quarter."),
+    ("Upgraded from React v16 – v18.", "Upgraded from React v16-v18."), ("Owned Sev1 – Sev3 triage.", "Owned Sev1-Sev3 triage."),
+    ("Supported Tier 1 – Tier 3 escalations.", "Supported Tier 1 to Tier 3 escalations."),
+    ("Ran it (2021 – present) from Jan – Mar 2023.", "Ran it (2021-present) from Jan-Mar 2023."),
+    ("Tracked p50 – p99 latency.", "Tracked p50-p99 latency."),
+    # non-breaking spaces, and punctuation already in place
+    ("Built the Airflow pipeline\u00a0– so 38 teams got data by 7am.", "Built the Airflow pipeline, so 38 teams got data by 7am."),
+    ("Shipped on time. — Then cut costs.", "Shipped on time. Then cut costs."),
+    ("Did it scale? — Yes, to 83K users.", "Did it scale? Yes, to 83K users."),
 ])
 def test_a_dash_used_as_punctuation_becomes_a_comma(given, expected):
     assert validate.fix_dashes(given) == expected and validate.fix_dashes(expected) == expected
@@ -67,10 +84,31 @@ def test_a_dash_used_as_punctuation_becomes_a_comma(given, expected):
 
 @pytest.mark.parametrize("text", [
     "event-driven", "end-to-end", "5-10", "COVID-19", "GPT-4", "x86-64", "Python- and SQL-based", "a -12% swing",
-    "ran plan --refresh-only daily", "New York–London",
+    "ran plan --refresh-only daily", "New York–London", "AI-/ML-based", "pre- and post-processing", "Python 3.11-3.13",
+    "Added a dry-run mode (--dry-run) to the deploy CLI.", 'Added a `--dry-run` flag and a "--force" option (--dry-run, --verbose).',
 ])
 def test_hyphens_ranges_and_flags_stay(text):
     assert validate.fix_dashes(text) == text
+
+
+def test_flags_and_ranges_typed_in_the_editor_get_no_dash_note(profile):
+    out = make_output()
+    out.sections.experience[0].bullets = ["Ran terraform plan --refresh-only before every apply in 2019 - 2021."]
+    assert validate.dash_problems(validate.build_resume(profile, out, from_model=False)) == []
+
+
+def test_odd_text_never_slows_or_breaks_the_dash_fix():
+    import time
+
+    started = time.perf_counter()
+    assert validate.fix_dashes("x" + " " * 32000 + "— y") == "x, y"
+    assert time.perf_counter() - started < 0.5
+    assert validate.clean_prose("a\x001\x00 — b") == "a1, b"  # a NUL from a broken answer is not a crash
+
+
+def test_pounds_euros_and_arrows_survive_cleaning():
+    assert validate.clean_prose("Cut spend by 17.8% (£41,000 a year) and €12,400; p95 by 37.8% (820 → 510 ms).") == (
+        "Cut spend by 17.8% (£41,000 a year) and €12,400; p95 by 37.8% (820 to 510 ms).")
 
 
 def test_the_models_summary_and_bullets_lose_their_dashes(profile):
@@ -160,6 +198,79 @@ def test_a_sentence_follows_the_style_and_names_keep_their_spelling(style, given
 ])
 def test_a_skill_follows_the_style_unless_it_is_a_products_name(skill, expected):
     assert spelling.convert(skill, "eu", title=True) == expected
+
+
+def test_the_posts_own_keywords_keep_its_spelling_and_the_role_follows_the_style(profile):
+    """An ATS matches the post's keywords letter for letter, so they stay as the post spells them; the role the
+    resume aims at follows the style everywhere, in the headline and inside sentences."""
+    out = make_output(headline="Behavioral Scientist",
+                      summary="Senior Behavioral Scientist with deep data modeling and behavior analysis experience.")
+    out.jd_analysis.target_role = "Senior Behavioral Scientist"
+    out.jd_analysis.keywords = ["data modeling"]
+    resume = validate.build_resume(profile, out)
+    validate.spell_resume(resume, "eu", out.jd_analysis)
+    assert resume.headline == "Behavioural Scientist"
+    assert resume.summary == "Senior Behavioural Scientist with deep data modeling and behaviour analysis experience."
+
+
+@pytest.mark.parametrize("text,title", [
+    ("Used scipy.optimize, pg_catalog, --color-primary and src/utils/normalize daily.", False),
+    ("Tuned scikit-optimize searches.", False), ("webpack-bundle-analyzer", True),
+])
+def test_code_and_package_names_keep_their_spelling(text, title):
+    assert spelling.convert(text, "eu", title=title) == text
+
+
+@pytest.mark.parametrize("us,eu", [
+    ("Productionized", "Productionised"), ("annualized", "annualised"), ("dockerized", "dockerised"),
+    ("unfavorable", "unfavourable"), ("grayed", "greyed"), ("acknowledgments", "acknowledgements"),
+    ("labelers", "labellers"), ("centerpiece", "centrepiece"), ("featurization", "featurisation"),
+])
+def test_more_resume_words_follow_the_style_both_ways(us, eu):
+    assert spelling.convert(us, "eu") == eu and spelling.convert(eu, "us") == us
+
+
+@pytest.mark.parametrize("skill", ["Collibra Data Catalog", "Glue Data Catalog", "SPSS Modeler", "Jira Data Center"])
+def test_a_products_name_in_the_skills_keeps_its_spelling(skill):
+    assert spelling.convert(skill, "eu", title=True) == skill
+
+
+def test_the_hiring_companys_short_name_keeps_its_spelling(profile):
+    resume = validate.build_resume(profile, make_output())
+    analysis = make_output().jd_analysis.model_copy(update={"company": "Color Health, Inc."})
+    letter = CoverLetter(greeting="Dear Hiring Manager,", closing="Sincerely,", paragraphs=[
+        "Color Health's mission is why I am applying, and I optimized lab color workflows.", "I would like to talk."])
+    validate.spell_letter(letter, "eu", validate.known_names(resume, analysis), validate.skill_terms(resume, analysis))
+    assert letter.paragraphs[0] == "Color Health's mission is why I am applying, and I optimised lab colour workflows."
+
+
+def test_the_role_level_fix_works_in_either_spelling(profile):
+    out = make_output(summary="Data Centre Technician II with 6 years of hands-on experience in Python and SQL.")
+    out.jd_analysis.target_role = "Data Center Technician II"
+    resume = validate.build_resume(profile, out)
+    assert validate.role_level_fixes(resume, out.jd_analysis)
+    assert resume.summary.startswith("Data Centre Technician with 6 years")
+    assert validate.title_level("Data Centre Technician")[0] == validate.title_level("Data Center Technician")[0]
+
+
+def test_keywords_with_punctuation_match_in_either_spelling():
+    assert validate.mentions("led data modelling/warehousing", "data modeling/warehousing")
+    assert validate.mentions("SEO (search engine optimisation) work", "SEO (search engine optimization)")
+    assert validate.mentions("the Organisation's data strategy", "Organization's data strategy")
+
+
+def test_an_eu_style_file_is_titled_cv_inside_too(client):
+    import io
+
+    from docx import Document
+    from pypdf import PdfReader
+
+    save_profile(client)
+    run = client.post("/api/tailor", json={"jd": SAMPLE_JD, "model": "demo-concise", "spelling": "eu"}).json()
+    pdf = client.get(f"/api/runs/{run['run_id']}/resume.pdf").content
+    docx = client.get(f"/api/runs/{run['run_id']}/resume.docx").content
+    assert PdfReader(io.BytesIO(pdf)).metadata.title == "Jordan Rivera - CV"
+    assert Document(io.BytesIO(docx)).core_properties.title == "Jordan Rivera - CV"
 
 
 def test_keywords_match_in_either_spelling():
@@ -262,13 +373,20 @@ def test_an_american_word_typed_into_an_eu_resume_gets_a_note(client):
 
 
 def test_a_letter_calls_the_resume_a_cv_and_signs_off_the_eu_way():
-    letter = CoverLetter(greeting="Dear Hiring Manager,", paragraphs=["I attached my resume. The work resumed in May."],
-                         closing="Sincerely,")
+    letter = CoverLetter(greeting="Dear Hiring Manager,", closing="Sincerely,", paragraphs=[
+        "I attached my resume. The work resumed in May, when our team built the resume parser."])
     validate.spell_letter(letter, "eu", [], [])
-    assert letter.paragraphs == ["I attached my CV. The work resumed in May."] and letter.closing == "Kind regards,"
+    assert letter.paragraphs == ["I attached my CV. The work resumed in May, when our team built the resume parser."]
+    assert letter.closing == "Kind regards,"
+
+
+def test_a_us_letter_never_turns_cv_into_resume():
+    """CV also means computer vision or cross-validation, and American readers know the word."""
+    letter = CoverLetter(greeting="Dear Hiring Manager,", closing="Yours sincerely,", paragraphs=[
+        "At Northwind Labs I led the CV team, and your CV platform is where my CV work fits next."])
     validate.spell_letter(letter, "us", [], [])
-    assert letter.paragraphs == ["I attached my resume. The work resumed in May."] and letter.closing == "Kind regards,"
-    assert spelling.sign_off("Yours sincerely,", "us") == "Sincerely,"
+    assert letter.paragraphs == ["At Northwind Labs I led the CV team, and your CV platform is where my CV work fits next."]
+    assert letter.closing == "Sincerely,"
 
 
 def test_a_british_job_post_with_us_style_gets_a_note(client):
@@ -287,6 +405,9 @@ def test_a_british_job_post_with_us_style_gets_a_note(client):
     "Made checkout 21% faster.", "Revenue grew 12.6% year over year.", "Saw a 9.4% drop in tickets.",
     "For $2.3M in orders, cutting churn by 12.6%.", "Brought 21% more orders.", "Sales were up 9.4%.",
     "Cut costs by 17.8% ($41,300 a year) and latency by 21%.", "Cut tags by 23.4% (GA4 tags).",
+    "Cut AWS costs by 17.8% and p95 latency by 21% (from 820 to 648 ms) for 4.6K merchants.",
+    "Cut p95 latency by 21% and failed jobs by 31.7%, from 41 to 28 a week.", "Cut latency by 21% and saved $41,300 a year.",
+    "Cut costs by 17.8% (in 2 quarters).", "Cut costs by 17.8% (41 services).",
 ])
 def test_a_percentage_without_its_base_is_found(text):
     assert validate.unbased_percentages(text)
@@ -298,6 +419,10 @@ def test_a_percentage_without_its_base_is_found(text):
     "Saving $41,300 a year, a 17.8% cut.", "Cut runtime by 23.4% to 11 minutes.", "Kept 99.9% uptime.",
     "Closed 95% of tickets.", "Raised test coverage from 61% to 87%.", "Cut errors to 0.3%.",
     "Lifted conversion by 2.3% (from 3.1% to 3.2%).", "Made builds 21% faster (from 14 to 11 minutes).",
+    "Kept the payments platform up 99.95% of the time for 4.6K merchants.",
+    "Launched the CSV export, used by 38% of active users within a quarter.",
+    "Cut cloud spend by 17.8% across 41 services in 3 regions ($41,300 a year).", "Cut spend by 17.8%, saving $41,300 a year.",
+    "Cut p95 latency by 37.8% (820 to 510 ms) with Redis.",
 ])
 def test_a_percentage_with_its_base_or_a_level_is_fine(text):
     assert validate.unbased_percentages(text) == []
@@ -306,7 +431,17 @@ def test_a_percentage_with_its_base_or_a_level_is_fine(text):
 @pytest.mark.parametrize("text,wrong", [
     ("Cut queue time by 22% (from 41 to 38 seconds).", True), ("Cut reporting by 30% (from 8 hours to 2 hours).", True),
     ("Grew users by 21% (from 380 to 460).", False), ("Cut spend by 17.8% (from $232K to $191K a year).", False),
-    ("Cut reporting by 75% (from 8 hours to 2 hours).", False), ("Cut it by 21% (from 2 minutes to 41 seconds).", False),
+    ("Cut reporting by 75% (from 8 hours to 2 hours).", False), ("Cut it by 21% (from 2 minutes to 41 seconds).", True),
+    ("Cut it by 65.8% (from 2 minutes to 41 seconds).", False),  # units are compared on one scale
+    ("Cut p95 latency by 31.7% (from 1.2s to 820ms) with Redis caching.", False),
+    ("Cut nightly storage by 44.7% (from 1.7TB to 940GB) with Parquet.", False),
+    ("Cut build time by 65.8% (from 2h to 41m) with remote caching.", False),
+    ("Grew ARR by 31.7% (from $4.1M to $5.4M) from 2021 to 2023.", False),
+    # only the base beside the percentage is checked, never another 'from ... to ...' in the sentence
+    ("Grew the data team from 3 to 7 engineers while cutting on-call pages by 41.4% (from 87 to 51 a month).", False),
+    ("Upgraded Postgres from 11 to 15, cutting p95 query time by 23.4% (from 47 to 36 ms).", False),
+    ("From 2019 to 2022 at Contoso, I cut cloud spend by 17.8% ($41,300 a year).", False),
+    ("Kept 99.9% uptime while moving 41 services from 3 to 2 regions.", False),
 ])
 def test_a_base_must_agree_with_its_percentage(text, wrong):
     assert bool(validate.base_mismatches(text)) is wrong
@@ -371,7 +506,17 @@ def test_the_prompts_ask_for_each_percentages_base():
     assert "keep its base with it" in cover_system()
 
 
-@pytest.mark.parametrize("token,expected", [("$41,000", False), ("$40,000", True), ("$3,000", True), ("$41K", False)])
+def test_the_companys_own_figure_from_the_post_needs_no_base_in_a_letter(profile):
+    resume = validate.build_resume(profile, make_output())
+    letter = CoverLetter(greeting="Dear Hiring Manager,", closing="Sincerely,",
+                         paragraphs=["Your team's 40% growth last year is why I applied.", "I would like to talk."])
+    assert validate.unbased_percentage_problems(resume, letter, "We grew 40% last year.") == []
+    assert validate.unbased_percentage_problems(resume, letter, "We are growing fast.") == [
+        "'40% growth' (cover letter paragraph 1)"]
+
+
+@pytest.mark.parametrize("token,expected", [("$41,000", False), ("$40,000", True), ("$3,000", True), ("$41K", False),
+                                            ("$41,300", False), ("$7,000", True), ("41,000", True)])
 def test_whole_thousands_of_money_are_judged_like_k(token, expected):
     assert validate.is_round_figure(token) is expected
 
@@ -385,7 +530,7 @@ def test_whole_thousands_of_money_are_judged_like_k(token, expected):
     "improved organisational effectiveness", "increased visibility",
 ])
 def test_a_vague_result_is_found(text):
-    assert validate._VAGUE_RESULT.search(text)
+    assert validate._plain_problems([("Northwind Labs", text)])
 
 
 @pytest.mark.parametrize("text", [
@@ -393,9 +538,20 @@ def test_a_vague_result_is_found(text):
     "Increased delivery speed by 23.4% (from 47 to 36 minutes)", "improved query performance from 820 to 310 ms",
     "cut energy efficiency losses", "raised developer productivity", "visibility into failed payments",
     "better patient outcomes", "customer lifetime value",
+    "Improved the performance of the checkout API by adding Redis caching.", "Built event-driven performance tests in k6.",
+    "Set up data-driven performance reviews.", "Rolled out AI-driven productivity tools.", "Ran data-driven engagement campaigns.",
+    "Modeled money as value objects in the domain.", "Improved team productivity by 18.3% (from 11 to 13 tickets a sprint).",
 ])
 def test_a_specific_result_is_not_vague(text):
-    assert not validate._VAGUE_RESULT.search(text)
+    assert validate._plain_problems([("Northwind Labs", text)]) == []
+
+
+def test_a_verb_before_the_posts_own_phrase_is_still_vague():
+    places = [("Northwind Labs", ("Improved operational excellence for the finance team, and drove data-driven decision "
+                                  "making for sales. Brought operational excellence to on-call."))]
+    assert validate._plain_problems(places, ["operational excellence", "data-driven decision making"]) == [
+        "'Improved operational excellence' (Northwind Labs)", "'drove data-driven decision making' (Northwind Labs)"]
+    assert validate._plain_problems([("X", "A results-driven engineer.")], ["results-driven"]) == ["'results-driven' (X)"]
 
 
 def test_a_posting_term_is_the_keyword_it_asks_for_but_a_verb_makes_it_vague(profile):

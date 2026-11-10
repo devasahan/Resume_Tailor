@@ -18,7 +18,8 @@ STYLES = ("us", "eu")
 
 # -ize (US) / -ise (EU): stem + iz/is + ending, with an optional prefix ("reorganize", "deprioritized")
 IZE_STEMS = (
-    "amort", "anonym", "apolog", "author", "canonical", "capital", "categor", "central", "character", "commercial",
+    "amort", "annual", "anonym", "apolog", "binar", "collateral", "commodit", "docker", "featur", "lemmat",
+    "production", "revital", "securit", "templat", "author", "canonical", "capital", "categor", "central", "character", "commercial",
     "component", "computer", "conceptual", "container", "contextual", "critic", "crystall", "custom", "democrat",
     "digit", "digital", "discret", "emphas", "empath", "energ", "equal", "evangel", "familiar", "final", "formal",
     "galvan", "general", "global", "harmon", "human", "hypothes", "incentiv", "industrial", "initial",
@@ -43,13 +44,15 @@ OUR_WORDS = (
     "honor", "honors", "honored", "honoring", "honorable", "labor", "labors", "labored", "laboring", "neighbor",
     "neighbors", "neighboring", "neighborhood", "neighborhoods", "humor", "rumor", "rumors", "endeavor",
     "endeavors", "endeavored", "flavor", "flavors", "harbor", "harbors", "vapor", "rigor", "vigor", "armor",
-    "candor", "odor", "parlor", "valor", "demeanor", "misdemeanor", "tumor", "tumors",
+    "candor", "odor", "parlor", "valor", "demeanor", "misdemeanor", "tumor", "tumors", "unfavorable",
+    "unfavorably", "laborer", "laborers", "flavored",
 )
 RE_WORDS = {
     "center": "centre", "centers": "centres", "centered": "centred", "centering": "centring", "fiber": "fibre",
     "fibers": "fibres", "liter": "litre", "liters": "litres", "theater": "theatre", "theaters": "theatres",
     "caliber": "calibre", "meager": "meagre", "maneuver": "manoeuvre", "maneuvers": "manoeuvres",
-    "maneuvered": "manoeuvred", "maneuvering": "manoeuvring",
+    "maneuvered": "manoeuvred", "maneuvering": "manoeuvring", "maneuverability": "manoeuvrability",
+    "centerpiece": "centrepiece", "centerpieces": "centrepieces",
 }
 LL_WORDS = {
     "modeled": "modelled", "modeling": "modelling", "modeler": "modeller", "modelers": "modellers",
@@ -66,7 +69,8 @@ LL_WORDS = {
     "fulfillment": "fulfilment", "enroll": "enrol", "enrolls": "enrols", "enrollment": "enrolment",
     "enrollments": "enrolments", "installment": "instalment", "installments": "instalments", "skillful": "skilful",
     "skillfully": "skilfully", "willful": "wilful", "instill": "instil", "instills": "instils", "distill": "distil",
-    "distills": "distils",
+    "distills": "distils", "labeler": "labeller", "labelers": "labellers", "funneling": "funnelling",
+    "rivaling": "rivalling", "equaling": "equalling", "unraveled": "unravelled", "unraveling": "unravelling",
 }
 OTHER_WORDS = {
     "catalog": "catalogue", "catalogs": "catalogues", "cataloged": "catalogued", "cataloging": "cataloguing",
@@ -74,7 +78,9 @@ OTHER_WORDS = {
     "offenses": "offences", "pretense": "pretence", "gray": "grey", "grayscale": "greyscale", "aging": "ageing",
     "jewelry": "jewellery", "mold": "mould", "molds": "moulds", "molded": "moulded", "molding": "moulding",
     "judgment": "judgement", "judgments": "judgements", "acknowledgment": "acknowledgement", "aluminum": "aluminium",
-    "skeptical": "sceptical", "skepticism": "scepticism", "toward": "towards",
+    "skeptical": "sceptical", "skepticism": "scepticism", "toward": "towards", "grayed": "greyed",
+    "graying": "greying", "acknowledgments": "acknowledgements", "colorize": "colourise", "colorized": "colourised",
+    "colorizing": "colourising",
 }
 # British words changed to American only: the other way depends on the meaning (a software program, the verb to
 # license, a medical practice, a gas meter), or both forms are American too (towards)
@@ -90,22 +96,24 @@ EU_ONLY = {
 NEVER_TO_US = {"towards"}  # American too
 # Capitalised words that are nearly always part of a product's name (Webpack Bundle Analyzer, React Fiber)
 NAME_PRONE = {"analyzer", "analyzers", "analyser", "analysers", "fiber", "fibre", "harbor", "harbour", "tokenizers",
-              "tokenisers"}
+              "tokenisers", "catalog", "catalogue", "modeler", "modeller", "modelers", "modellers"}
 # A capitalised word after one of these, in the same run of capitalised words, belongs to a product's name
 BRANDS = {
     "AWS", "Amazon", "Azure", "Microsoft", "Google", "GCP", "Apache", "IBM", "Oracle", "SAP", "Salesforce", "Adobe",
     "Atlassian", "Jira", "GitHub", "GitLab", "Databricks", "Snowflake", "Unity", "Webpack", "Hugging", "Elastic",
     "Splunk", "Datadog", "Cisco", "VMware", "HashiCorp", "Meta", "Apple", "Android", "Firebase", "React", "Tableau",
-    "ServiceNow", "HubSpot", "Zendesk", "Shopify", "Stripe", "Twilio",
+    "ServiceNow", "HubSpot", "Zendesk", "Shopify", "Stripe", "Twilio", "Collibra", "Alation", "Informatica",
+    "Talend", "Purview", "Dataplex", "Glue", "SPSS", "Confluence", "Bitbucket", "Okta", "Gurobi", "CPLEX",
 }
 SIGN_OFFS = {
     "eu": {"sincerely": "Kind regards", "sincerely yours": "Yours sincerely", "respectfully": "Kind regards"},
     "us": {"yours sincerely": "Sincerely", "yours faithfully": "Sincerely"},
 }
-_CV_WORDING = {
-    "eu": (re.compile(r"\b(my|the|this|attached|enclosed|your)\s+r[eé]sum[eé]\b", re.IGNORECASE), r"\1 CV"),
-    "us": (re.compile(r"\b(my|the|this|attached|enclosed|your)\s+CV\b"), r"\1 resume"),
-}
+# 'my resume' -> 'my CV' in an EU style letter, only where it names the document: never 'the resume parser'. Never
+# the other way: 'CV' also means computer vision or cross-validation, and American readers know the word.
+_CV_WORDING = re.compile(
+    r"\b(my|the|this|attached|enclosed|your)\s+r[eé]sum[eé](?=\s*(?:[.,;:!?)]|$)|\s+(?:and|or|for|with|as|to|which|that"
+    r"|shows?|includes?|lists?|highlights?|outlines?|details?|has|is|was|below|above)\b)", re.IGNORECASE)
 
 
 def _pairs() -> dict[str, str]:
@@ -142,7 +150,7 @@ _TELLING = {word for word in US_TO_EU if word not in OTHER_WORDS} | {
 
 _WORD = re.compile(r"[A-Za-z]+")
 _CAPITALISED_RUN_GAP = re.compile(r"^[ \t]+$")
-_SENTENCE_START = re.compile(r"(?:^|[.!?:;]\s+|\(\s*|^\s*)$")
+_SENTENCE_START = re.compile(r"(?:^|[.!?:;]\s+|^\s*)$")  # not after "(": a bracket usually holds a name
 
 
 def twins(word: str) -> frozenset[str]:
@@ -189,6 +197,22 @@ def _inside(position: int, spans: list[tuple[int, int]]) -> bool:
     return any(start <= position < end for start, end in spans)
 
 
+_PACKAGE_PREFIXES = ("scikit-", "sklearn-", "py", "react-", "vue-", "ngx-", "node-", "django-", "flask-", "pytest-",
+                     "eslint-", "babel-", "webpack-", "tf-", "torch")
+
+
+def _in_identifier(text: str, match: re.Match, title: bool) -> bool:
+    """True when the word is part of code, a package, a path or a CSS name rather than English."""
+    start = max(text.rfind(" ", 0, match.start()), text.rfind("\n", 0, match.start())) + 1
+    ends = [end for end in (text.find(" ", match.end()), text.find("\n", match.end())) if end != -1]
+    token = text[start: min(ends) if ends else len(text)].strip("()[]{}\"'`,;:!?.")
+    if "." in token or "_" in token or token.startswith("-") or token.count("/") >= 2:
+        return True
+    if token.islower() and token.startswith(_PACKAGE_PREFIXES):  # scikit-optimize, react-color
+        return True
+    return title and token.islower() and token.count("-") >= 2  # a lowercase package name in the skills list
+
+
 def _with_case(word: str, template: str) -> str:
     return word[:1].upper() + word[1:] if template[:1].isupper() else word
 
@@ -225,6 +249,9 @@ def convert_and_list(text: str, style: str, keep: Iterable[str] = (), terms: Ite
         new = table.get(word.lower())
         if new is None or _inside(match.start(), kept) or any(ch.isupper() for ch in word[1:]):
             continue  # not a listed word, a name, ALL CAPS or camelCase
+        if _in_identifier(text, match, title):
+            continue  # 'scipy.optimize', 'pg_catalog', '--color-primary', 'webpack-bundle-analyzer'
+
         if word[0].isupper():
             if word.lower() in NAME_PRONE or _after_brand(text, words, index):
                 continue
@@ -276,6 +303,5 @@ def sign_off(closing: str, style: str) -> str:
 
 
 def cv_wording(text: str, style: str) -> str:
-    """'my resume' -> 'my CV' in EU style, and back in US style (a cover letter's own words)."""
-    pattern, replacement = _CV_WORDING[style]
-    return pattern.sub(replacement, text)
+    """'my resume' -> 'my CV' in EU style (a cover letter's own words); US style leaves the text as it is."""
+    return _CV_WORDING.sub(r"\1 CV", text) if style == "eu" else text

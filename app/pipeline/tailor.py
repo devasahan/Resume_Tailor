@@ -127,7 +127,7 @@ def run_checks(result: TailorResult, jd_text: str) -> None:
     if letter_plain:
         result.ats_warnings.append("Cover letter wording that can sound machine-written: " + "; ".join(letter_plain[:6])
                                    + ". Plain words read as your own.")
-    unbased = validate.unbased_percentage_problems(result.resume, result.cover_letter)
+    unbased = validate.unbased_percentage_problems(result.resume, result.cover_letter, jd_text)
     if unbased:
         result.ats_warnings.append(
             "Percentages without their base: " + "; ".join(unbased[:6]) + ". A recruiter asks 'of what?': add the "
@@ -157,7 +157,7 @@ def run_checks(result: TailorResult, jd_text: str) -> None:
         if posting and posting != style:
             result.ats_warnings.append(
                 f"This job post uses {SPELLING_NAMES[posting]} spelling, but this resume uses {style.upper()} style. "
-                "Software that searches for the post's exact words may miss a few. If the job is in "
+                "The post's own keywords keep its spelling, so the two spellings are mixed. If the job is in "
                 + ("the UK or the EU, choose EU style." if posting == "eu" else "the US, choose US style.")
             )
     openers = validate.first_bullet_problems(result.resume) if result.metrics_mode == "estimate" else []

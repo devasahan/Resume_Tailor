@@ -369,12 +369,17 @@ def file_part(text: str, limit: int = 50) -> str:
     return re.sub(r"[^A-Za-z0-9]+", "_", ascii_text).strip("_")[:limit].strip("_")
 
 
+def document_word(result: TailorResult) -> str:
+    """What the run calls the document: a CV in EU style (British usage), a resume otherwise."""
+    return "CV" if result.spelling == "eu" else "Resume"
+
+
 def download_name(result: TailorResult, ext: str, cover: bool = False) -> str:
     """The usual pattern for job applications: the name on the resume, then the document. 'Jordan_Rivera_Resume.pdf'
     and 'Jordan_Rivera_Cover_Letter.pdf'. No company in it, so a file sent to the wrong company does not show it."""
     assert result.resume is not None
     name = file_part(person_name(result.resume.profile.name), 60)
-    kind = "Cover_Letter" if cover else "CV" if result.spelling == "eu" else "Resume"
+    kind = "Cover_Letter" if cover else document_word(result)
     return f"{name}_{kind}.{ext}" if name else f"{kind}.{ext}"
 
 
@@ -1040,7 +1045,7 @@ def create_app(db: Database | None = None, registry: Registry | None = None, rou
         result = load_run(run_id, user)
         if result.resume is None:
             raise HTTPException(404, "No resume in this run.")
-        pdf, _pages = render_resume_pdf(result.resume, result.style)
+        pdf, _pages = render_resume_pdf(result.resume, result.style, document_word(result))
         name = download_name(result, "pdf")
         if download:
             log_download(user, run_id, result, "resume", "pdf", name)
@@ -1053,7 +1058,7 @@ def create_app(db: Database | None = None, registry: Registry | None = None, rou
             raise HTTPException(404, "No resume in this run.")
         name = download_name(result, "docx")
         log_download(user, run_id, result, "resume", "docx", name)
-        return file_response(resume_docx(result.resume, result.style), DOCX, "attachment", name)
+        return file_response(resume_docx(result.resume, result.style, document_word(result)), DOCX, "attachment", name)
 
     @app.get("/api/runs/{run_id}/cover.pdf")
     def api_cover_pdf(run_id: int, download: int = 0, user: auth.User = Depends(current_user)):

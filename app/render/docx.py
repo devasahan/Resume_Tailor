@@ -81,9 +81,9 @@ def _row(doc: Document, left: list[Run], right: str, text_width, space_before: f
     return p
 
 
-def resume_docx(resume: Resume, style: FitStyle) -> bytes:
+def resume_docx(resume: Resume, style: FitStyle, document: str = "Resume") -> bytes:
     p = resume.profile
-    doc = _setup(style, style.margin_in, style.font_pt, author=p.name, title=f"{p.name} - Resume")
+    doc = _setup(style, style.margin_in, style.font_pt, author=p.name, title=f"{p.name} - {document}")
     text_width = PAPER[style.paper][0] - Inches(style.margin_in * 2)
     normal = doc.styles["Normal"].paragraph_format
     normal.line_spacing = 1.04  # the PDF's line height (1.27 x the font size), so Word keeps the same page count
