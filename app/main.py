@@ -379,6 +379,22 @@ def document_lang(result: TailorResult) -> str:
     return "en-GB" if result.spelling == "eu" else "en-US"
 
 
+NO_JD = ("No job description was saved with this run. Runs tailored before the app kept the job description "
+         "with each run have none.")
+
+
+def job_names(result: TailorResult) -> tuple[str, str]:
+    """A run's company and job title as History records them (the company typed on the Tailor form wins)."""
+    analysis = result.analysis
+    return result.company_name or (analysis.company if analysis else ""), analysis.target_role if analysis else ""
+
+
+def jd_text(result: TailorResult) -> str:
+    """A run's job description as plain text: one header line, then the text as it was pasted, or NO_JD."""
+    company, role = (" ".join(name.split()) or "-" for name in job_names(result))
+    return f"Company: {company} | Job title: {role}\n\n{result.jd.strip() or NO_JD}\n"
+
+
 def download_name(result: TailorResult, ext: str, cover: bool = False) -> str:
     """The usual pattern for job applications: the name on the resume, then the document. 'Jordan_Rivera_Resume.pdf'
     and 'Jordan_Rivera_Cover_Letter.pdf'. No company in it, so a file sent to the wrong company does not show it."""
@@ -597,12 +613,11 @@ def create_app(db: Database | None = None, registry: Registry | None = None, rou
             raise job_error(str(exc), user) from None
 
     def log_download(user: auth.User, run_id: int, result: TailorResult, kind: str, fmt: str, filename: str) -> None:
-        analysis = result.analysis
+        company, role = job_names(result)
         db.record_download(
             user_id=user.id, email=user.email, run_id=run_id, kind=kind, format=fmt, filename=filename,
             candidate=result.resume.profile.name if result.resume else "",
-            company=result.company_name or (analysis.company if analysis else ""),
-            role=analysis.target_role if analysis else "",
+            company=company, role=role,
             model=result.served_model or result.requested_model,
             cost_usd=result.cost_usd + result.cover_cost_usd,
         )
@@ -765,10 +780,20 @@ def create_app(db: Database | None = None, registry: Registry | None = None, rou
         return {"deleted": True}
 
     @app.get("/api/downloads", dependencies=[Depends(admin_user)])
-    def api_downloads(user_id: int | None = None, limit: int = 200):
-        return {"downloads": db.list_downloads(user_id=user_id, limit=max(1, min(limit, 1000))),
-                "totals": db.download_totals(user_id=user_id),
-                "accounts": db.download_accounts(), "cost_today": round(db.cost_today(), 4)}
+    def api_downloads(user_id: int | None = None, company: str = "", role: str = "", limit: int = 200,
+                      lists: int = 0):
+        """History: the newest matching downloads (one account; part of the company and of the job title, any case),
+        their totals and how many match. lists=1 (the page's first load) adds the filters' choices: the active
+        accounts, and the companies and job titles already in History."""
+        company, role = company.strip()[:200], role.strip()[:200]
+        answer = {
+            "downloads": db.list_downloads(user_id=user_id, company=company, role=role, limit=max(1, min(limit, 1000))),
+            "totals": db.download_totals(user_id=user_id, company=company, role=role),
+            "cost_today": round(db.cost_today(), 4),
+        }
+        if lists:
+            answer.update(accounts=db.download_accounts(), **db.download_names())
+        return answer
 
     # ------------------------------------------------------------------ models + settings (admin)
     @app.get("/api/models", dependencies=[Depends(admin_user)])
@@ -1085,6 +1110,14 @@ def create_app(db: Database | None = None, registry: Registry | None = None, rou
         log_download(user, run_id, result, "cover_letter", "docx", name)
         letter = cover_docx(result.resume, result.cover_letter, result.style.paper, document_lang(result))
         return file_response(letter, DOCX, "attachment", name)
+
+    @app.get("/api/runs/{run_id}/jd.txt")
+    def api_run_jd(run_id: int, user: auth.User = Depends(current_user)):
+        """The job description a run was made for, as plain text (History opens it in a new tab). Its owner or the
+        admin may read it, like the PDFs; like a preview, it is never counted as a download."""
+        text = jd_text(load_run(run_id, user))
+        return file_response(text.encode("utf-8"), "text/plain; charset=utf-8", "inline",
+                             f"Job_Description_{run_id}.txt")
 
     @app.delete("/api/data", dependencies=[Depends(admin_user)])
     def api_delete_all():

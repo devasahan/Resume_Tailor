@@ -5,10 +5,10 @@ from fastapi.testclient import TestClient
 
 from app import auth
 from app.llm.base import InvalidOutputError, LLMClient
-from app.main import BUSY_MESSAGE, public_error, safe_next
+from app.main import BUSY_MESSAGE, NO_JD, public_error, safe_next
 from app.schemas import TailorResult
 
-from .conftest import ADMIN_EMAIL, USER_PASSWORD, add_user, log_in
+from .conftest import ADMIN_EMAIL, SAMPLE_JD, USER_PASSWORD, add_user, log_in
 from .test_api import save_profile, tailor
 
 NEW_PASSWORD = "a long new password"
@@ -155,7 +155,8 @@ def test_anonymous_visitors_only_see_login_and_sign_up(client):
     page = stranger.get("/history", follow_redirects=False)
     assert page.status_code == 303 and page.headers["location"] == "/login?next=/history"
     assert stranger.get("/tailor", follow_redirects=False).headers["location"].startswith("/login")
-    for path in ("/api/resumes", "/api/runs/1", "/api/runs/1/resume.pdf", "/api/settings", "/api/downloads"):
+    for path in ("/api/resumes", "/api/runs/1", "/api/runs/1/resume.pdf", "/api/runs/1/jd.txt", "/api/settings",
+                 "/api/downloads"):
         assert stranger.get(path).status_code == 401, path
     for path in ("/docs", "/openapi.json", "/redoc"):
         assert stranger.get(path, follow_redirects=False).status_code in (401, 303), path
@@ -187,7 +188,8 @@ def test_each_account_sees_only_its_own_resumes_and_runs(client, user_client):
     assert tailor(user_client, profile_id=theirs["id"]).status_code == 404
     assert user_client.delete(f"/api/resumes/{theirs['id']}").status_code == 404
     admin_run = tailor(client, profile_id=theirs["id"]).json()["run_id"]
-    for path in (f"/api/runs/{admin_run}", f"/api/runs/{admin_run}/resume.pdf", f"/api/runs/{admin_run}/cover.pdf"):
+    for path in (f"/api/runs/{admin_run}", f"/api/runs/{admin_run}/resume.pdf", f"/api/runs/{admin_run}/cover.pdf",
+                 f"/api/runs/{admin_run}/jd.txt"):
         assert user_client.get(path).status_code == 404, path
     assert user_client.post(f"/api/runs/{admin_run}/cover-letter", json={}).status_code == 404
     user_run = tailor(user_client).json()["run_id"]  # no profile_id: the user's own newest resume
@@ -245,12 +247,13 @@ def test_download_buttons_are_recorded_and_previews_are_not(client, user_client)
     cover = user_client.get(f"/api/runs/{run_id}/cover.pdf?download=1")
     assert resume.headers["cache-control"] == "private, no-store" and cover.status_code == 200
     client.get(f"/api/runs/{run_id}/resume.pdf")  # the admin's View link from History
-    data = client.get("/api/downloads").json()
+    data = client.get("/api/downloads?lists=1").json()
     rows = data["downloads"]
     assert [(r["email"], r["kind"], r["format"]) for r in rows] == [
         ("user@example.com", "cover_letter", "pdf"), ("user@example.com", "resume", "pdf")]
     assert rows[1]["candidate"] == "Jordan Rivera" and rows[1]["role"] and rows[1]["model"] and rows[1]["run_kept"]
     assert rows[1]["filename"].endswith(".pdf")
+    assert [(r["has_cover"], r["account_status"]) for r in rows] == [(1, "active"), (1, "active")]
     assert data["accounts"] == [{"user_id": user_id_of(client, "user@example.com"), "email": "user@example.com", "downloads": 2}]
 
 
@@ -281,11 +284,147 @@ def test_history_counts_resumes_and_cover_letters_once_per_tailored_job(client, 
     admin_run = tailor(client).json()["run_id"]
     client.get(f"/api/runs/{admin_run}/resume.pdf?download=1")
     user_id = user_id_of(client, "user@example.com")
-    assert client.get(f"/api/downloads?user_id={user_id}").json()["totals"] == {"resume": 2, "cover_letter": 1}
-    assert client.get("/api/downloads").json()["totals"] == {"resume": 3, "cover_letter": 1}
+    def jobs(query=""):  # resumes and cover letters, each job once; "downloads" counts every click
+        totals = client.get(f"/api/downloads{query}").json()["totals"]
+        return totals["resume"], totals["cover_letter"]
+    assert jobs(f"?user_id={user_id}") == (2, 1)
+    assert jobs() == (3, 1)
+    clicks = client.get(f"/api/downloads?user_id={user_id}").json()["totals"]["downloads"]
     client.app.state.db.delete_user(user_id)  # the history rows outlive the runs, and so do the counts
-    assert client.get(f"/api/downloads?user_id={user_id}").json()["totals"] == {"resume": 2, "cover_letter": 1}
-    assert client.get(f"/api/downloads?user_id={user_id + 99}").json()["totals"] == {"resume": 0, "cover_letter": 0}
+    assert jobs(f"?user_id={user_id}") == (2, 1)
+    assert client.get(f"/api/downloads?user_id={user_id}").json()["totals"]["downloads"] == clicks
+    assert client.get(f"/api/downloads?user_id={user_id + 99}").json()["totals"] == {
+        "resume": 0, "cover_letter": 0, "downloads": 0}
+
+
+def add_download(client, company, role, *, user_id, email="user@example.com", run_id=900, kind="resume") -> int:
+    """A History row made directly, as if its account had clicked Download."""
+    return client.app.state.db.record_download(
+        user_id=user_id, email=email, run_id=run_id, kind=kind, format="pdf", filename="Jordan_Rivera_Resume.pdf",
+        candidate="Jordan Rivera", company=company, role=role, model="demo-concise", cost_usd=0.01)
+
+
+def test_history_offers_only_active_accounts_and_tags_the_others(client):
+    on, off, gone = (add_user(client, f"{name}@example.com") for name in ("on", "off", "gone"))
+    add_user(client, "waiting@example.com", status="pending")
+    for user_id, name in ((on, "on"), (off, "off"), (gone, "gone")):
+        add_download(client, "Acme Corp", "Data Engineer", user_id=user_id, email=f"{name}@example.com")
+    assert client.post(f"/api/users/{off}/disable").status_code == 200
+    assert client.delete(f"/api/users/{gone}").status_code == 200
+    data = client.get("/api/downloads?lists=1").json()
+    assert data["accounts"] == [{"user_id": on, "email": "on@example.com", "downloads": 1}]
+    assert {r["email"]: r["account_status"] for r in data["downloads"]} == {
+        "on@example.com": "active", "off@example.com": "disabled", "gone@example.com": "removed"}  # rows stay, tagged
+    assert "accounts" not in client.get("/api/downloads").json()  # the filter's choices come with the first load only
+    assert client.post(f"/api/users/{off}/enable").status_code == 200
+    assert [a["email"] for a in client.get("/api/downloads?lists=1").json()["accounts"]] == [
+        "off@example.com", "on@example.com"]
+
+
+def test_history_filters_by_part_of_the_company_and_job_title_in_any_case(client):
+    user = add_user(client)
+    for company, role in (("Acme Corp", "Senior Data Engineer"), ("ACME Labs", "AI Platform Engineer"),
+                          ("Globex", "Data Engineer"), ("50% Off Inc", "ML_Ops Engineer"),
+                          ("500 Offers", "MLXOps Engineer"), ("Back\\Slash", "Analyst")):
+        add_download(client, company, role, user_id=user)
+    admin_id = user_id_of(client, ADMIN_EMAIL)
+    add_download(client, "Acme Corp", "Data Engineer", user_id=admin_id, email=ADMIN_EMAIL)
+
+    def companies(**params):
+        return sorted(r["company"] for r in client.get("/api/downloads", params=params).json()["downloads"])
+    assert companies(company="acme") == ["ACME Labs", "Acme Corp", "Acme Corp"]
+    assert companies(company="  ACME corp ") == ["Acme Corp", "Acme Corp"]
+    assert companies(company="acme", role="platform") == ["ACME Labs"]
+    assert companies(company="acme", user_id=admin_id) == ["Acme Corp"]
+    assert companies(company="50%") == ["50% Off Inc"] and companies(company="%") == ["50% Off Inc"]
+    assert companies(role="ml_ops") == ["50% Off Inc"]  # '_' is itself, never any letter
+    assert companies(company="k\\s") == ["Back\\Slash"]
+    assert companies(company="nothing like this") == []
+
+
+def test_history_totals_and_count_follow_the_filters(client):
+    user = add_user(client)
+    for company, role, run_id, kind in (("Acme Corp", "Data Engineer", 901, "resume"),
+                                        ("Acme Corp", "Data Engineer", 901, "resume"),  # the same job twice
+                                        ("Acme Corp", "Data Engineer", 901, "cover_letter"),
+                                        ("Acme Labs", "Analyst", 902, "resume"), ("Globex", "Data Engineer", 903, "resume")):
+        add_download(client, company, role, user_id=user, run_id=run_id, kind=kind)
+
+    def totals(**params):
+        return client.get("/api/downloads", params=params).json()["totals"]
+    assert totals() == {"resume": 3, "cover_letter": 1, "downloads": 5}
+    assert totals(company="acme", role="engineer") == {"resume": 1, "cover_letter": 1, "downloads": 3}
+    newest = client.get("/api/downloads", params={"company": "acme", "limit": 1}).json()
+    assert len(newest["downloads"]) == 1 and newest["totals"]["downloads"] == 4  # 'newest 1 of 4'
+    assert totals(company="nobody") == {"resume": 0, "cover_letter": 0, "downloads": 0}
+
+
+def test_history_suggests_the_companies_and_job_titles_it_has(client):
+    user = add_user(client)
+    for company, role in (("Globex", "Data Engineer"), ("Acme Corp", "Data Engineer"), ("", "Analyst"),
+                          ("acme", "AI Platform Engineer")):
+        add_download(client, company, role, user_id=user)
+    data = client.get("/api/downloads?lists=1").json()
+    assert data["companies"] == ["acme", "Acme Corp", "Globex"]
+    assert data["roles"] == ["AI Platform Engineer", "Analyst", "Data Engineer"]
+    assert "companies" not in client.get("/api/downloads").json()
+
+
+def test_history_rows_know_whether_the_run_has_a_cover_letter(client, user_client):
+    save_profile(user_client)
+    with_letter, without = (tailor(user_client).json()["run_id"] for _ in range(2))
+    user_client.post(f"/api/runs/{with_letter}/cover-letter", json={})
+    for run_id in (with_letter, without):
+        user_client.get(f"/api/runs/{run_id}/resume.pdf?download=1")
+
+    def marks():
+        return {r["run_id"]: (r["run_kept"], r["has_cover"]) for r in client.get("/api/downloads").json()["downloads"]}
+    assert marks() == {with_letter: (1, 1), without: (1, 0)}
+    user_client.post(f"/api/runs/{without}/cover-letter", json={})
+    assert marks() == {with_letter: (1, 1), without: (1, 1)}  # read when History is opened
+    client.app.state.db.delete_run(with_letter)
+    assert marks()[with_letter] == (0, 0)
+
+
+def test_the_cover_letter_mark_matches_how_runs_are_saved():
+    from app.schemas import CoverLetter
+    from app.storage.db import COVER_MARK
+
+    plain = TailorResult(requested_model="demo-concise", jd='A post that says "cover_letter":{ in its text.')
+    assert COVER_MARK not in plain.model_dump_json()  # quotes inside text are escaped
+    letter = CoverLetter(greeting="Dear Hiring Manager,", paragraphs=["One.", "Two."], closing="Sincerely,")
+    assert TailorResult(requested_model="demo-concise", cover_letter=letter).model_dump_json().count(COVER_MARK) == 1
+
+
+def test_the_job_description_opens_as_plain_text_for_the_admin_and_the_owner(client, user_client):
+    save_profile(user_client)
+    run_id = tailor(user_client, jd="<script>alert(1)</script>\n" + SAMPLE_JD, company_name="Acme Corp").json()["run_id"]
+    page = client.get(f"/api/runs/{run_id}/jd.txt")
+    assert page.status_code == 200 and page.headers["content-type"] == "text/plain; charset=utf-8"
+    assert page.headers["content-disposition"].startswith("inline;") and page.headers["x-content-type-options"] == "nosniff"
+    assert page.headers["cache-control"] == "private, no-store"
+    role = client.get(f"/api/runs/{run_id}").json()["analysis"]["target_role"]
+    assert page.text.splitlines()[0] == f"Company: Acme Corp | Job title: {role}"
+    assert "<script>alert(1)</script>" in page.text  # shown as text in its own tab, never run
+    assert user_client.get(f"/api/runs/{run_id}/jd.txt").status_code == 200  # its owner may read it too
+    add_user(client, "other@example.com")
+    other = log_in(browser(client), "other@example.com", USER_PASSWORD)
+    assert other.get(f"/api/runs/{run_id}/jd.txt").status_code == 404
+    assert browser(client).get(f"/api/runs/{run_id}/jd.txt").status_code == 401
+    assert client.get("/api/downloads").json()["downloads"] == []  # opening it is not a download
+    db = client.app.state.db
+    result = db.get_run(run_id)
+    result.jd = ""  # a run made before the app kept the job description
+    db.update_run(result)
+    assert NO_JD in client.get(f"/api/runs/{run_id}/jd.txt").text
+    db.delete_run(run_id)
+    assert client.get(f"/api/runs/{run_id}/jd.txt").status_code == 404
+
+
+def test_the_history_page_has_the_company_and_job_title_boxes(client):
+    page = client.get("/history").text
+    assert 'id="company"' in page and 'list="companies"' in page and '<datalist id="roles">' in page
+    assert "innerHTML" not in page
 
 
 def test_delete_all_data_keeps_accounts(client, user_client):

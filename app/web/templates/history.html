@@ -3,14 +3,20 @@
 {% block content %}
 <div class="page-head">
   <h1>History</h1>
-  <p class="sub" id="sub">Every click on a Download button, by every account, grouped by day in Texas time (Arlington). Previews are not counted.</p>
+  <p class="sub" id="sub">Every click on a Download button, by every account, grouped by day in Texas time (Arlington). Previews are not counted. Type part of a company or job title to find a job; each row opens its resume, cover letter and job description.</p>
 </div>
 <div class="panel">
   <div class="row">
     <label for="account" style="margin:0">Account</label>
     <select id="account" style="width:auto"><option value="">All accounts</option></select>
-    <span class="small muted" id="spent"></span>
+    <label for="company" style="margin:0">Company</label>
+    <input id="company" type="text" list="companies" maxlength="200" autocomplete="off" spellcheck="false" placeholder="Any company" style="width:13em">
+    <label for="role" style="margin:0">Job title</label>
+    <input id="role" type="text" list="roles" maxlength="200" autocomplete="off" spellcheck="false" placeholder="Any job title" style="width:13em">
+    <button type="button" class="link-btn" id="clear">Clear</button>
   </div>
+  <datalist id="companies"></datalist><datalist id="roles"></datalist>
+  <p class="small muted" id="spent"></p>
   <p class="totals" id="totals"></p>
 </div>
 <div id="days"></div>
@@ -20,7 +26,8 @@
 <script>
 const FILES = { resume: 'Resume', cover_letter: 'Cover letter' };
 const LIMIT = 1000;  // the most the server sends at once
-let accountsShown = false;
+const WAIT_MS = 300;  // the Company and Job title boxes filter once typing pauses this long
+let listsShown = false, loads = 0, lastQuery = null, typing = null;
 
 // Days and times in Arlington, Texas (US Central time, with daylight saving), whatever the viewer's computer uses.
 const ZONE = {{ local_zone | tojson }};
@@ -58,18 +65,24 @@ function jobs(items) {  // resumes and cover letters, each tailored job counted 
 }
 function counted(n, word, more = '') { return `${n}${more} ${word}${n === 1 && !more ? '' : 's'}`; }
 
+function opener(d, path, text) {  // a new tab; like a preview, it is not counted as a download
+  return el('div', {}, el('a', { href: `/api/runs/${d.run_id}/${path}`, target: '_blank', rel: 'noopener', text }));
+}
+
 function row(d) {
-  const file = d.kind === 'cover_letter' ? 'cover.pdf' : 'resume.pdf';
   const when = new Date(d.created_at);
+  // an account that is no longer active keeps its rows, tagged: 'disabled', or 'removed' once it is deleted
+  const tag = d.account_status === 'active' ? null : chip(d.account_status, d.account_status === 'disabled' ? 'bad' : '');
   return el('tr', {},
     el('td', { class: 'nowrap', text: isNaN(when) ? d.created_at : timeName.format(when) }),
-    el('td', { text: d.email }), el('td', { text: d.candidate || '-' }), el('td', { text: d.company || '-' }),
+    el('td', {}, d.email, tag ? ' ' : null, tag), el('td', { text: d.candidate || '-' }), el('td', { text: d.company || '-' }),
     el('td', { text: d.role || '-' }),
     el('td', {}, chip(`${FILES[d.kind] || d.kind} ${d.format.toUpperCase()}`, d.kind === 'cover_letter' ? 'ok' : ''),
       el('div', { class: 'small muted', text: d.filename })),
     el('td', { text: d.model || '-' }), el('td', { text: money(d.cost_usd) }),
-    el('td', {}, d.run_kept
-      ? el('a', { href: `/api/runs/${d.run_id}/${file}`, target: '_blank', rel: 'noopener', text: 'View' })
+    el('td', { class: 'nowrap' }, d.run_kept
+      ? [opener(d, 'resume.pdf', 'Resume'), d.has_cover ? opener(d, 'cover.pdf', 'Cover letter') : null,
+         opener(d, 'jd.txt', 'Job description')]
       : el('span', { class: 'small muted', text: 'run deleted' })));
 }
 
@@ -83,33 +96,57 @@ function day(group, open, today, partial) {  // partial: older downloads of this
         text: `${counted(count.resume, 'resume', more)} · ${counted(count.cover_letter, 'cover letter', more)} · ${money(dayCost(group.items))}`
           + (partial ? ' (older ones not shown)' : '') })),
     el('div', { class: 'table-wrap' }, el('table', { class: 'wide' },
-      el('thead', {}, el('tr', {}, ['Time', 'Account', 'Resume of', 'Company', 'Role', 'File', 'Model', 'Cost', ''].map(h => el('th', { text: h })))),
+      el('thead', {}, el('tr', {}, ['Time', 'Account', 'Resume of', 'Company', 'Job title', 'File', 'Model', 'Cost', 'Open'].map(h => el('th', { text: h })))),
       el('tbody', {}, group.items.map(row)))));
 }
 
-async function load() {
-  const chosen = $('#account').value;
+function filters() {  // empty boxes are left out
   const query = new URLSearchParams({ limit: LIMIT });
-  if (chosen) query.set('user_id', chosen);
-  const data = await api('/api/downloads?' + query);
+  const wanted = { user_id: $('#account').value, company: $('#company').value.trim(), role: $('#role').value.trim() };
+  for (const [key, value] of Object.entries(wanted)) if (value) query.set(key, value);
+  return query;
+}
+
+async function load() {
+  clearTimeout(typing);
+  const query = filters(), key = query.toString();
+  if (key === lastQuery) return;  // these filters' rows are shown, or on their way
+  lastQuery = key;
+  const filtered = ['user_id', 'company', 'role'].some(name => query.has(name));
+  if (!listsShown) query.set('lists', 1);
+  const asked = ++loads;
+  let data;
+  try { data = await api('/api/downloads?' + query); }
+  catch (err) { if (asked !== loads) return; lastQuery = null; throw err; }  // can be tried again; an old error is dropped
+  if (asked !== loads) return;  // a newer filter's answer wins
   $('#spent').textContent = `Spent today (since midnight Texas time; all tailoring, downloaded or not): ${money(data.cost_today)}. History is deleted after the retention period set in Settings.`;
-  if (!accountsShown) {
+  if (data.accounts) {
     $('#account').append(...data.accounts.map(a => el('option', { value: a.user_id, text: `${a.email} (${a.downloads})` })));
-    accountsShown = true;
+    $('#companies').replaceChildren(...data.companies.map(name => el('option', { value: name })));
+    $('#roles').replaceChildren(...data.roles.map(name => el('option', { value: name })));
+    listsShown = true;
   }
   const today = dayKey.format(new Date());
-  $('#totals').replaceChildren(el('strong', { text: 'Total: ' }),
+  $('#totals').replaceChildren(el('strong', { text: filtered ? 'Matching: ' : 'Total: ' }),
     `${counted(data.totals.resume, 'resume')} · ${counted(data.totals.cover_letter, 'cover letter')}`,
     el('span', { class: 'small muted', text: ' (each tailored job counted once, however often it was downloaded)' }));
   const groups = groupByDay(data.downloads);
-  const total = data.accounts.filter(a => !chosen || String(a.user_id) === chosen).reduce((n, a) => n + a.downloads, 0);
+  const total = data.totals.downloads;  // every matching download, not only the ones sent
   const cut = data.downloads.length >= LIMIT && total > data.downloads.length;  // the newest LIMIT only: the oldest day is cut
   $('#days').replaceChildren(groups.length ? groups.map((g, i) => day(g, i === 0, today, cut && i === groups.length - 1))
-    : el('div', { class: 'panel muted', text: 'No downloads yet.' }));
+    : el('div', { class: 'panel muted', text: filtered ? 'No downloads match these filters.' : 'No downloads yet.' }));
   $('#more').textContent = cut ? `Showing the newest ${data.downloads.length} of ${total} downloads. The oldest day shown is not complete.` : '';
 }
-$('#account').addEventListener('change', () => load().catch(showError));
+
 function showError(err) { $('#days').replaceChildren(notice('bad', err.message)); $('#more').textContent = ''; $('#totals').textContent = ''; }
-load().catch(showError);
+function refresh() { load().catch(showError); }
+function refreshSoon() { clearTimeout(typing); typing = setTimeout(refresh, WAIT_MS); }
+$('#account').addEventListener('change', refresh);
+for (const box of [$('#company'), $('#role')]) {
+  box.addEventListener('input', refreshSoon);  // typing: once it pauses
+  box.addEventListener('change', refresh);     // Enter, leaving the box or a picked suggestion: at once
+}
+$('#clear').addEventListener('click', () => { $('#account').value = ''; $('#company').value = ''; $('#role').value = ''; refresh(); });
+refresh();
 </script>
 {% endblock %}

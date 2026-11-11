@@ -179,6 +179,17 @@ def day_bounds(now: datetime) -> tuple[str, str]:
     return start.strftime("%Y-%m-%dT%H:%M:%SZ"), end.strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
+# A stored run is TailorResult.model_dump_json() (compact): '"cover_letter":{' only when it has a letter,
+# '"cover_letter":null' otherwise. Quotes inside its text are escaped, so a job post or a letter cannot fake it.
+COVER_MARK = '"cover_letter":{'
+
+
+def like_contains(text: str) -> str:
+    """A LIKE pattern for `text` anywhere in a name ('acme' -> '%acme%'). Its own \\, % and _ are matched as
+    themselves (\\ escaped first); '' matches every name. Use with ESCAPE '\\'."""
+    return "%" + text.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_") + "%"
+
+
 class Database:
     def __init__(self, path: Path | None = None):
         self.path = path or (config.data_dir() / "resume_tailor.db")
@@ -538,32 +549,63 @@ class Database:
             )
             return int(cur.lastrowid)
 
-    def list_downloads(self, *, user_id: int | None = None, limit: int = 200) -> list[dict]:
+    # History's filters, the same in every query so rows, totals and count agree: one account (or all), and part of
+    # the company and of the job title in any case (SQLite's LIKE folds ASCII letters only)
+    _DOWNLOAD_FILTER = "(? IS NULL OR d.user_id = ?) AND d.company LIKE ? ESCAPE '\\' AND d.role LIKE ? ESCAPE '\\'"
+
+    @staticmethod
+    def _download_args(user_id: int | None, company: str, role: str) -> tuple:
+        return user_id, user_id, like_contains(company), like_contains(role)
+
+    def list_downloads(self, *, user_id: int | None = None, company: str = "", role: str = "",
+                       limit: int = 200) -> list[dict]:
+        """History's matching rows, newest first, with run_kept, has_cover (a text search in the stored result,
+        never parsed here; a cover-letter download always has one, as a letter is only ever replaced) and
+        account_status: the account's status now, or 'removed' once it is deleted."""
         with self._conn() as conn:
             rows = conn.execute(
-                "SELECT id, created_at, user_id, email, run_id, kind, format, filename, candidate, company, role,"
-                " model, cost_usd, EXISTS(SELECT 1 FROM runs r WHERE r.id = downloads.run_id) AS run_kept"
-                " FROM downloads WHERE (? IS NULL OR user_id = ?) ORDER BY id DESC LIMIT ?",
-                (user_id, user_id, limit),
+                "SELECT d.id, d.created_at, d.user_id, d.email, d.run_id, d.kind, d.format, d.filename, d.candidate,"
+                " d.company, d.role, d.model, d.cost_usd, r.id IS NOT NULL AS run_kept,"
+                " CASE WHEN r.id IS NULL THEN 0 WHEN d.kind = 'cover_letter' THEN 1"
+                " ELSE instr(r.result, ?) > 0 END AS has_cover,"
+                " COALESCE(u.status, 'removed') AS account_status"
+                " FROM downloads d LEFT JOIN runs r ON r.id = d.run_id LEFT JOIN users u ON u.id = d.user_id"
+                " WHERE " + self._DOWNLOAD_FILTER + " ORDER BY d.id DESC LIMIT ?",
+                (COVER_MARK, *self._download_args(user_id, company, role), limit),
             ).fetchall()
         return [dict(row) for row in rows]
 
-    def download_totals(self, *, user_id: int | None = None) -> dict[str, int]:
-        """Resumes and cover letters downloaded, each tailored job counted once however often it was downloaded."""
+    def download_totals(self, *, user_id: int | None = None, company: str = "", role: str = "") -> dict[str, int]:
+        """For the matching downloads: resumes and cover letters (each tailored job counted once, however often it
+        was downloaded) and how many downloads match in all (History's "newest N of M")."""
         with self._conn() as conn:
             rows = conn.execute(
-                "SELECT kind, COUNT(DISTINCT run_id) AS jobs FROM downloads WHERE (? IS NULL OR user_id = ?) GROUP BY kind",
-                (user_id, user_id),
+                "SELECT d.kind, COUNT(DISTINCT d.run_id) AS jobs, COUNT(*) AS clicks FROM downloads d"
+                " WHERE " + self._DOWNLOAD_FILTER + " GROUP BY d.kind",
+                self._download_args(user_id, company, role),
             ).fetchall()
-        return {"resume": 0, "cover_letter": 0} | {row["kind"]: row["jobs"] for row in rows}
+        return ({"resume": 0, "cover_letter": 0} | {row["kind"]: row["jobs"] for row in rows}
+                | {"downloads": sum(row["clicks"] for row in rows)})
 
     def download_accounts(self) -> list[dict]:
-        """Accounts that appear in the download history, for the History filter."""
+        """Active accounts that appear in the download history, by their email now, for History's Account filter.
+        Disabled and removed accounts are not offered; their rows stay in History, tagged."""
         with self._conn() as conn:
             rows = conn.execute(
-                "SELECT user_id, email, COUNT(*) AS downloads FROM downloads GROUP BY user_id, email ORDER BY email"
+                "SELECT u.id AS user_id, u.email, COUNT(*) AS downloads FROM users u"
+                " JOIN downloads d ON d.user_id = u.id WHERE u.status = 'active'"
+                " GROUP BY u.id, u.email ORDER BY u.email"
             ).fetchall()
         return [dict(row) for row in rows]
+
+    def download_names(self, limit: int = 500) -> dict[str, list[str]]:
+        """The companies and job titles in the download history, A to Z, for the suggestions under History's boxes."""
+        with self._conn() as conn:
+            companies = conn.execute("SELECT DISTINCT company FROM downloads WHERE company <> ''"
+                                     " ORDER BY company COLLATE NOCASE LIMIT ?", (limit,)).fetchall()
+            roles = conn.execute("SELECT DISTINCT role FROM downloads WHERE role <> ''"
+                                 " ORDER BY role COLLATE NOCASE LIMIT ?", (limit,)).fetchall()
+        return {"companies": [row[0] for row in companies], "roles": [row[0] for row in roles]}
 
     # ------------------------------------------------------------------ background work (tailoring, cover letters)
     def create_job(self, job_id: str, user_id: int, kind: str) -> None:
