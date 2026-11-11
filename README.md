@@ -83,7 +83,7 @@ Costs shown in the app are estimates: `tokens reported by the provider x the pri
 
 ### Settings (applied to new runs immediately)
 - default model for the resume, the cover letter and for reading the base resume
-- fallback models, tried in order when the chosen one fails (not used in Compare, where each result must show one model alone)
+- fallback models, tried in order when the chosen one fails (not used in Compare, where each result must show one model alone). With the time limit on, the chosen model is given the limit plus 10 seconds to answer (40 s by default) before the next one is used, and the last model 90 seconds, never minutes. A model that did not answer in time, or failed because its provider was overloaded, rate-limited or unreachable, rests for 5 minutes: the next model is used straight away meanwhile. Every failed attempt is in the server log with its reason.
 - a **soft daily cost cap** (new runs stop once today's recorded spend reaches it; runs already in flight finish; the day starts at midnight in Arlington, Texas)
 - allowed data regions (models hosted in `CN` or `UNKNOWN` regions stay off until you allow them)
 - retention (tailored runs are deleted after N days; uploaded resumes stay until you delete them), paper size (Letter / A4)

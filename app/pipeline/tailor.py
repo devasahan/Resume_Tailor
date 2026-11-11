@@ -53,6 +53,10 @@ MIN_UNCOVERED_FOR_RETRY = 1
 # layout, the checks and saving; the shorter-draft call is not started with less than MIN_SHORTER_SECONDS left.
 CHECKS_RESERVE_SECONDS = 4.0
 MIN_SHORTER_SECONDS = 10.0
+# With the time limit on: the resume model is given (limit + SWITCH_EXTRA_SECONDS) to answer before the next model in
+# the chain (Settings > Fallback models) is used instead, and the last model LAST_MODEL_SECONDS, never minutes.
+SWITCH_EXTRA_SECONDS = 10.0
+LAST_MODEL_SECONDS = 90.0
 
 
 def jd_hash(jd: str) -> str:
@@ -485,8 +489,15 @@ async def run_tailor(
             router, chain, system=system_prompt, user=user_prompt,
             schema=schema, schema_name="tailor_output", parse=parse, context=context, outcome=outcome,
             refine=refine, deadline=deadline,
+            switch_after=limit + SWITCH_EXTRA_SECONDS if limit > 0 else None,
+            last_after=LAST_MODEL_SECONDS if limit > 0 else None,
         )
         steps.mark("AI")
+        if outcome.final_model_id and outcome.final_model_id != model_id:
+            reason = next((e.split(": ", 1)[1] for e in outcome.errors if e.startswith(f"{model_id}: ")),
+                          "it failed or did not answer in time a few minutes ago")
+            notes.append(f"{model_id} could not be used ({reason[:160]}), so {outcome.final_model_id} made this "
+                         "resume.")
         if outcome.follow_up:
             notes.append(f"The rewrite pass was {outcome.follow_up} to finish within the time limit of {limit:g} "
                          "seconds (Settings), so this is the first draft with the app's own fixes.")

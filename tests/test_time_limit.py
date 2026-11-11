@@ -174,3 +174,92 @@ def test_the_bake_off_compares_models_without_a_time_limit(router, db, registry,
                                    model_ids=["demo-concise"], save=False))
     assert client.calls == ["tailor_output", "tailor_revision"] and result.retries == 1
     assert not any("time limit" in n for n in result.notes)  # each model's own rewrite, however long it takes
+
+
+# ------------------------------------------------------------------ a model that does not answer
+class Hanging(LLMClient):
+    """A model that never answers (an overloaded provider, a request stuck in the network)."""
+
+    def __init__(self):
+        self.calls = 0
+
+    async def generate_structured(self, **kwargs):
+        self.calls += 1
+        await asyncio.sleep(60)
+
+
+def run_with_backup(router, db, profile, monkeypatch, *, limit=1, fallback=True):
+    monkeypatch.setattr(tailor, "SWITCH_EXTRA_SECONDS", 0.0)
+    monkeypatch.setattr(tailor, "LAST_MODEL_SECONDS", 1.0)
+    db.set_settings({"resume_time_limit_s": limit, "fallback_models": ["demo-concise"] if fallback else []})
+    started = time.perf_counter()
+    result = asyncio.run(run_tailor(router, db, profile=profile, profile_id=None, jd=SAMPLE_JD,
+                                    model_id="demo-detailed", save=False))
+    return result, time.perf_counter() - started
+
+
+def test_a_follow_up_skipped_with_no_time_left_never_crashes(router):
+    """The owner's log: after a slow first model, the rewrite was skipped with -241.9 s left and a KeyError threw the
+    finished draft away."""
+    follow = generate.Ask(user="fix", schema={}, schema_name="job_facts", parse=lambda data: "fixed")
+    out = asyncio.run(generate.generate_validated(
+        router, ["demo-concise"], system="s", user="u", schema={}, schema_name="job_facts", parse=lambda data: "draft",
+        context={"jd": "A remote job paying $100,000 a year."}, refine=lambda value: follow,
+        deadline=time.perf_counter() - 240))
+    assert out.value == "draft" and out.follow_up == "skipped" and generate._FOLLOW_UP_SECONDS == {}
+
+
+def test_a_model_that_does_not_answer_is_left_for_the_backup(router, db, profile, monkeypatch):
+    hanging = Hanging()
+    router.overrides["demo-detailed"] = hanging
+    result, took = run_with_backup(router, db, profile, monkeypatch)
+    assert result.status == "ok" and result.fallback_chain == ["demo-detailed", "demo-concise"] and took < 4
+    assert any("demo-detailed could not be used (did not answer within 1 seconds), so demo-concise made this resume"
+               in note for note in result.notes)
+    assert result.input_tokens > 0 and generate.resting("demo-detailed")  # its prompt was sent: it counts
+    # the next resume does not wait for it again: it rests, and the backup answers at once
+    again, took = run_with_backup(router, db, profile, monkeypatch)
+    assert hanging.calls == 1 and again.fallback_chain == ["demo-concise"] and took < 2
+    assert any("failed or did not answer in time a few minutes ago" in note for note in again.notes)
+    generate._RESTING_UNTIL["demo-detailed"] = 0.0  # its rest is over: it is tried again
+    run_with_backup(router, db, profile, monkeypatch)
+    assert hanging.calls == 2
+
+
+def test_the_last_model_is_given_a_bounded_wait_and_always_tried(router, db, profile, monkeypatch):
+    hanging = Hanging()
+    router.overrides["demo-detailed"] = hanging
+    generate._RESTING_UNTIL["demo-detailed"] = time.monotonic() + 300  # resting, but nothing else to use
+    result, took = run_with_backup(router, db, profile, monkeypatch, fallback=False)
+    assert hanging.calls == 1 and result.status == "error" and took < 3
+    assert "did not answer within 1 seconds" in result.error
+
+
+def test_without_a_time_limit_a_slow_answer_is_awaited(router, registry):
+    class Slow(LLMClient):
+        async def generate_structured(self, **kwargs):
+            await asyncio.sleep(0.3)
+            return await FakeClient(registry.get("demo-concise")).generate_structured(**kwargs)
+
+    router.overrides["demo-detailed"] = Slow()
+    out = asyncio.run(generate.generate_validated(
+        router, ["demo-detailed", "demo-concise"], system="s", user="u", schema={}, schema_name="job_facts",
+        parse=lambda data: data, context={"jd": "A remote job paying $100,000 a year."}))
+    assert out.final_model_id == "demo-detailed"
+
+
+def test_a_failed_attempt_is_logged_with_its_reason(router, caplog):
+    from app.llm.base import ProviderError
+
+    class Down(LLMClient):
+        async def generate_structured(self, **kwargs):
+            raise ProviderError("Gemini 3.8 Flash: HTTP 503: The model is overloaded", 503)
+
+    router.overrides["demo-detailed"] = Down()
+    with caplog.at_level("INFO", logger="app.pipeline.generate"):
+        out = asyncio.run(generate.generate_validated(
+            router, ["demo-detailed", "demo-concise"], system="s", user="u", schema={}, schema_name="job_facts",
+            parse=lambda data: data, context={"jd": "A remote job paying $100,000 a year."}))
+    assert out.final_model_id == "demo-concise"
+    assert "demo-detailed job_facts attempt 1 failed after" in caplog.text and "HTTP 503" in caplog.text
+    assert "demo-detailed rests for 5 minutes (HTTP 503)" in caplog.text and generate.resting("demo-detailed")

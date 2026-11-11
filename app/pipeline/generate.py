@@ -7,7 +7,7 @@ import time
 from dataclasses import dataclass, field, replace
 from typing import Callable, Generic, TypeVar
 
-from ..llm.base import CostCapError, InvalidOutputError, LLMError, Usage
+from ..llm.base import CostCapError, InvalidOutputError, LLMError, ProviderError, Usage
 from ..llm.router import Router
 from ..prompts import retry_suffix
 
@@ -19,6 +19,25 @@ FOLLOW_UP_SHARE = 0.5  # a follow-up (a fix, not a whole draft) takes at least a
 # How long the last follow-up took, per (model, kind of answer), in this process; one that was stopped at the time
 # limit counts as at least the time it ran. A follow-up that cannot finish in time is not started at all.
 _FOLLOW_UP_SECONDS: dict[tuple[str, str], float] = {}
+# A model that did not answer in time, or failed for a provider reason (overloaded, rate-limited, network), rests this
+# long: while another model follows it in the chain, it is skipped, so every run does not wait for it again first.
+MODEL_REST_SECONDS = 300.0
+_RESTING_UNTIL: dict[str, float] = {}  # model id -> time.monotonic() until which it is skipped
+_REST_STATUSES = frozenset({408, 409, 429, 500, 502, 503, 504, 529})
+
+
+def _rest(model_id: str, why: str) -> None:
+    _RESTING_UNTIL[model_id] = time.monotonic() + MODEL_REST_SECONDS
+    log.info("%s rests for %.0f minutes (%s): the next model in the chain is used meanwhile", model_id,
+             MODEL_REST_SECONDS / 60, why)
+
+
+def resting(model_id: str) -> bool:
+    until = _RESTING_UNTIL.get(model_id)
+    if until is not None and time.monotonic() >= until:
+        _RESTING_UNTIL.pop(model_id, None)
+        return False
+    return until is not None
 
 
 def record_sent(out: Outcome, router: Router, model_id: str, system: str, user: str) -> None:
@@ -92,6 +111,8 @@ async def generate_validated(
     outcome: Outcome | None = None,
     refine: Callable[[T], Ask[T] | None] | None = None,
     deadline: float | None = None,
+    switch_after: float | None = None,
+    last_after: float | None = None,
 ) -> Outcome[T]:
     """Try each model in turn. Per model: up to 2 attempts, the second one told what was wrong.
 
@@ -103,10 +124,20 @@ async def generate_validated(
     `deadline` (a time.perf_counter() value) limits only that follow-up: it is not started when it would not finish
     in time (see follow_up_seconds), and it is stopped at the deadline; the first answer is kept either way. A
     follow-up marked `required` ignores the deadline.
+    `switch_after` (seconds) stops waiting for a model's answer when another model follows it in the chain, and
+    `last_after` for the last model: that bounds a hanging request and the provider's own retry pauses. A model that
+    did not answer in time, or failed for a provider reason, rests for MODEL_REST_SECONDS: it is skipped while
+    another model follows it (the last model is always tried).
     """
     out = outcome or Outcome()
     first = Ask(user, schema, schema_name, parse, context)
-    for model_id in model_ids:
+    for position, model_id in enumerate(model_ids):
+        last = position == len(model_ids) - 1
+        if not last and resting(model_id):
+            log.info("%s %s skipped: it failed or did not answer in the last %.0f minutes, so %s is used", model_id,
+                     schema_name, MODEL_REST_SECONDS / 60, model_ids[position + 1])
+            continue
+        answer_limit = last_after if last else switch_after
         out.chain.append(model_id)
         ask = first
         kept: tuple | None = None  # (value, served_model) of a valid first answer under refinement
@@ -120,15 +151,22 @@ async def generate_validated(
                     model_id, system=system, user=ask.user, schema=ask.schema, schema_name=ask.schema_name,
                     context=ask.context,
                 )
-                result, spec = await (asyncio.wait_for(call, time_left) if time_left is not None else call)
-            except TimeoutError:  # the follow-up ran past the deadline: the first answer is kept
+                limit = time_left if kept is not None else answer_limit
+                result, spec = await (asyncio.wait_for(call, limit) if limit is not None else call)
+            except TimeoutError:
                 ran = time.perf_counter() - started
-                log.info("%s %s attempt %d stopped at the time limit after %.1fs", model_id, ask.schema_name,
-                         attempt, ran)
-                key = (model_id, ask.schema_name)
-                _FOLLOW_UP_SECONDS[key] = max(_FOLLOW_UP_SECONDS.get(key, 0.0), ran)  # it needed at least this
                 record_sent(out, router, model_id, system, ask.user)  # the provider got the whole prompt
-                out.follow_up = "stopped"
+                if kept is not None:  # the follow-up ran past the deadline: the first answer is kept
+                    log.info("%s %s attempt %d stopped at the time limit after %.1fs", model_id, ask.schema_name,
+                             attempt, ran)
+                    key = (model_id, ask.schema_name)
+                    _FOLLOW_UP_SECONDS[key] = max(_FOLLOW_UP_SECONDS.get(key, 0.0), ran)  # it needed at least this
+                    out.follow_up = "stopped"
+                    break
+                out.errors.append(f"{model_id}: did not answer within {limit:.0f} seconds")
+                log.info("%s %s attempt %d: no answer within %.0fs%s", model_id, ask.schema_name, attempt, ran,
+                         "" if last else f", switching to {model_ids[position + 1]}")
+                _rest(model_id, f"no answer within {limit:.0f}s")
                 break
             except CostCapError:
                 if kept is not None:
@@ -136,6 +174,8 @@ async def generate_validated(
                 raise
             except InvalidOutputError as exc:  # no usable JSON came back: no usage info either
                 out.errors.append(f"{model_id}: {exc}")
+                log.info("%s %s attempt %d failed after %.1fs: %s", model_id, ask.schema_name, attempt,
+                         time.perf_counter() - started, str(exc)[:200])
                 if attempt == 1:
                     ask = replace(first, user=user + retry_suffix(str(exc)))
                     out.retries += 1
@@ -143,6 +183,10 @@ async def generate_validated(
                 break
             except LLMError as exc:
                 out.errors.append(f"{model_id}: {exc}")
+                log.info("%s %s attempt %d failed after %.1fs: %s", model_id, ask.schema_name, attempt,
+                         time.perf_counter() - started, str(exc)[:200])
+                if isinstance(exc, ProviderError) and (exc.status is None or exc.status in _REST_STATUSES):
+                    _rest(model_id, f"HTTP {exc.status}" if exc.status else "network error")
                 break
             took = time.perf_counter() - started
             thinking = f" (thinking {result.usage.thinking_tokens})" if result.usage.thinking_tokens else ""
@@ -158,6 +202,7 @@ async def generate_validated(
             except ValueError as exc:  # includes pydantic.ValidationError
                 message = str(exc)[:700]
                 out.errors.append(f"{model_id}: invalid structure: {message}")
+                log.info("%s %s attempt %d: unusable answer: %s", model_id, ask.schema_name, attempt, message[:200])
                 if attempt == 1:
                     ask = replace(first, user=user + retry_suffix(message))
                     out.retries += 1
@@ -171,9 +216,13 @@ async def generate_validated(
                     if time_left < needed:
                         log.info("%s %s follow-up skipped: %.1fs left of the time limit, it needs about %.1fs",
                                  model_id, follow_up.schema_name, time_left, needed)
+                        # One slow rewrite (a provider hiccup) must not block every later one: when only the
+                        # remembered time stood in the way, it shrinks, so a later run tries again.
                         key = (model_id, follow_up.schema_name)
-                        if _FOLLOW_UP_SECONDS.get(key, 0.0) > time_left:  # one slow rewrite (a provider hiccup)
-                            _FOLLOW_UP_SECONDS[key] *= 0.8  # must not block every later one: a later run tries again
+                        remembered = _FOLLOW_UP_SECONDS.get(key)
+                        enough = max(MIN_FOLLOW_UP_SECONDS, FOLLOW_UP_SHARE * first_call)
+                        if remembered is not None and remembered > time_left >= enough:
+                            _FOLLOW_UP_SECONDS[key] = remembered * 0.8
                         out.follow_up, follow_up = "skipped", None
                 if follow_up is not None:
                     kept, ask = (value, result.served_model), follow_up

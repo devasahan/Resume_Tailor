@@ -72,6 +72,15 @@ USER_PASSWORD = "user-test-password"
 
 
 @pytest.fixture(autouse=True)
+def fresh_model_memory(monkeypatch):
+    """What a run remembers about the models (a resting model, the last rewrite's time) belongs to that test only."""
+    from app.pipeline import generate
+
+    monkeypatch.setattr(generate, "_RESTING_UNTIL", {})
+    monkeypatch.setattr(generate, "_FOLLOW_UP_SECONDS", {})
+
+
+@pytest.fixture(autouse=True)
 def test_accounts(monkeypatch):
     """Test credentials for the admin account, never the developer's real .env values; a cheap scrypt setting
     so hashing does not slow the suite down."""
