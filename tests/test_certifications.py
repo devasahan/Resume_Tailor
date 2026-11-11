@@ -14,7 +14,12 @@ from pypdf import PdfReader
 
 from app.llm.base import LLMClient
 from app.llm.fake_client import FakeClient
-from app.parsing.heuristic import _is_header, _parse_certifications, parse_resume_text
+from app.parsing.heuristic import (
+    _is_header,
+    _parse_certifications,
+    parse_resume_text,
+    read_certification_list,
+)
 from app.pipeline import validate
 from app.pipeline.fit import bullet_budget
 from app.pipeline.tailor import refit, run_tailor
@@ -261,7 +266,7 @@ def test_a_tick_that_needs_room_removes_the_fewest_bullets(certified):
 
 # ------------------------------------------------------------------ prompts
 def test_the_prompts_list_the_persons_certifications_and_the_rule():
-    assert PROMPT_VERSION == "v29"
+    assert PROMPT_VERSION == "v30"
     system = tailor_system()
     assert "CERTIFICATIONS: `certifications` lists the 4 certifications that best support this application" in system
     assert "never name one in the headline, the summary, the skills or the bullets" in system
@@ -401,4 +406,59 @@ def test_a_resume_upload_with_certifications_is_read(client):
     response = client.post("/api/resumes", files={"file": ("cv.docx", docx_bytes(CERT_RESUME))})
     assert response.status_code == 200
     assert [c["name"] for c in response.json()["resume"]["profile"]["certifications"]] == [AWS.name, CSM.name]
-    assert "'Certifications: '" in client.get("/profile").text  # each card lists them
+    assert "Certifications you have passed" in client.get("/profile").text  # each card lists them, to change
+
+
+# ------------------------------------------------------------------ certifications pasted on the Profile page
+TABLE = ("1. Software Engineer\n"
+         "S.No.\tCertification\tExam code\n"
+         "1\tAWS Cloud Practitioner\tCLF-C02\n"
+         "2\tAWS Developer – Associate\tDVA-C02 → DVA-C03\n"
+         "2. Backend Engineer\n"
+         "16\tAWS Developer – Associate\tDVA-C02 → DVA-C03\n"
+         "21\tCertified Kubernetes Administrator\tCKA\n"
+         "31\tMeta Front-End Developer (Coursera)\t—\n"
+         "32\tMeta Back-End Developer (Coursera)\t—\n"
+         "54\tNVIDIA Generative AI LLMs (Associate)\tNCA-GENL\n"
+         "55\tNVIDIA Generative AI LLMs (Professional)\tNCP-GENL\n")
+
+
+def test_a_pasted_table_keeps_the_names_once():
+    """Rows copied from a table: the number and exam-code columns and the titles between rows are left out, and a
+    certification listed under two roles is kept once. A level or a course site in brackets keeps two apart."""
+    assert [c.name for c in read_certification_list(TABLE)] == [
+        "AWS Cloud Practitioner", "AWS Developer – Associate", "Certified Kubernetes Administrator",
+        "Meta Front-End Developer (Coursera)", "Meta Back-End Developer (Coursera)",
+        "NVIDIA Generative AI LLMs (Associate)", "NVIDIA Generative AI LLMs (Professional)"]
+    lines = "1. AWS Certified Developer – Associate, Amazon Web Services, 2024\n- PMP | PMI | 2021\n• CKAD\nCertification\n"
+    assert [(c.name, c.issuer, c.year) for c in read_certification_list(lines)] == [
+        ("AWS Certified Developer – Associate", "Amazon Web Services", "2024"), ("PMP", "PMI", "2021"), ("CKAD", "", "")]
+    assert not validate.same_certification("Certified Secure Software Lifecycle Professional (ISC2)",
+                                           "Certified Information Systems Security Professional (ISC2)")
+
+
+def test_pasted_certifications_are_printed_without_asking(client):
+    resume_id = save_profile(client)["id"]  # a resume that lists none
+    saved = client.put(f"/api/resumes/{resume_id}/certifications", json={"text": TABLE})
+    assert saved.status_code == 200, saved.text
+    assert len(saved.json()["resume"]["profile"]["certifications"]) == 7
+    run = tailor(client, profile_id=resume_id).json()
+    printed = [c["name"] for c in run["resume"]["certifications"]]
+    assert len(printed) == 4 and all(r["have"] for r in run["certifications"])  # nothing to tick
+    assert set(printed) <= {c.name for c in read_certification_list(TABLE)}  # only the person's own
+    # pasting again replaces the list; an empty box clears it
+    assert client.put(f"/api/resumes/{resume_id}/certifications", json={"text": "CKAD"}).json()[
+        "resume"]["profile"]["certifications"] == [{"name": "CKAD", "issuer": "", "year": ""}]
+    assert client.put(f"/api/resumes/{resume_id}/certifications", json={"text": ""}).json()[
+        "resume"]["profile"]["certifications"] == []
+
+
+def test_only_the_owner_can_change_a_resumes_certifications(client, user_client):
+    resume_id = save_profile(client)["id"]
+    assert user_client.put(f"/api/resumes/{resume_id}/certifications", json={"text": "CKAD"}).status_code == 404
+    other_site = client.put(f"/api/resumes/{resume_id}/certifications", json={"text": "CKAD"},
+                            headers={"Origin": "https://evil.example", "Sec-Fetch-Site": "cross-site"})
+    assert other_site.status_code == 403
+    too_many = "\n".join(f"Certification number {i}" for i in range(101))
+    assert client.put(f"/api/resumes/{resume_id}/certifications", json={"text": too_many}).status_code == 422
+    assert stored_certifications(client, resume_id) == []

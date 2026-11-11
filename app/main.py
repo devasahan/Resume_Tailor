@@ -31,6 +31,7 @@ from . import auth, config, timing
 from .llm.base import CostCapError, LLMError
 from .llm.registry import ModelSpec, Registry
 from .llm.router import Router
+from .parsing.heuristic import MAX_OWN_CERTIFICATIONS, read_certification_list
 from .parsing.resume_parser import MAX_BYTES, extract_text, parse_resume, profile_warnings, read_resume
 from .pipeline import validate
 from .pipeline.generate import GenerationFailed
@@ -100,6 +101,10 @@ class EditRequest(BaseModel):
     cover_greeting: str | None = None
     cover_paragraphs: list[str] | None = None
     cover_closing: str | None = None
+
+
+class CertificationList(BaseModel):
+    text: str = Field(max_length=20000)  # one certification per line, as pasted on the Profile page
 
 
 class CertificationTicks(BaseModel):
@@ -974,6 +979,24 @@ def create_app(db: Database | None = None, registry: Registry | None = None, rou
     @app.get("/api/resumes")
     def api_list_resumes(user: auth.User = Depends(current_user)):
         return {"resumes": [resume_entry(e, registry, user.is_admin) for e in db.list_profiles(user_id=user.id)]}
+
+    @app.put("/api/resumes/{profile_id}/certifications")
+    def api_resume_certifications(profile_id: int, body: CertificationList, user: auth.User = Depends(current_user)):
+        """The certifications the person has passed, pasted on the Profile page (they replace the saved list). For
+        each job the AI then picks the best ones that fit, up to 4, and they are printed without asking."""
+        certifications = read_certification_list(body.text)
+        if len(certifications) > MAX_OWN_CERTIFICATIONS:
+            raise HTTPException(422, f"That is {len(certifications)} certifications. Keep the ones you have passed "
+                                     f"(at most {MAX_OWN_CERTIFICATIONS}).")
+
+        def replace(profile: Profile) -> None:
+            profile.certifications = certifications
+
+        if db.change_profile(profile_id, user_id=user.id, change=replace) is None:
+            raise HTTPException(404, "Resume not found.")
+        entry = db.profile_entry(profile_id, user_id=user.id)
+        assert entry is not None
+        return {"resume": resume_entry(entry, registry, user.is_admin)}
 
     @app.delete("/api/resumes/{profile_id}")
     def api_delete_resume(profile_id: int, user: auth.User = Depends(current_user)):

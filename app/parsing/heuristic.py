@@ -7,7 +7,7 @@ from __future__ import annotations
 
 import re
 
-from ..pipeline.validate import cert_keys
+from ..pipeline.validate import same_certification
 from ..schemas import Certification, Company, Contact, Education, Profile
 
 EMAIL_RE = re.compile(r"[\w.+-]+@[\w-]+(?:\.[\w-]+)+")
@@ -182,6 +182,9 @@ def _parse_education(lines: list[str]) -> list[Education]:
     return [e for e in entries if e.school or e.degree]
 
 
+_LIST_MARK = re.compile(r"^(?:[•·▪◦‣*>]+|[-–—]+(?=\s))\s*")  # '• AWS', '•AWS', '- AWS'; never the '-' of a name
+
+
 def _balanced(part: str) -> str:
     """A piece without a stray bracket left by the split: '(CKA)' stays, 'Foundation)' loses its ')'."""
     while part.endswith(")") and part.count(")") > part.count("("):
@@ -197,7 +200,7 @@ def _parse_certifications(lines: list[str]) -> list[Certification]:
     2023 · Expires Jan 2026', 'Credential ID ...') are not certifications: an 'Issued' date is the one above's."""
     certifications: list[Certification] = []
     for raw in lines:
-        line = raw.strip().lstrip("•·▪◦‣*>").strip()
+        line = _LIST_MARK.sub("", raw.strip())
         if not line or _SKIP_CERT_LINE.match(line):
             continue
         dated = CERT_DATE_RE.search(" " + line)
@@ -215,10 +218,43 @@ def _parse_certifications(lines: list[str]) -> list[Certification]:
         if not parts or not re.search(r"[A-Za-z]", parts[0]):
             continue
         name, issuer = parts[0], parts[1] if len(parts) > 1 else ""
-        if any(cert_keys(name) & cert_keys(c.name) for c in certifications):
+        if any(same_certification(name, c.name) for c in certifications):
             continue
         certifications.append(Certification(name=name, issuer=issuer, year=year))
     return certifications
+
+
+MAX_OWN_CERTIFICATIONS = 100  # a pasted list longer than this is refused
+_ROW_NUMBER = re.compile(r"\(?\d{1,3}[.)]?")  # a table's number cell: '1', '16.', '(3)'
+_LEAD_NUMBER = re.compile(r"^\s*\(?\d{1,3}[.)]\s+")  # '1. AWS ...', '3) AWS ...'
+_HEADER_CELLS = frozenset({"s.no.", "s.no", "no.", "no", "#", "certification", "certifications", "name",
+                           "exam code", "code"})
+
+
+def read_certification_list(text: str) -> list[Certification]:
+    """The certifications a person pastes on the Profile page: one per line ('Name', 'Name, Issuer, 2023',
+    'Name | Issuer | Mar 2023'), or rows copied from a table, whose cells are split by tabs. In a table only its rows
+    count (titles between them are left out), and of each row only the name (and a year): a number column and an
+    exam-code column are dropped. The same certification twice is kept once."""
+    lines = [line for line in text.replace("\r", "").splitlines() if line.strip()]
+    table = any("\t" in line for line in lines)
+    kept: list[str] = []
+    for line in lines:
+        if table:
+            if "\t" not in line:
+                continue  # a title between the rows ('2. Backend Engineer')
+            cells = [cell.strip() for cell in line.split("\t") if cell.strip()]
+            cells = [cell for cell in cells if not _ROW_NUMBER.fullmatch(cell)]
+            if not cells or cells[0].lower() in _HEADER_CELLS:
+                continue
+            year = next((cell for cell in cells[1:] if re.fullmatch(r"(?:19|20)\d{2}", cell)), "")
+            line = f"{cells[0]}, {year}" if year else cells[0]
+        else:
+            line = _LEAD_NUMBER.sub("", line).strip()
+            if line.lower() in _HEADER_CELLS:
+                continue
+        kept.append(line)
+    return _parse_certifications(kept)
 
 
 def parse_resume_text(text: str) -> Profile:
