@@ -119,14 +119,18 @@ class CareerStep(BaseModel):
 
 
 class CertificationPick(BaseModel):
-    """One of the certifications the model picks for the job (see CERTIFICATIONS in the prompt). Only a pick that is
-    one of the candidate's own is printed; the others are shown to the person as suggestions to tick or to earn."""
+    """One certification for this job, as the CERTIFICATIONS rule in the prompt says. Only one of the candidate's own
+    is ever printed; any other is never shown as theirs."""
+    # The docstring and descriptions are part of the model's schema, sent in both Settings modes, so they stay true in
+    # both. On: a pick that is not the person's own is a suggestion on the Tailor page. Off: picks are never printed
+    # or shown; they only keep names out of the text.
     name: str = Field(description=(
         "the certification's official full name, without dash punctuation (for example \"AWS Certified Solutions "
         "Architect Professional\"); for one of the candidate's own, its name exactly as listed"))
     issuer: str = Field("", description="the organization that awards it (for example \"Amazon Web Services\")")
     candidate_index: int = Field(-1, description=(
-        "its number in <candidate_certifications> when it is one of the candidate's own, otherwise -1"))
+        "the number of the candidate's own certification when the prompt lists their certifications and this is one "
+        "of them, otherwise -1"))
 
     _text = field_validator("name", "issuer", mode="before")(_as_text)
 
@@ -144,7 +148,7 @@ class TailorOutput(BaseModel):
     # Up to 4, best first, decided right after the analysis. Required in the model's schema; the default only serves
     # code that builds an output by hand and older outputs.
     certifications: list[CertificationPick] = Field(default_factory=list, description=(
-        "the 4 certifications that best support this application, best and highest level first (see CERTIFICATIONS)"))
+        "the certifications the CERTIFICATIONS rule asks for, at most 4, best first"))
     # Written before `sections`, so the bullets follow the plan. Required in the model's schema; the default only
     # serves code that builds an output by hand.
     career_plan: list[CareerStep] = Field(default_factory=list)
@@ -298,7 +302,12 @@ class TailorResult(BaseModel):
     metrics_mode: str = ""  # the "Numbers in bullets" setting the run was made with ("" for older runs)
     spelling: Literal["", "us", "eu"] = ""  # the Tailor page's US/EU style button ("" for older runs: US)
     career_plan: list[CareerStep] = Field(default_factory=list)  # how the model spread the JD across the jobs
-    certifications: list[CertificationChoice] = Field(default_factory=list)  # the model's picks; [] in older runs
+    # The model's picks, the rows the Tailor page shows. [] while the Certifications section is off, and in older runs.
+    certifications: list[CertificationChoice] = Field(default_factory=list)
+    # While the Certifications section is off (Settings): the certifications the job post names, as the model listed
+    # them. Never printed and never rows to tick: the checks only keep these names out of the text, as they do the
+    # rows' names. [] while it is on (the rows hold the picks) and in older runs.
+    posting_certifications: list[str] = Field(default_factory=list)
     # The jobs' bullets as they were before a tick on the Tailor page removed some to keep two pages ([] when none
     # did): each later tick starts from them again, so unticking brings those bullets back.
     untrimmed: list[ResumeExperience] = Field(default_factory=list)

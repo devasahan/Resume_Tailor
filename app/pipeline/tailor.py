@@ -19,6 +19,7 @@ from ..prompts import (
     tailor_user,
 )
 from ..schemas import (
+    MAX_CERTIFICATIONS,
     CoverLetter,
     CoverLetterOut,
     FitStyle,
@@ -183,12 +184,17 @@ def run_checks(result: TailorResult, jd_text: str) -> None:
         )
     allowed = f"{result.hints}\n{result.facts}"
     flags = validate.claim_flags(result.resume, jd_text, allowed)
+    # the names the run's checks kept out of the text, in either Settings mode: the rows (or, while the section was
+    # off, the job post's certifications the model listed), the person's own and the job post's credential
+    # abbreviations (CISSP, PMP)
+    names = ([row.name for row in result.certifications] + result.posting_certifications
+             + [cert.name for cert in result.resume.profile.certifications]
+             + validate.credential_abbreviations(jd_text))
     flags += [  # left in the text after the fix round (or written in by hand): a claim to check
         Flag(section=where, text=term, level="verify",
-             reason="Names a certification. Certifications belong only in their own section; remove it from the text.")
-        for where, term in validate.certification_mentions(
-            result.resume, [row.name for row in result.certifications]
-            + [cert.name for cert in result.resume.profile.certifications])
+             reason="Names a certification. Certification names stay out of the headline, summary and bullets; "
+                    "remove it from the text.")
+        for where, term in validate.certification_mentions(result.resume, names)
     ]
     posting = validate.posting_match_flags(result.resume, result.analysis, result.hints)
     result.flags = [f for f in flags if f.level == "verify"] + posting + [f for f in flags if f.level != "verify"]
@@ -263,7 +269,8 @@ async def run_tailor(
     settings = router.settings()
     paper = settings["paper_size"]
     metrics_mode = settings.get("metrics_mode", "estimate")
-    # Settings > Certifications section. Off: no section, no picks, and the model is shown no certifications
+    # Settings > Certifications section. Off: no section and no rows to tick, and the model is shown no certifications;
+    # it lists only the job post's own, whose names the checks keep out of the text
     certifications_on = bool(settings.get("certifications_section", False))
     limit = float(settings.get("resume_time_limit_s", 30) or 0) if time_limit is None else time_limit  # 0: none
     deadline = started + limit - CHECKS_RESERVE_SECONDS if limit > 0 else None
@@ -318,8 +325,15 @@ async def run_tailor(
         def parse(data: dict):
             return build(TailorOutput.model_validate(data))
 
+        # credential abbreviations the job post names ('CISSP required'): certification names in both modes, even
+        # when the model did not list them
+        posted_credentials = validate.credential_abbreviations(jd)
+
         def certification_names(out: TailorOutput) -> list[str]:
-            return [pick.name for pick in out.certifications] + [cert.name for cert in profile.certifications]
+            """What the checks keep out of the skills and the text: the model's picks (while the section is off, the
+            job post's certifications it listed), the person's own and the job post's credential abbreviations."""
+            return ([pick.name for pick in out.certifications] + [cert.name for cert in profile.certifications]
+                    + posted_credentials)
 
         def without_certifications(out: TailorOutput) -> JDAnalysis:
             """The analysis the fix round shows, without certification keywords: it is told to use the keywords."""
@@ -577,6 +591,11 @@ async def run_tailor(
         result.career_plan = output.career_plan
         result.certifications = (validate.resolve_certifications(profile, output.certifications, today)[1]
                                  if certifications_on else [])  # off: no rows to tick on the Tailor page
+        # off: the job post's certifications the model listed are kept (never printed), so the checks after an edit or
+        # a new cover letter keep their names out of the text too (cleaned as the rows' names are)
+        listed = [name for name in (validate.clean_text(pick.name)[:validate.CERT_NAME_LIMIT].strip()
+                                    for pick in output.certifications) if name]
+        result.posting_certifications = [] if certifications_on else listed[:MAX_CERTIFICATIONS]
         result.style, result.pages, result.fits = style, pages, fits
         result.served_model = outcome.served_model
         result.status = "ok"
@@ -628,6 +647,7 @@ async def _cover_letter(
     keep = validate.known_names(resume, result.analysis, company_name, hiring_manager)
     terms, roles = validate.skill_terms(resume, result.analysis), validate.role_terms(resume, result.analysis)
     exact = validate.posting_terms(result.analysis)
+    posting = " ".join(sorted(validate.posting_figures(jd)))  # the post's own figures: a quote keeps its '38.0%'
 
     def parse(data: dict) -> CoverLetter:
         raw = CoverLetterOut.model_validate(data)
@@ -636,7 +656,7 @@ async def _cover_letter(
             greeting=greeting, paragraphs=paragraphs, closing=closing,
             company_name=company_name, hiring_manager=hiring_manager,
         )
-        validate.vary_letter_figures(letter, f"{hints}\n{result.facts}")  # a base in brackets at most once
+        validate.vary_letter_figures(letter, f"{hints}\n{result.facts}\n{posting}")  # a base in brackets at most once
         validate.spell_letter(letter, style, keep, terms, exact, roles)  # the run's style, its sign-off, CV or resume
         return letter
 

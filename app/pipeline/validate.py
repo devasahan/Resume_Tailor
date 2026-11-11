@@ -598,10 +598,11 @@ def clean_terms(items: list[str]) -> list[str]:
 
 
 def clean_analysis(analysis: JDAnalysis, names: list[str] | tuple = ()) -> JDAnalysis:
-    """The analysis with keyword lists only (changed in place, and returned). A certification (one of `names`, the
-    model's picks and the person's own, or plainly a credential) is never a must-have or nice-to-have skill (the
-    prompt says so, and this makes sure): the fix round would otherwise push its name into a bullet, claiming it.
-    The keywords keep it, so the keyword score stays honest and a printed one counts."""
+    """The analysis with keyword lists only (changed in place, and returned). A certification (one of `names`: the
+    model's picks, the person's own and the job post's credential abbreviations; or plainly a credential) is never a
+    must-have or nice-to-have skill (the prompt says so, and this makes sure): the fix round would otherwise push
+    its name into a bullet, claiming it. The keywords keep it, so the keyword score stays honest and a printed one
+    counts."""
     names = list(names)
     analysis.must_have_skills = [t for t in clean_terms(analysis.must_have_skills) if not names_certification(t, names)]
     analysis.nice_to_have_skills = [t for t in clean_terms(analysis.nice_to_have_skills)
@@ -752,6 +753,24 @@ def names_certification(term: str, names: list[str] | tuple = ()) -> bool:
     'software licensing' and 'SOC 2 certification' are skills or work."""
     key = _letters(term)
     return any(key == _letters(t) for t in certification_terms(list(names))) or is_credential_phrase(term)
+
+
+# Abbreviations that stand for nothing but a certification. A job post that names one ('CISSP required', 'PMP or CCNA
+# preferred') names a certification, whatever the model lists, so the checks keep it out of the skills and the text
+# in both Settings modes. Left out because they also name other things: CAPM (the Capital Asset Pricing Model), CISA
+# (a US government agency), CSM (Customer Success Manager), CPA (cost per acquisition).
+CREDENTIAL_ABBREVIATIONS = ("PMP", "CISSP", "CISM", "CRISC", "CCSP", "SSCP", "OSCP", "CEH", "CCNA", "CCNP", "CCIE",
+                            "CKA", "CKAD", "CKS", "RHCSA", "RHCE")
+# One of them as a whole word, in capitals: 'CKA/CKAD', 'CISSP-certified', 'PMPs'; never 'CKA' inside 'CKAD'
+_CREDENTIAL_WORD = re.compile(r"(?<![A-Za-z0-9])(" + "|".join(CREDENTIAL_ABBREVIATIONS) + r")s?(?![A-Za-z0-9+#])")
+
+
+def credential_abbreviations(text: str) -> list[str]:
+    """The CREDENTIAL_ABBREVIATIONS a text (a job post) names as whole words, in the list's order. They join the
+    certification names the checks use, so one the person does not hold never stays in the skills or the text, even
+    when the model did not list it ('CISSP required' -> ['CISSP'])."""
+    named = {match.group(1) for match in _CREDENTIAL_WORD.finditer(text)}
+    return [abbreviation for abbreviation in CREDENTIAL_ABBREVIATIONS if abbreviation in named]
 
 
 def resolve_certifications(
@@ -1333,6 +1352,7 @@ _CLAUSE_ABBREVIATION = re.compile(r"(?<![\w.])(?:[a-z]\.){2,}$|\b(?:inc|ltd|co|c
 _SAME_SENTENCE = re.compile(r"\s+[a-z\d$€£]")
 _ING_CLAUSE = re.compile(r",\s+(?:and\s+)?(?!during\b)[a-z]{4,}ing\b")  # ", ensuring ...", ", and enabling ..."
 MAX_ING_CLAUSES = 2  # a third in one bullet reads as a template
+_LETTER_GAP = re.compile(r"(?<=[.!?])\s+")  # where a cover letter's sentences may end
 MIN_PLAIN_PROBLEMS_FOR_RETRY = 2  # one stray word is only noted; it is not worth a model call
 
 
@@ -1425,15 +1445,20 @@ def _posting_terms(analysis: JDAnalysis | None) -> list[str]:
     return [*analysis.must_have_skills, *analysis.nice_to_have_skills, *analysis.keywords]
 
 
-def _sentences(paragraph: str) -> list[str]:
-    """The paragraph's sentences. An abbreviation that a lowercase word or a figure follows ('U.S. warehouses') ends
-    none."""
-    sentences, start = [], 0
-    for gap in re.finditer(r"(?<=[.!?])\s+", paragraph):
+def _sentence_pieces(paragraph: str) -> list[str]:
+    """The paragraph cut into its sentences, with the spaces between them kept: [sentence, space, sentence, ...]. An
+    abbreviation that a lowercase word or a figure follows ('U.S. warehouses') ends none."""
+    pieces, start = [], 0
+    for gap in _LETTER_GAP.finditer(paragraph):
         if not _abbreviation_stop(paragraph, gap.start() - 1):
-            sentences.append(paragraph[start:gap.start()])
+            pieces += [paragraph[start:gap.start()], gap.group(0)]
             start = gap.end()
-    return [sentence for sentence in [*sentences, paragraph[start:]] if sentence]
+    return [*pieces, paragraph[start:]]
+
+
+def _sentences(paragraph: str) -> list[str]:
+    """The paragraph's sentences (see _sentence_pieces)."""
+    return [sentence for sentence in _sentence_pieces(paragraph)[0::2] if sentence]
 
 
 def cover_plain_problems(letter: CoverLetter, analysis: JDAnalysis | None = None) -> list[str]:
@@ -1835,20 +1860,25 @@ _PAIR_BODY = (rf"(?P<was>{_VALUE})(?!\.?\d)(?:\s?(?P<was_unit>{_UNIT})\b)?(?!\s?
 _PAIR_FROM = re.compile(rf"\bfrom\s+{_PAIR_BODY}", re.IGNORECASE)  # '(p95 from 820 to 648 ms)', '(down from ...)'
 _PAIR_IN_BRACKET = re.compile(rf"^\s*(?:[\w-]+:\s*)?(?:from\s+)?{_PAIR_BODY}", re.IGNORECASE)  # '(p95: 820 to 648 ms)'
 _PAIR_LABEL = r"(?:[A-Za-z]{1,6}\d{1,3}(?:\.\d)?|(?-i:[A-Z]{2,6}))"  # what a pair measures: p95, p99.9, MTTR
-# ', down from 41 to 32 s', ', p95 from 820 to 648 ms'
-_PAIR_AFTER = re.compile(rf"^,?\s*(?:(?:down|up|{_PAIR_LABEL})\s+)?from\s+{_PAIR_BODY}", re.IGNORECASE)
+# What may stand before 'from' in a base after a percentage: ', down from 41 to 32 s', ', p95 from 820 to 648 ms', a
+# label with one short noun or 'down' (', p95 latency from 847 to 669 ms', ', p95 down from ...')
+_FROM_LEAD = rf"(?:{_PAIR_LABEL}\s+(?:[a-z]{{1,15}}\s+)?)?(?:(?:down|up)\s+)?"
+_PAIR_AFTER = re.compile(rf"^,?\s*{_FROM_LEAD}from\s+{_PAIR_BODY}", re.IGNORECASE)
+_UNLABELLED_FROM = re.compile(r",?\s*(?:(?:down|up)\s+)?from\b", re.IGNORECASE)  # ', from', ', down from': no label
 _SAME_CLAUSE = r"(?!\b(?:and|but|while|then|whereas)\b)"  # 'from 41 to 32 minutes and drove a 30% drop': two claims
 _PAIR_BEFORE = re.compile(rf"\bfrom\s+{_PAIR_BODY}(?:{_SAME_CLAUSE}[^.;)%]){{0,25}}$", re.IGNORECASE)  # '..., a 22% drop'
 _BRACKET_AFTER = re.compile(r"^(?:\.\d|[^.;()%]){0,60}?\(([^()]*)\)")
 _LEVELS = re.compile(rf"(?:\bfrom\s+)?{_PCT}[^()]{{0,30}}?\bto\s+{_PCT}", re.IGNORECASE)  # '(from 3.1% to 3.2%)'
-_LEVELS_AFTER = re.compile(rf"^,?\s*from\s+{_PCT}[^()]{{0,30}}?\bto\s+{_PCT}", re.IGNORECASE)
+_LEVELS_AFTER = re.compile(rf"^,?\s*{_FROM_LEAD}from\s+{_PCT}[^()]{{0,30}}?\bto\s+{_PCT}", re.IGNORECASE)
 _LEVELS_BEFORE = re.compile(rf"\bfrom\s+{_PCT}[^()]{{0,30}}?\bto\s+{_PCT}(?:{_SAME_CLAUSE}[^.;)%]){{0,25}}$",
                             re.IGNORECASE)
 # An amount with its period is a base too: '(12 hours a week)', '(1,200 fewer alerts a month)', ', or 12 hours a week'
 _AMOUNT = (r"\d[\d,.]*\s*(?:[a-z%]+\s+){0,4}?(?:(?:a|per|each|every)\s+(?:day|week|month|quarter|year|sprint|release"
            r"|night|run)|fewer|more|less|saved)\b")
 _AMOUNT_IN_BRACKET = re.compile(_AMOUNT, re.IGNORECASE)
-_OR_AMOUNT_AFTER = re.compile(rf"^,?\s*or\s+{_AMOUNT}", re.IGNORECASE)
+# ... never a comparison: ', or 3 times more than the year before', ', or 2 points more than planned', ', or 4x more'
+_OR_AMOUNT_AFTER = re.compile(rf"^,?\s*or\s+(?!\d[\d,.]*\s*(?:x|times|points?|pts?)\b){_AMOUNT}(?!\s+than\b)",
+                              re.IGNORECASE)
 # A few words of the percentage's own clause before a base in words count, the way they do before a bracket: 'a 22%
 # reduction in queue time, from 41 to 32 seconds', 'by 17.8% across 41 services, or $41,300 a year'
 _WORDS_TO_COMMA = re.compile(rf"^(?:\.\d|,\d|{_SAME_CLAUSE}[^.;:()%,]){{1,60}}?(?=,\s)")
@@ -1882,6 +1912,7 @@ _GROWTH_WORDS = re.compile(r"\b(?:grow|grows|grew|grown|growing|growth|expand(?:
                            r"|rise|rises|rose|risen|rising|scal(?:e|es|ed|ing)|doubled|tripled|annually"
                            r"|year[\s-](?:over|on)[\s-]year|yoy)\b", re.IGNORECASE)
 _SPEED_UP = re.compile(r"\b(?:sped|speed(?:s|ing)?)\s+up\b|\baccelerat\w*", re.IGNORECASE)
+_FASTER = re.compile(r"\b(?:faster|quicker)\b", re.IGNORECASE)
 
 
 class _Base(NamedTuple):
@@ -1910,9 +1941,20 @@ def _change_percentages(sentence: str):
 
 
 def _years(pair: re.Match | None) -> bool:
-    """'from 2021 to 2023': a span of years, not a base; never '1,950 to 2,040' (a count)."""
+    """'from 2021 to 2023': a span of years, not a base; never '1,950 to 2,040' (a count). The comma a value can
+    take along ('from 2021 to 2023, with ...') is the sentence's, not the year's."""
     return pair is not None and not (pair.group("was_unit") or pair.group("now_unit")) and all(
-        re.fullmatch(r"(?:19|20)\d\d", pair.group(group)) for group in ("was", "now"))
+        _YEAR.fullmatch(pair.group(group).rstrip(",")) for group in ("was", "now"))
+
+
+def _pair_before(match: re.Match, before: str) -> re.Match | None:
+    """The pair right before a noun or adjective percentage ('from 41 to 32 seconds, a 22% drop'), or None. Never a
+    span of years, nor 'Consolidated Kafka clusters from 14 to 6, a 17.8% cost reduction': that pair counts clusters,
+    not costs."""
+    pair = _PAIR_BEFORE.search(before)
+    if pair and not _years(pair) and not (match.group("noun") and match.group("filler")):
+        return pair
+    return None
 
 
 def _attached_base(match: re.Match, before: str, after: str) -> _Base:
@@ -1931,12 +1973,19 @@ def _attached_base(match: re.Match, before: str, after: str) -> _Base:
     words = None if found else _WORDS_TO_COMMA.match(after)
     if words:
         found = _base_after(after, words.end())
+    noun = match.group("noun") or match.group("adj")
     if found:
+        # 'from 820 to 648 ms, a 21% drop, p99 from 1,900 to 1,200 ms': a pair after it that only a label or a few
+        # words lead to, and that disagrees, is another result; the agreeing pair right before it is its base
+        loose = words is not None or not _UNLABELLED_FROM.match(after, found.start)
+        if noun and found.pair and found.kind == "pair" and loose and _agrees(match, found.pair, before) is False:
+            pair = _pair_before(match, before)
+            if pair and _agrees(match, pair, before):
+                return _Base(True, pair, 0, "pair before")
         return found
-    if match.group("noun") or match.group("adj"):
-        pair = _PAIR_BEFORE.search(before)
-        # 'Consolidated Kafka clusters from 14 to 6, a 17.8% cost reduction': the pair counts clusters, not costs
-        if pair and not _years(pair) and not (match.group("noun") and match.group("filler")):
+    if noun:
+        pair = _pair_before(match, before)
+        if pair:
             return _Base(True, pair, 0, "pair before")
         if _MONEY_BEFORE.search(before):
             return _Base(True, None, 0, "money before")
@@ -2022,32 +2071,37 @@ def pair_change(pair: re.Match) -> float | None:
 
 def unbased_percentages(text: str, ignore: frozenset[str] = frozenset()) -> list[str]:
     """The percentages in a text that describe a change but have no base beside them ('cut costs by 23.4%').
-    `ignore`: figures that are not the candidate's (the company's own growth, quoted from the job post)."""
+    `ignore`: figures that are not the candidate's (the company's own growth, quoted from the job post), by value:
+    the post's '38.0%' is also '38%'."""
+    ignored = {_canonical(figure.rstrip("%")) for figure in ignore}
     found: list[str] = []
     for sentence in _SENTENCE_END.split(text):
         for match, base in _change_percentages(sentence):
-            figure = re.search(_PCT, match.group(0)).group(0).replace(" ", "")  # type: ignore[union-attr]
-            if figure not in ignore and not base.based:
+            if not base.based and _percent_of(match) not in ignored:
                 found.append(match.group(0))
     return found
 
 
-def _mismatch(sentence: str, match: re.Match, base: _Base) -> str | None:
-    """The base of one percentage when it does not agree with it ('from 41 to 38 seconds' for 'by 22%'), else None."""
-    values = pair_values(base.pair) if base.pair else None
+def _agrees(match: re.Match, pair: re.Match, before: str) -> bool | None:
+    """Whether the change from A to B is the percentage, give or take MAX_BASE_GAP points; None when A and B cannot
+    be compared. `before`: the text before the percentage, where 'sped up' makes it a change in speed."""
+    values = pair_values(pair)
     if values is None:
         return None
     was, now = values
     percent = float(re.search(_PCT, match.group(0)).group(0).replace(" ", "").replace(",", "")  # type: ignore[union-attr]
                     .rstrip("%"))
     changes = [abs(was - now) / was * 100]
-    speed = (re.search(r"\b(?:faster|quicker)\b", match.group(0), re.IGNORECASE)
-             or _SPEED_UP.search(sentence[: match.start()]))
-    if now > 0 and speed:
+    if now > 0 and (_FASTER.search(match.group(0)) or _SPEED_UP.search(before)):
         changes.append((was / now - 1) * 100)  # '140% faster (from 12 to 5 minutes)': 2.4 times the speed
-    if all(abs(change - percent) > MAX_BASE_GAP for change in changes):
-        return base.pair.group(0).strip(" ,")  # type: ignore[union-attr]  # 'from 41 to 38', not ', from 41 to 38'
-    return None
+    return any(abs(change - percent) <= MAX_BASE_GAP for change in changes)
+
+
+def _mismatch(sentence: str, match: re.Match, base: _Base) -> str | None:
+    """The base of one percentage when it does not agree with it ('from 41 to 38 seconds' for 'by 22%'), else None."""
+    if base.pair is None or _agrees(match, base.pair, sentence[: match.start()]) is not False:
+        return None
+    return base.pair.group(0).strip(" ,")  # 'from 41 to 38', not ', from 41 to 38'
 
 
 def base_mismatches(text: str) -> list[str]:
@@ -2086,31 +2140,47 @@ def base_mismatch_problems(resume: Resume, letter: CoverLetter | None = None) ->
 # ------------------------------------------------------------------ figures in varied shapes
 # The same "by 23.4% (from 47 to 36 minutes)" in every bullet reads as a template, a sign of AI-written text. The
 # prompt asks for a mix: about half of the results as the real numbers alone ('cut pipeline runtime from 47 to 36
-# minutes'), the others with their base in words ('by 41.2%, from 85 to 50'), a base in brackets at most once.
+# minutes'), the others with their base in words ('by 41.2%, from 97 to 57'), a base in brackets at most once.
 # vary_figures makes sure of it on every AI-written draft: models do not always follow a prompt, and the time limit
 # often skips the rewrite pass. Each figure keeps its context: only a percentage is ever dropped, and only where its
 # real numbers stay beside it.
 _ZERO_DECIMAL = re.compile(r"(?<![\d.,])(\d{1,3}(?:,\d{3})+|\d+)\.0+(?=\s?%)")  # '62.0%'; never '10.05%'
 _OWN_PERCENT = re.compile(r"(?<![\d,.])((?:\d{1,3}(?:,\d{3})+|\d+)(?:\.\d+)?)\s?(?:%|percent\b|per\s+cent\b)",
                           re.IGNORECASE)
+# ... and with a decimal comma, as much of Europe writes it: '41,2 %' is 41.2 ('1,200%' keeps its thousands)
+_OWN_PERCENT_COMMA = re.compile(r"(?<![\d,.])(\d+),(\d{1,2})(?!\d)\s?(?:%|percent\b|per\s+cent\b)", re.IGNORECASE)
 _FIGURE_VALUE = re.compile(r"(?<![\w.,])[$€£]?(\d[\d,]*(?:\.\d+)?)")
 _SENTENCE_GAP = re.compile(r"((?<=[.!?;])\s+)")  # where _SENTENCE_END splits, kept
 _BY_LEAD = re.compile(r"by\s+", re.IGNORECASE)
 _LEAD_WORDS = re.compile(r"[^\d$€£]*")  # the words that lead a base in: ', from', ', or', ' to'
 _FROM_CLAUSE = re.compile(r",?\s*(?=from\s)", re.IGNORECASE)  # ', from 85 to 50'
 _OR_CLAUSE = re.compile(r",?\s*or\s+", re.IGNORECASE)  # ', or $41,000 a year'
+_FROM_WORD = re.compile(r"\bfrom\b", re.IGNORECASE)
+_CLAUSE_MARK = re.compile(r"[,;:](?=\s)")  # where a clause starts or ends; never the comma of '2,513'
+_CLAUSE_REST = re.compile(r"(?:[.,]\d|[^,;:.!?()])*")  # to the end of a clause; '$41,300' and '1.2' stay whole
 _PAIR_LEAD = re.compile(rf"(?:from\s+)?{_PAIR_BODY}", re.IGNORECASE)  # 'from 47 to 36 minutes', '47 to 36 minutes'
 _LEVELS_LEAD = re.compile(rf"(?:from\s+)?(?P<first>{_PCT})[^()]{{0,30}}?\bto\s+{_PCT}", re.IGNORECASE)
 _LABELLED_PAIR = re.compile(rf"(?P<label>{_PAIR_LABEL})(?::\s*|\s+from\s+){_PAIR_BODY}", re.IGNORECASE)  # 'p95: ...'
-# An amount that reads well after 'by': '$24,000 a year', '12 hours a week'; never '1,200 fewer alerts a month'
-_PLAIN_AMOUNT = re.compile(r"[$€£]\s?\d|\d[\d,.]*\s*(?:(?!(?:fewer|more|less|saved)\b)[a-z%]+\s+){0,4}?(?:a|per|each"
-                           r"|every)\s+(?:day|week|month|quarter|year|sprint|release|night|run)\b", re.IGNORECASE)
-_AMOUNT_LEAD = re.compile(rf"[$€£]\s?\d|{_AMOUNT}", re.IGNORECASE)  # an amount 'or' leads in: '1,200 fewer alerts'
+# An amount that reads well after 'by': '12 hours a week'; never '1,200 fewer alerts a month'
+_PLAIN_AMOUNT = re.compile(r"\d[\d,.]*\s*(?:(?!(?:fewer|more|less|saved)\b)[a-z%]+\s+){0,4}?(?:a|per|each|every)\s+"
+                           r"(?:day|week|month|quarter|year|sprint|release|night|run)\b", re.IGNORECASE)
+# Money is the size of a change only as an amount with its period, and nothing else: '$24,000 a year', '£12K a
+# month', '$41,300 annually'. '$4.1M' alone may be the new level, '€1.2M budget' or '$2.36M against a $2M target'
+# is no change at all: those stay as they are
+_MONEY_AMOUNT = re.compile(
+    r"[$€£]\s?\d[\d,]*(?:\.\d+)?(?:\s?(?:[kmb]|mn|bn|million|billion)\b)?"
+    r"(?:\s+(?:(?:a|per|each|every)\s+(?:day|week|month|quarter|year|sprint|release|night|run)|annually|yearly"
+    r"|quarterly|monthly|weekly|daily)|\s?/\s?(?:day|wk|week|mo|month|qtr|quarter|yr|year))", re.IGNORECASE)
 _APPOSITION = re.compile(r",\s+(?:an?\s+)?$")  # ', a ' before '21% drop': the drop says the change once more
-# ... which can go when the sentence ends or goes on with its own clause: '..., a 21% drop, with Redis caching'
-_APPOSITION_END = re.compile(r"\s*(?:[,.;:!?)]|$)|\s+(?:for|with|by|across|after|while|through|using|via|so|and|when"
-                             r"|once|since)\b", re.IGNORECASE)
+# ... which can go when the sentence ends or goes on with its own clause: '..., a 21% drop, with Redis caching';
+# never when 'and' goes on with it ('a 22% drop and a 9-point rise in NPS')
+_APPOSITION_END = re.compile(r"\s*(?:,(?!\s*and\b)|[.;:!?)]|$)|\s+(?:for|with|by|across|after|while|through|using|via"
+                             r"|so|when|once|since)\b", re.IGNORECASE)
 _GOES_ON = re.compile(r"\s*[\w$€£]")  # the sentence goes on with a word after a clause: a comma closes it
+# A period after a bracket belongs to its base: '(from 97 to 57) a week', never 'a year later' or 'each quarter of'
+_PERIOD_PHRASE = re.compile(r"\s+(?:(?:a|per|each|every)\s+(?:day|week|month|quarter|year|sprint|release|night|run)"
+                            r"|annually|yearly|quarterly|monthly|weekly|daily)\b(?!-)"
+                            r"(?!\s+(?:later|ago|earlier|after|before|on|of)\b)", re.IGNORECASE)
 VARY_SENTENCE_LIMIT = 1200  # characters: a longer sentence is no resume sentence, and is left as it is
 VARY_FIGURES_LIMIT = 48  # percentages read per document: a resume holds far fewer, so odd text never takes long
 
@@ -2152,15 +2222,25 @@ def _shape(sentence: str, match: re.Match, base: _Base) -> tuple[str, str, str]:
     return head, base.kind, " ".join(_LEAD_WORDS.match(clause).group(0).split()).lower()  # type: ignore[union-attr]
 
 
+def _from_before(sentence: str, at: int) -> bool:
+    """The clause before `at` already says 'from' ('Grew traffic from organic search by 64%'): the real numbers alone
+    would read 'from ... from'. The clause starts after the last comma, semicolon or colon ('2,513' has none)."""
+    start = max((mark.end() for mark in _CLAUSE_MARK.finditer(sentence, 0, at)), default=0)
+    return _FROM_WORD.search(sentence, start, at) is not None
+
+
 def _real_numbers(sentence: str, match: re.Match, base: _Base) -> tuple[int, int, str] | None:
     """The edit that drops the percentage and keeps its real numbers, where that reads naturally, else None: 'by
     23.4% (from 47 to 36 minutes)' and 'by 23.4%, from 47 to 36 minutes' -> 'from 47 to 36 minutes', 'by 23.4% (47
     to 36 minutes)' -> 'from 47 to 36 minutes', 'by 18.2% ($24,000 a year)' and 'by 18.2%, or $24,000 a year' -> 'by
     $24,000 a year', 'from 820 to 648 ms, a 21% drop' -> 'from 820 to 648 ms'. Never for a span of years, a
-    labelled pair ('p95: 820 to 648 ms') or an amount that reads badly after 'by' ('1,200 fewer alerts a month')."""
+    labelled pair ('p95: 820 to 648 ms'), money that is no amount with its period ('$4.1M ARR', '€1.2M budget'), an
+    amount that reads badly after 'by' ('1,200 fewer alerts a month'), a clause that already says 'from', or a
+    percentage after money ('at £310K a year, 18% cheaper': the money may be a price or a level, not the change)."""
     if base.kind.endswith("before"):
         lead = _APPOSITION.search(sentence, max(0, match.start() - 8), match.start())
-        if (match.group("noun") or match.group("adj")) and lead and _APPOSITION_END.match(sentence, match.end()):
+        if (base.kind != "money before" and (match.group("noun") or match.group("adj")) and lead
+                and _APPOSITION_END.match(sentence, match.end())):
             return lead.start(), match.end(), ""
         return None
     by = _BY_LEAD.match(match.group(0))
@@ -2178,11 +2258,19 @@ def _real_numbers(sentence: str, match: re.Match, base: _Base) -> tuple[int, int
     else:
         return None  # ' to 11 minutes'
     pair = _PAIR_LEAD.match(content)
-    if pair and not _years(pair):
-        return match.start(), end, "from " + content[pair.start("was"):]
-    levels = _LEVELS_LEAD.match(content)
-    if levels:
-        return match.start(), end, "from " + content[levels.start("first"):]
+    pair = None if _years(pair) else pair
+    levels = None if pair else _LEVELS_LEAD.match(content)
+    if pair or levels:
+        if _from_before(sentence, match.start()):
+            return None
+        first = pair.start("was") if pair else levels.start("first")  # type: ignore[union-attr]
+        return match.start(), end, "from " + content[first:]
+    if content[:1] in "$€£":
+        if base.kind != "bracket":  # in words, the amount runs to the end of its clause: ', or $41,300 a year'
+            start = end - len(content)
+            content = _CLAUSE_REST.match(sentence, start).group(0).rstrip()  # type: ignore[union-attr]
+            end = start + len(content)
+        return (match.start() + by.end(), end, content) if _MONEY_AMOUNT.fullmatch(content) else None
     if _PLAIN_AMOUNT.match(content):
         return match.start() + by.end(), end, content
     return None
@@ -2191,7 +2279,8 @@ def _real_numbers(sentence: str, match: re.Match, base: _Base) -> tuple[int, int
 def _as_clause(content: str) -> str | None:
     """A bracket's base written as a clause after a comma, or None: 'from 47 to 36 minutes' for '47 to 36 minutes',
     'p95 from 820 to 648 ms' for 'p95: 820 to 648 ms', 'or $41,000 a year' and 'or 1,200 fewer alerts a month' for an
-    amount; a base that starts with a word keeps it ('saving $41,000 a year', 'down from 41 to 32 seconds')."""
+    amount; a base that starts with a word keeps it ('saving $41,000 a year', 'down from 41 to 32 seconds'). Money
+    gets 'or' only as an amount with its period: '$4.1M ARR' or '$2.36M against a $2M target' stays in its bracket."""
     pair = _PAIR_LEAD.match(content)
     if pair and not _years(pair):
         return "from " + content[pair.start("was"):]
@@ -2203,18 +2292,24 @@ def _as_clause(content: str) -> str | None:
         return f"{label.group('label')} from {content[label.start('was'):]}"
     if content[:1].isalpha():
         return content
-    return "or " + content if _AMOUNT_LEAD.match(content) else None
+    if content[:1] in "$€£":
+        return "or " + content if _MONEY_AMOUNT.fullmatch(content) else None
+    return "or " + content if _AMOUNT_IN_BRACKET.match(content) else None
 
 
 def _base_in_words(sentence: str, match: re.Match, base: _Base) -> tuple[int, int, str] | None:
     """The edit that writes a bracketed base as a clause, or None: '21% faster (from 14 to 11 minutes)' -> '21%
     faster, from 14 to 11 minutes'; 'by 37.2% (1,200 fewer alerts a month)' -> 'by 37.2%, or 1,200 fewer alerts a
-    month'. A comma also closes the clause when the sentence goes on with a word ('..., from 47 to 36 minutes, while
+    month'. A period right after the bracket joins the clause ('(from 97 to 57) a week' -> ', from 97 to 57 a
+    week'). A comma also closes the clause when the sentence goes on with a word ('..., from 47 to 36 minutes, while
     supporting 42 engineers'), never before a full stop, a comma, a semicolon or the end."""
     opening, end = match.end() + base.start, match.end() + base.used
     clause = _as_clause(sentence[opening + 1: end - 1].strip())
     if clause is None:
         return None
+    period = _PERIOD_PHRASE.match(sentence, end)
+    if period:
+        clause, end = f"{clause} {' '.join(period.group(0).split())}", period.end()
     start = len(sentence[:opening].rstrip())
     lead = " " if sentence[:start].endswith((",", ";", ":")) else ", "
     return start, end, lead + clause + ("," if _GOES_ON.match(sentence, end) else "")
@@ -2314,10 +2409,11 @@ def _varied(texts: list[str], allowed_text: str) -> list[str]:
     c) a bracket-free shape used before ('by 41.2%, from 85 to 50') is written as the real numbers alone where that
        reads naturally;
     d) a percentage in `allowed_text` (the hints and the computed facts) is the candidate's own: never dropped, and its
-       '.0' stays as written.
+       '.0' stays as written; '41,2 %' there is the 41.2% the draft writes.
     No number changes value, no value before or after and no amount is removed, every percentage keeps a base that
     agrees with it, and a second run changes nothing."""
-    written = {match.group(1) for match in _OWN_PERCENT.finditer(allowed_text)}
+    written = {match.group(1) for match in _OWN_PERCENT.finditer(allowed_text)} | {
+        f"{match.group(1)}.{match.group(2)}" for match in _OWN_PERCENT_COMMA.finditer(allowed_text)}
     state = _FigureShapes(own=frozenset(_canonical(number) for number in written))
     varied: list[str] = []
     for text in texts:
@@ -2346,9 +2442,13 @@ def vary_figures(resume: Resume, allowed_text: str = "") -> list[str]:
 
 def vary_letter_figures(letter: CoverLetter, allowed_text: str = "") -> list[str]:
     """The same for an AI-written cover letter, a document of its own: its first base in brackets stays, whatever
-    the resume holds. Changes the letter in place and returns the paragraphs that changed."""
+    the resume holds. Each of its sentences is one text, so its '-ing' clauses are counted per sentence, the way
+    cover_plain_problems reads a letter. Changes the letter in place and returns the paragraphs that changed."""
     paragraphs = list(letter.paragraphs)
-    letter.paragraphs = _varied(paragraphs, allowed_text)
+    pieces = [_sentence_pieces(paragraph) for paragraph in paragraphs]
+    varied = iter(_varied([sentence for parts in pieces for sentence in parts[0::2]], allowed_text))
+    letter.paragraphs = ["".join(next(varied) if index % 2 == 0 else part for index, part in enumerate(parts))
+                         for parts in pieces]
     return [new for old, new in zip(paragraphs, letter.paragraphs) if new != old]
 
 

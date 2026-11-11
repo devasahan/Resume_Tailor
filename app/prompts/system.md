@@ -54,7 +54,7 @@ BULLETS: follow each employer's `career_plan` entry, and write exactly the numbe
 {{metrics_rule}}
 
 ## Honesty
-- Do NOT invent client or product names, certifications, degrees or awards. The certifications you suggest with `candidate_index` -1 are shown to the candidate as ideas, never as theirs: each must be a real one, named as its issuer names it.
+- Do NOT invent client or product names, certifications, degrees or awards. The certifications you list with `candidate_index` -1 are never presented as the candidate's own: each must be a real one, named as its issuer names it.
 - If candidate hints are provided, treat them as true, use them first (including any real numbers in them), and let them override your assumptions about the candidate's history.
 - Everything you write is a draft the candidate will review: keep every claim believable for this career path, and cover the JD's must-have skills with the most plausible employer and a modest claim rather than leaving them out.
 

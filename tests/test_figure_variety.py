@@ -232,6 +232,126 @@ def test_a_percentage_loses_its_point_zero_unless_the_candidate_wrote_it():
         "Raised test coverage from 62.0% to 89% and kept uptime at 99%."]
 
 
+MONEY_NO_CHANGE = [  # a total, a budget, a level or a comparison: none is the size of the change
+    "Exceeded the FY23 sales quota by 18% ($2.36M against a $2M target) with 14 enterprise deals.",
+    "Grew the mid-market book of business by 31% ($4.1M ARR) through expansion plays.",
+    "Lowered freight spend by 11.3% (€1.2M budget) by tendering 14 lanes to regional carriers.",
+    "Beat the annual savings target by 12% (£1.12M vs £1M) through supplier consolidation.",
+    "Grew ARR by 24.3% ($12.4M) through usage-based pricing.",  # money alone may be the new level
+]
+
+
+@pytest.mark.parametrize("text", MONEY_NO_CHANGE)
+@pytest.mark.parametrize("before", [[FIRST], [FIRST, REAL]])  # its turn for the real numbers alone, then for words
+def test_money_that_is_no_amount_with_its_period_stays_in_its_bracket(before, text):
+    """'by $2.36M against a $2M target' or 'by 31%, or $4.1M ARR' would misstate the result."""
+    assert validate._varied([*before, text], "")[-1] == text
+
+
+@pytest.mark.parametrize("amount", ["$24,300 a year", "€41,300 per year", "£12K a month", "$41,300 annually"])
+def test_money_with_its_period_is_the_amount_of_the_change(amount):
+    text = f"Cut hosting costs by 18.2% ({amount}) with Spot instances."
+    assert validate._varied([FIRST, text], "")[1] == f"Cut hosting costs by {amount} with Spot instances."
+    assert validate._varied([FIRST, REAL, text], "")[2] == (
+        f"Cut hosting costs by 18.2%, or {amount}, with Spot instances.")
+
+
+def test_money_that_is_no_amount_stays_in_a_letter_and_in_words():
+    letter = CoverLetter(greeting="Dear Hiring Manager,", closing="Sincerely,", paragraphs=[
+        ("At Northwind Labs I grew the self-serve channel by 31% ($4.1M ARR) and exceeded my FY21 quota by 18% "
+         "($2.36M against a $2M target)."), "I would welcome a conversation about the revenue team."])
+    assert validate.vary_letter_figures(letter) == []
+    given = ["Reduced cloud spend by 17.8%, or $41,300 a year.",
+             "Grew the partner book by 31%, or $4.1M ARR, through expansion plays."]  # the same shape twice
+    assert validate._varied(given, "") == given
+
+
+@pytest.mark.parametrize("given", [
+    ["Closed $2.4M in new ARR in FY24, a 38% increase over FY23.",
+     "Grew the partner channel to $900K in annual bookings, a 45% increase, with co-selling playbooks."],
+    ["Moved logs to S3 Glacier at $12K a year, 64% cheaper.",
+     "Renegotiated the courier contract at £310K a year, 18% cheaper."],
+])
+def test_a_percentage_after_money_is_never_dropped(given):
+    """The money may be a level or a price ('to $900K', 'at £310K a year'), not the change: without its percentage
+    the bullet would state no result at all."""
+    assert validate._varied(given, "") == given
+
+
+@pytest.mark.parametrize("text", [
+    "Cut queue time from 41 to 32 seconds, a 22% drop and a 9-point rise in NPS.",
+    "Shortened the close from 9 to 6 days, a 33.3% drop and the shortest in the group.",
+    "Cut checkout time from 95 to 71 seconds, a 25.3% drop, and the fastest in the company.",
+])
+def test_an_apposition_that_and_goes_on_with_is_never_dropped(text):
+    """'Cut queue time from 41 to 32 seconds and a 9-point rise in NPS' would say the NPS rise was cut."""
+    given = ["Brought p95 latency from 847 to 669ms, a 21% drop, with Redis caching.", text]
+    assert validate._varied(given, "") == given
+
+
+def test_a_clause_that_already_says_from_gets_its_base_in_words():
+    """The real numbers alone would read 'from organic search from 2,513 to 4,121'."""
+    text = "Grew traffic from organic search by 64% (from 2,513 to 4,121 visits a month) with an SEO hub."
+    assert validate._varied([FIRST, text], "")[1] == (
+        "Grew traffic from organic search by 64%, from 2,513 to 4,121 visits a month, with an SEO hub.")
+    text = "Grew sign-ups from organic search for 1,213 stores by 64% (from 2,513 to 4,121 a month) with an SEO hub."
+    assert validate._varied([FIRST, text], "")[1] == (  # the comma of '1,213' starts no clause
+        "Grew sign-ups from organic search for 1,213 stores by 64%, from 2,513 to 4,121 a month, with an SEO hub.")
+    given = ["Cut weekly support tickets by 41.2%, from 97 to 57.",
+             "Grew traffic from organic search by 64.1%, from 2,513 to 4,121 visits a month."]  # the same shape twice
+    assert validate._varied(given, "") == given
+
+
+@pytest.mark.parametrize("hints", ["Cut support tickets by 41,2 % at Contoso (my own number).",
+                                   "Cut support tickets by 41,2% at Contoso."])
+def test_the_candidates_percentage_with_a_decimal_comma_is_never_dropped(hints):
+    assert validate._varied([FIRST, REAL], hints)[1] == (
+        "Cut support tickets by 41.2%, from 85 to 50 weekly, with a help center.")
+    # a comma before three digits stays a thousands separator: 4,120% is not the draft's 4.12%
+    given = [FIRST, "Cut support tickets by 4.12% (from 97 to 93 weekly) with a help center."]
+    assert validate._varied(given, "Grew sign-ups by 4,120% in 2021.")[1] == (
+        "Cut support tickets from 97 to 93 weekly with a help center.")
+
+
+@pytest.mark.parametrize("period", ["per week", "a week", "each month"])
+def test_a_period_after_the_bracket_stays_with_its_base(period):
+    text = f"Reduced inbound tickets by 41.2% (from 97 to 57) {period} with a chatbot."
+    assert validate._varied([FIRST, REAL, text], "")[2] == (
+        f"Reduced inbound tickets by 41.2%, from 97 to 57 {period}, with a chatbot.")
+    assert validate._varied([FIRST, text], "")[1] == f"Reduced inbound tickets from 97 to 57 {period} with a chatbot."
+    for words in ("a year later", "each quarter of 2023"):  # no period of the base
+        later = f"Reduced inbound tickets by 41.2% (from 97 to 57) {words} with a chatbot."
+        assert validate._varied([FIRST, REAL, later], "")[2] == (
+            f"Reduced inbound tickets by 41.2%, from 97 to 57, {words} with a chatbot.")
+
+
+@pytest.mark.parametrize("given,expected", [
+    ("Raised 90-day retention by 22.6% (up from 31% to 38%) with lifecycle emails.",
+     "Raised 90-day retention by 22.6%, up from 31% to 38%, with lifecycle emails."),
+    ("Cut API latency by 21% (p95 latency from 847 to 669 ms) with Redis caching.",
+     "Cut API latency by 21%, p95 latency from 847 to 669 ms, with Redis caching."),
+])
+def test_a_labelled_or_up_and_down_base_is_written_in_words(given, expected):
+    assert validate._varied([FIRST, given], "") == [FIRST, expected]
+
+
+def test_a_letters_ing_clauses_are_counted_per_sentence():
+    """As cover_plain_problems reads a letter: two '-ing' clauses in the sentence before do not keep a second base
+    in brackets; in one sentence joined by ';' a third would be a chain, so that bracket stays."""
+    first = ("At Northwind Labs I cut deployment time by 23.4% (from 47 to 36 minutes), working with 9 product teams, "
+             "and coaching 4 new engineers")
+    later = "later I reduced EC2 spend by 17.8% (freeing 12 hours a week) with Spot instances."
+    letter = CoverLetter(greeting="Dear Hiring Manager,", closing="Sincerely,",
+                         paragraphs=[f"{first}. {later[0].upper()}{later[1:]}", "Thank you for your time."])
+    validate.vary_letter_figures(letter)
+    assert letter.paragraphs[0] == (
+        f"{first}. Later I reduced EC2 spend by 17.8%, freeing 12 hours a week, with Spot instances.")
+    assert bracketed(letter.paragraphs) == 1 and validate.cover_plain_problems(letter) == []
+    joined = CoverLetter(greeting="Dear Hiring Manager,", closing="Sincerely,",
+                         paragraphs=[f"{first}; {later}", "Thank you for your time."])
+    assert validate.vary_letter_figures(joined) == []
+
+
 def test_a_cover_letter_keeps_its_own_first_bracket_whatever_the_resume_holds(profile):
     resume = resume_with(profile, *EXAMPLE)
     validate.vary_figures(resume)
@@ -259,9 +379,12 @@ def test_a_cover_letter_keeps_its_own_first_bracket_whatever_the_resume_holds(pr
     "Cut API latency by 21%, p95 from 820 to 648 ms, with Redis caching.",
     "Cut MTTR by 31.7%, MTTR from 41 to 28 minutes.",
     "Reduced cloud spend by 17.8%, or €41,300 a year.",
-    "Cut weekly support tickets by 41.2%, from 85 to 50.",  # the prompt's own examples
-    "Brought p95 latency from 820 to 648ms, a 21% drop.",
+    "Cut weekly support tickets by 41.2%, from 97 to 57.",  # the prompt's own examples
+    "Brought p95 latency from 847 to 669ms, a 21% drop.",
     "Reduced cloud spend by 17.8%, or $41,000 a year.",
+    "Cut API latency by 21%, p95 latency from 847 to 669 ms.",  # a label with a noun, or with 'down'
+    "Cut API latency by 21%, p95 down from 847 to 669 ms.",
+    "Cut monthly churn by 12.2%, down from 4.1% to 3.6%, with a save flow.",
 ])
 def test_the_validator_accepts_every_shape_the_fixer_writes_and_the_prompt_teaches(text):
     assert validate.unbased_percentages(text) == [] and validate.base_mismatches(text) == []
@@ -274,15 +397,58 @@ def test_the_validator_accepts_every_shape_the_fixer_writes_and_the_prompt_teach
     ("Grew ARR by 31.7% in EMEA, from 2021 to 2023.", ["by 31.7%"]),
     ("Cut false alerts by 37.2%, or more.", ["by 37.2%"]),
     ("Cut costs by 17.8% for clients, apart from 3 to 4 vendors.", ["by 17.8%"]),
+    # a span of years is no base, with a comma after it too
+    ("Grew ARR by 31.7% in EMEA, from 2021 to 2023, with 3 new channel partners.", ["by 31.7%"]),
+    ("Grew enterprise ARR by 31.7% as Head of Sales, from 2021 to 2023, by adding usage-based pricing.", ["by 31.7%"]),
+    ("Grew enterprise ARR by 31.7% from 2021 to 2023, by adding usage-based pricing.", ["by 31.7%"]),
+    # a comparison is no base
+    ("Lifted trial-to-paid conversion by 12.9%, or 3 times more than the 2022 campaign.", ["by 12.9%"]),
+    ("Raised retention by 21% for SMB accounts, or 2 points more than the target.", ["by 21%"]),
+    ("Raised retention by 21%, or 4x more than the previous quarter.", ["by 21%"]),
+    ("Raised retention by 21%, or 2 more than planned.", ["by 21%"]),
 ])
 def test_a_bare_percentage_is_still_found(text, found):
     assert validate.unbased_percentages(text) == found
+    assert validate.base_mismatches(text) == []  # never a false 'does not match its base', which costs a fix round
+
+
+def test_a_span_of_years_in_a_later_bracket_is_left_alone():
+    text = "Grew enterprise ARR by 31.7% (from 2021 to 2023, EMEA) with usage-based pricing."
+    assert validate._varied([FIRST, text], "") == [FIRST, text]
 
 
 def test_a_base_in_words_must_still_agree():
     assert validate.base_mismatches("Delivered a 22% reduction in queue time, from 41 to 38 seconds.") == [
         "from 41 to 38 seconds"]
     assert validate.base_mismatches("Cut queue time by 22%, from 41 to 38 seconds.") == ["from 41 to 38 seconds"]
+    assert validate.base_mismatches("Cut API latency by 21%, p95 latency from 820 to 701 ms.") == [
+        "p95 latency from 820 to 701 ms"]
+
+
+@pytest.mark.parametrize("text", [
+    "Cut p95 latency from 820 to 648 ms, a 21% drop, p99 from 1,900 to 1,200 ms.",
+    ("Cut hosting costs from $24.1K to $19.7K a month, an 18.3% drop after moving to spot instances, from 14 to 6 "
+     "clusters."),
+    "Cut matchmaking queue time from 41 to 32 seconds, a 22% drop for 83K players, from 2,100 to 2,600 matches a day.",
+    "Consolidated Kafka from 14 to 6 clusters, a 22% drop in queue time, from 41 to 32 seconds.",
+])
+def test_a_second_result_after_a_percentage_is_not_taken_for_its_base(text):
+    """A noun or adjective percentage whose pair after it (after a label or a few words) disagrees takes the agreeing
+    pair right before it."""
+    assert validate.unbased_percentages(text) == validate.base_mismatches(text) == []
+
+
+def test_a_percentage_that_agrees_with_neither_pair_is_still_reported():
+    assert validate.base_mismatches("Cut p95 latency from 820 to 701 ms, a 21% drop, p99 from 1,900 to 1,200 ms.") == [
+        "p99 from 1,900 to 1,200 ms"]
+
+
+def test_the_posts_own_figure_is_the_posts_with_or_without_its_point_zero(profile):
+    resume = validate.build_resume(profile, make_output())
+    letter = CoverLetter(greeting="Dear Hiring Manager,", closing="Sincerely,", paragraphs=[
+        "I was glad to read about your 38% revenue growth year over year.", "I would like to talk."])
+    jd = SAMPLE_JD + " Our platform grew revenue 38.0% year over year, and we are hiring to keep up."
+    assert validate.unbased_percentage_problems(resume, letter, jd) == []
 
 
 # ------------------------------------------------------------------ what the model and the person are told
@@ -293,13 +459,26 @@ def test_the_prompts_teach_varied_shapes_not_brackets():
     assert "give only the real numbers" in estimate and "Never give two figures the same shape" in estimate
     assert "put a base in brackets at most once in the whole resume" in estimate and 'never ".0"' in estimate
     for example in ("cut pipeline runtime from 47 to 36 minutes", "saving $41,000 a year in cloud spend",
-                    "freeing 12 hours a week for 38 analysts", "cut weekly support tickets by 41.2%, from 85 to 50",
-                    "brought p95 latency from 820 to 648ms, a 21% drop", "reduced cloud spend by 17.8%, or $41,000 a year",
+                    "freeing 12 hours a week for 38 analysts", "cut weekly support tickets by 41.2%, from 97 to 57",
+                    "brought p95 latency from 847 to 669ms, a 21% drop",
+                    "reduced cloud spend by 17.8%, or $41,000 a year",
                     "83K concurrent players in Java on AWS, cutting queue-to-lobby time from 41 to 32 seconds"):
         assert example in estimate
     assert "about 2 of every 5 bullets" in estimate and "never use numbers ending in 0 or 5" in estimate  # still there
-    assert '"by 18%, or $40K a year"' in words
+    assert '"by 18%, or $41K a year"' in words
     assert "in brackets at most once in the letter" in letter and "as the real numbers alone" in letter
+
+
+@pytest.mark.parametrize("mode", ["estimate", "hints_only"])
+def test_the_prompts_examples_follow_its_own_figure_rules(mode):
+    """A model copies the examples it is shown: none may end in 0 or 5 ('from 85 to 50' would cost a fix round for
+    round figures) or have a base that disagrees with its percentage."""
+    rule = next(line for line in tailor_system(mode).splitlines() if line.startswith("METRICS:"))
+    examples = [example for example in re.findall(r'"([^"]*)"', rule) if re.search(r"\d", example)]
+    assert len(examples) >= (12 if mode == "estimate" else 1)
+    for example in examples:
+        assert [figure for figure in validate._numbers_in(example) if validate.is_round_figure(figure)] == [], example
+        assert validate.base_mismatches(example) == [], example
 
 
 class Rewrites(LLMClient):
@@ -426,6 +605,44 @@ def test_an_ai_written_cover_letter_is_varied(router, db, registry, profile):
     result = run(router, db, profile, cover_letter=True)
     assert result.cover_letter.paragraphs == [
         letter[0], "At Contoso Systems I cut support tickets from 85 to 50 a week with a help center.", letter[2]]
+
+
+@pytest.mark.parametrize("hints", ["At Contoso Systems I cut weekly support tickets by 41.2%.",
+                                   "At Contoso Systems I cut weekly support tickets by 41,2 %."])
+def test_a_run_keeps_the_candidates_own_figure_in_the_resume_and_the_letter(router, db, registry, profile, hints):
+    """The hints reach both fixers: a later bracket holding the candidate's own 41.2% gets its base in words, never
+    the real numbers alone."""
+    bullet = ("Built the self-serve help center for 4.6K merchants, cutting weekly support tickets by 41.2% (from 97 "
+              "to 57) within two quarters.")
+    letter = ["At Northwind Labs I cut nightly runtime by 23.4% (from 47 to 36 minutes) by moving jobs to Spark.",
+              "At Contoso Systems I cut weekly support tickets by 41.2% (from 97 to 57) with a help center.",
+              "I would welcome a conversation about the data platform team."]
+    router.overrides["demo-concise"] = Rewrites(FakeClient(registry.get("demo-concise")), first={0: FIRST, 1: bullet},
+                                                letter=letter)
+    result = run(router, db, profile, hints=hints, cover_letter=True)
+    assert result.status == "ok" and result.resume.experience[1].bullets[0] == (
+        "Built the self-serve help center for 4.6K merchants, cutting weekly support tickets by 41.2%, from 97 to 57, "
+        "within two quarters.")
+    assert result.cover_letter.paragraphs[1] == (
+        "At Contoso Systems I cut weekly support tickets by 41.2%, from 97 to 57, with a help center.")
+
+
+def test_a_letter_quoting_the_posts_figure_keeps_it_as_written(router, db, registry, profile):
+    jd = SAMPLE_JD + " Our platform grew revenue 38.0% year over year, and we are hiring to keep up."
+    letter = [("I was glad to read about your 38.0% revenue growth year over year, and I would like to help the data "
+               "platform keep up with it."),
+              "At Northwind Labs I cut nightly runtime from 47 to 36 minutes by moving jobs to Spark.",
+              "I would welcome a conversation about the data platform team."]
+    router.overrides["demo-concise"] = Rewrites(FakeClient(registry.get("demo-concise")), letter=letter)
+    result = run(router, db, profile, jd=jd, cover_letter=True)
+    assert result.status == "ok" and result.cover_letter.paragraphs[0] == letter[0]
+    assert not [w for w in result.ats_warnings if w.startswith("Percentages without their base")]
+
+
+@pytest.mark.parametrize("jobs", [2, 3, 4])
+def test_the_demos_detailed_bullets_stay_short_enough(router, db, jobs):
+    result = run(router, db, career(jobs), model="demo-detailed")
+    assert result.status == "ok" and not [w for w in result.ats_warnings if "words long" in w]
 
 
 def test_text_the_person_edits_is_kept_as_typed(client):

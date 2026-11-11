@@ -126,8 +126,8 @@ DETAILED = [
      "Migrate legacy {k1} jobs to a versioned, documented setup, running both side by side with the owning teams until every output matches, so each cut-over causes no downtime or data loss."),
     ("Streamlined recurring {k3} reporting by replacing manual spreadsheet hand-offs with a shared automated pipeline and clear ownership, so managers saw current numbers every morning instead of stale weekly exports.",
      "Streamline recurring {k3} reporting by replacing manual spreadsheet hand-offs with a shared automated pipeline and clear ownership, so managers see current numbers every morning instead of stale weekly exports."),
-    ("Cut release lead time from 47 to 36 days, a 23.4% drop, by redesigning {k1} workflows across several teams, aligning technical decisions with business goals, documenting trade-offs for stakeholders, and keeping every release predictable and well tested.",
-     "Cut release lead time from 47 to 36 days, a 23.4% drop, by redesigning {k1} workflows across several teams, aligning technical decisions with business goals, documenting trade-offs for stakeholders, and keeping every release predictable and well tested."),
+    ("Cut release lead time from 47 to 36 days, a 23.4% drop, by redesigning {k1} workflows across teams, aligning technical decisions with business goals, documenting trade-offs for stakeholders, and keeping every release predictable and well tested.",
+     "Cut release lead time from 47 to 36 days, a 23.4% drop, by redesigning {k1} workflows across teams, aligning technical decisions with business goals, documenting trade-offs for stakeholders, and keeping every release predictable and well tested."),
     ("Owned the day-to-day execution of {k2} initiatives from intake to hand-off, coordinating with product, operations and customer-facing teams, tracking risks openly, and communicating status in plain language to leadership.",
      "Own the day-to-day execution of {k2} initiatives from intake to hand-off, coordinating with product, operations and customer-facing teams, tracking risks openly, and communicating status in plain language to leadership."),
     ("Partnered with stakeholders to translate ambiguous requirements into clear {k3} deliverables, validating assumptions early, agreeing on acceptance criteria, and reducing late changes during delivery.",
@@ -351,7 +351,8 @@ class FakeClient(LLMClient):
                 "keywords": keywords,
                 "key_responsibilities": ["Deliver reliable work", "Collaborate across teams", "Communicate progress clearly"],
             },
-            # none while the Certifications section is off (Settings), as a real model is told
+            # none while the Certifications section is off (Settings): a real model then lists only the job post's
+            # own certifications, which are never printed and only keep their names out of the resume
             "certifications": (demo_certifications(jd, ctx.get("profile", {}).get("certifications", []) or [])
                                if ctx.get("certifications_section", True) else []),
             "career_plan": [  # recent jobs show more of the JD, with more scope

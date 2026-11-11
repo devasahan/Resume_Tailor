@@ -198,7 +198,8 @@ DEFAULT_SETTINGS: dict = {
     # they can finish in time (they are stopped at the limit). 0 = no limit: always run them (best quality, slower).
     "resume_time_limit_s": 30,
     # On: for each job the AI picks the best 4 of the person's own certifications, printed after Education. Off: no
-    # Certifications section and no picks; the lists saved on the Profile page stay as they are, for later.
+    # Certifications section and no rows to tick (the AI lists only the job post's own certifications, never printed,
+    # so their names stay out of the text); the lists saved on the Profile page stay as they are, for later.
     "certifications_section": False,
 }
 

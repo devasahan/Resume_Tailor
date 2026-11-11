@@ -26,6 +26,8 @@
 let resumes = [];
 let busy = false;
 const queue = [];
+// Settings > Certifications section, from the server: true while the saved certifications are printed on resumes
+const CERTIFICATIONS_ON = {{ certifications_on | tojson }};
 
 function when(iso) {
   const date = new Date(iso);
@@ -65,7 +67,21 @@ function certDates(c) {
   return c.year && c.expires ? `${c.year} - ${c.expires}` : c.year || (c.expires ? `Expires ${c.expires}` : '');
 }
 
-// The certifications this person has passed: for each job the best ones that fit (up to 4) are printed.
+// Whether this list is printed now. Only the admin can open Settings: a user is told that their administrator decides.
+function switchNote() {
+  if (!ME.admin) {
+    return el('p', { class: 'small muted', text: CERTIFICATIONS_ON
+      ? 'This list is printed only while your administrator keeps the Certifications section switched on.'
+      : 'The Certifications section is switched off, so this list is not printed on resumes for now: it is kept here for later. Your administrator can switch it on.' });
+  }
+  return CERTIFICATIONS_ON
+    ? el('p', { class: 'small muted', text: 'This list is printed only when the Certifications section is switched on in Settings.' })
+    : el('p', { class: 'small muted' }, 'The Certifications section is switched off, so this list is not printed on resumes for now: it is kept here for later. ',
+      el('a', { href: '/settings', text: 'Switch it on in Settings' }), '.');
+}
+
+// The certifications this person has passed. While the Certifications section is on, the best ones that fit each job
+// (up to 4) are printed; while it is off, the list is only kept here for later.
 function certificationsBox(r) {
   let certs = r.profile.certifications || [];  // as shown: the save is refused if it changed since (another tab)
   const box = el('textarea', { rows: Math.min(12, Math.max(4, certs.length + 1)), maxlength: 20000, spellcheck: 'false',
@@ -92,14 +108,17 @@ function certificationsBox(r) {
       showExpired(saved, data.resume.expired || []);
       box.rows = Math.min(12, Math.max(4, saved.length + 1));
       summary.textContent = `Certifications you have passed (${saved.length})`;
-      status.textContent = `Saved ${saved.length}. Your next resumes use the best of them for each job.`;
+      status.textContent = CERTIFICATIONS_ON ? `Saved ${saved.length}. Your next resumes use the best of them for each job.`
+        : `Saved ${saved.length}. The Certifications section is switched off, so they are kept here for later.`;
     } catch (err) { status.textContent = err.message; }
     finally { save.disabled = false; }
   });
   const summary = el('summary', { text: `Certifications you have passed (${certs.length})` });
   return el('details', { class: 'cert-list', 'data-resume': r.id }, summary,
-    el('p', { class: 'small muted', text: 'Paste the certifications this person has passed, one per line: name | issuer | date earned - date it expires (rows copied from a table work too). For each job, the best ones that fit, up to 4, are put on the resume automatically, after Education, with their dates. An expired one is never printed. List only exams that were really passed: employers check them.' }),
-    el('p', { class: 'small muted', text: 'This list is printed only when the Certifications section is switched on in Settings.' }),
+    el('p', { class: 'small muted', text: 'Paste the certifications this person has passed, one per line: name | issuer | date earned - date it expires (rows copied from a table work too). '
+      + (CERTIFICATIONS_ON ? 'For each job, the best ones that fit, up to 4, are put on the resume automatically, after Education, with their dates. ' : '')
+      + 'An expired one is never printed. List only exams that were really passed: employers check them.' }),
+    switchNote(),
     box, expiredNote, el('div', { class: 'row' }, save, status));
 }
 

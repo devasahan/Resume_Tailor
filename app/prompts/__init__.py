@@ -19,7 +19,7 @@ from ..pipeline.facts import (
 )
 from ..schemas import CareerStep, Certification, Company, JDAnalysis, Resume
 
-PROMPT_VERSION = "v33"
+PROMPT_VERSION = "v34"
 RETRY_MARKER = "Your previous answer was rejected"
 
 _DIR = Path(__file__).parent
@@ -117,7 +117,8 @@ def _spelling_rule(spelling: str) -> str:
 
 
 def tailor_system(metrics_mode: str = "estimate", spelling: str = "us", certifications_section: bool = True) -> str:
-    """`certifications_section` False (Settings): the CERTIFICATIONS rule is one line, return none and name none."""
+    """`certifications_section` False (Settings): the CERTIFICATIONS rule is one line: list only the job post's own
+    certifications (never printed, they only keep those names out of the text) and name none in the resume."""
     if metrics_mode not in METRICS_MODES:
         raise ValueError(f"metrics_mode must be one of {METRICS_MODES}")
     rule = "certifications_on.md" if certifications_section else "certifications_off.md"

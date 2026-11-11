@@ -705,7 +705,10 @@ def create_app(db: Database | None = None, registry: Registry | None = None, rou
 
     @app.get("/profile")
     def profile_page(request: Request):
-        return page(request, "profile.html", "profile")
+        # Settings > Certifications section, as a boolean only (read as run_tailor reads it): the page says whether the
+        # saved lists are printed now
+        on = bool(db.get_settings().get("certifications_section", False))
+        return page(request, "profile.html", "profile", certifications_on=on)
 
     @app.get("/tailor")
     def tailor_page(request: Request):
