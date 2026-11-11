@@ -176,7 +176,7 @@ def test_page_breaks_never_split_a_bullet_or_leave_a_job_title_alone(profile, se
     for page in range(1, pages):
         bottom_y = max(y for p, y, _x, _t in drawn if p == page)
         bottom = [t for p, y, _x, t in drawn if p == page and y == bottom_y]
-        assert not any(t.startswith("Data Engineer") or t in ("SUMMARY", "SKILLS", "EXPERIENCE", "EDUCATION")
+        assert not any(t.startswith("Data Engineer") or t in ("SUMMARY", "SKILLS", "EXPERIENCE", "EDUCATION", "CERTIFICATIONS")
                        for t in bottom), bottom
         top_y = min(y for p, y, _x, _t in drawn if p == page + 1)
         top = [(x, t) for p, y, x, t in drawn if p == page + 1 and y == top_y]

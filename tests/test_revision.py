@@ -87,7 +87,7 @@ def test_the_fix_prompt_shares_the_first_prompts_opening(profile, first, jd):
                          analysis=out.jd_analysis, plan=out.career_plan, draft=draft_text(draft),
                          problems="Too many bullets carry numbers.")
     opening = tailor_user(jd, profile.companies, "", "Total professional experience: 7 years.")
-    head = opening[: opening.index("</candidate_hints>") + len("</candidate_hints>")]
+    head = opening[: opening.index("</candidate_certifications>") + len("</candidate_certifications>")]
     assert prompt.startswith(head)  # the provider can reuse its cache of this part
     assert f"{RETRY_MARKER}: Too many bullets carry numbers." in prompt and "<previous_draft>" in prompt
     assert "Must-have skills: Python, SQL" in prompt and "bullet_index" in prompt and "[0] Built things a" in prompt

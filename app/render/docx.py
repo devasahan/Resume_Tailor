@@ -15,6 +15,7 @@ from ..schemas import CoverLetter, FitStyle, Resume
 from .pdf import (
     HEADER_GAP,
     Run,
+    certification_runs,
     contact_line,
     fmt_dates,
     headline_size,
@@ -146,6 +147,11 @@ def resume_docx(resume: Resume, style: FitStyle, document: str = "Resume") -> by
             row.paragraph_format.keep_with_next = bool(edu.details)
             if edu.details:
                 doc.add_paragraph(edu.details)
+
+    if resume.certifications:  # only ones the person has, best for the job first
+        _heading(doc, "CERTIFICATIONS", style.font_pt)
+        for cert in resume.certifications:
+            _row(doc, certification_runs(cert), cert.year, text_width)
 
     buffer = BytesIO()
     doc.save(buffer)

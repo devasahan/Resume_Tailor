@@ -58,6 +58,12 @@
         <div class="metrics" id="chips"></div>
       </div>
       <div class="downloads" id="downloads"></div>
+      <div id="cert-note"></div>
+      <div class="certs hidden" id="certs">
+        <h3 class="certs-title">Certifications for this job</h3>
+        <p class="small muted">The AI picked the best certifications for this job. Tick the ones you have: only ticked ones are on your resume, and they are remembered for your next jobs with this resume.</p>
+        <div class="cert-rows" id="cert-rows"></div>
+      </div>
       <div class="preview-bar hidden" id="toggles">
         <div class="tabs" role="group" aria-label="Preview">
           <button id="show-resume" type="button">Resume</button>
@@ -86,7 +92,7 @@ function chosenId() { return Number($('#resume').value) || null; }
 function busy(on, text = '') {
   working = on;
   for (const button of [$('#create'), $('#resume-only'), $('#add-cover'), $('#rewrite-cover'), $('#spell-us'),
-    $('#spell-eu')]) {
+    $('#spell-eu'), ...$$('#cert-rows input')]) {
     if (button) button.disabled = on || !resumes.length;
   }
   if ($('#status').textContent !== text) $('#status').textContent = text;  // a live region: only real changes are read out
@@ -148,7 +154,45 @@ function showResult(run, view = 'resume') {
         : el('button', { class: 'outline', id: 'add-cover', type: 'button', disabled: working, onclick: () => create(true, true) },
           el('span', { class: 'icon i-plus', 'aria-hidden': 'true' }), 'Add cover letter'));
   $('#toggles').classList.toggle('hidden', !run.cover_letter);
+  showCertifications(run);
   preview(run.cover_letter ? view : 'resume');
+}
+
+// The AI's picks for this job, each with an "I have it" tick: only ticked ones are printed on the resume.
+function showCertifications(run) {
+  const rows = run.certifications || [];
+  $('#certs').classList.toggle('hidden', !rows.length);
+  $('#cert-rows').replaceChildren(...rows.map((c, i) => {
+    const box = el('input', { type: 'checkbox', id: `cert-${i}`, checked: c.have, disabled: working });
+    box.addEventListener('change', () => tickCertification(run.run_id));
+    const more = [c.issuer, c.year].filter(Boolean).join(' · ');
+    return el('label', { class: 'cert', for: `cert-${i}` }, box,
+      el('span', { class: 'cert-have', text: 'I have it' }),
+      el('span', { class: 'cert-name' }, el('strong', { text: c.name }),
+        more ? el('span', { class: 'muted', text: ' · ' + more }) : null));
+  }));
+}
+
+async function tickCertification(runId) {
+  if (working || !current || current.run.run_id !== runId) return;
+  const have = $$('#cert-rows input').map(box => box.checked);
+  $('#cert-note').replaceChildren();
+  busy(true, 'Updating your resume…');
+  try {
+    const run = await api(`/api/runs/${runId}/certifications`, { method: 'PUT', body: { have } });
+    busy(false, 'Your resume is updated.');
+    if (current && current.run.run_id === runId) {  // a newer resume on the page wins
+      current.run = run;
+      showResult(current.run, 'resume');
+      if (run.message) $('#cert-note').replaceChildren(notice('warn', run.message));
+    }
+  } catch (err) {
+    busy(false);
+    if (current && current.run.run_id === runId) {
+      showCertifications(current.run);  // the ticks as they really are
+      $('#cert-note').replaceChildren(notice('bad', err.message));
+    }
+  }
 }
 
 function preview(view) {
@@ -173,6 +217,7 @@ function stillWorking(waited, error) {  // the slow-service note only once the w
 
 function clearResult() {  // no usable result: do not leave the previous one's downloads on screen
   current = null;
+  $('#cert-note').replaceChildren();
   $('#result').classList.add('hidden'); $('#empty').classList.remove('hidden');
 }
 

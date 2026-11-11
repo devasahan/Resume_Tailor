@@ -268,7 +268,7 @@ def test_the_career_plan_is_written_before_the_sections():
     from app.schemas import TailorOutput
 
     schema = strict_json_schema(TailorOutput)
-    assert list(schema["properties"]) == ["jd_analysis", "career_plan", "sections"]
+    assert list(schema["properties"]) == ["jd_analysis", "certifications", "career_plan", "sections"]
     assert "career_plan" in schema["required"]
     step = schema["properties"]["career_plan"]["items"]
     assert step["required"] == ["company_index", "product", "focus", "scope"]  # the product is decided first

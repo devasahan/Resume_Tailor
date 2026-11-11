@@ -13,7 +13,14 @@ from datetime import date
 from functools import lru_cache
 
 from ..render.pdf import render_resume_pdf, resume_layout, resume_sheet
-from ..schemas import FitStyle, Profile, Resume, ResumeExperience, SkillGroup
+from ..schemas import (
+    MAX_CERTIFICATIONS,
+    FitStyle,
+    Profile,
+    Resume,
+    ResumeExperience,
+    SkillGroup,
+)
 from .facts import bullet_caps, stay_months
 
 LADDER = [(10.5, 0.65), (10.25, 0.6), (10.0, 0.55), (9.75, 0.5), (9.5, 0.5)]
@@ -55,6 +62,8 @@ def _plan_resume(profile: Profile, counts: list[int]) -> Resume:
             ResumeExperience(company_index=i, job_title="Senior Full-Stack Engineer", bullets=[_PLAN_BULLET] * n)
             for i, n in enumerate(counts)
         ],
+        # room for the certifications the person has: the ones that fit the job are printed
+        certifications=[cert.model_copy() for cert in profile.certifications[:MAX_CERTIFICATIONS]],
     )
 
 

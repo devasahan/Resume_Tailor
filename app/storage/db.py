@@ -3,7 +3,8 @@ the download history the admin sees, and the slow jobs (tailoring, cover letters
 
 Privacy: uploaded resumes stay until their owner deletes them. Runs (including the job description they
 were made for) and download history are deleted after the `retention_days` setting. Full resume text is
-never written to logs. Every change is a single statement, so several web workers can share the file.
+never written to logs. Every change is a single statement (or one locked transaction, see change_profile), so
+several web workers can share the file.
 """
 from __future__ import annotations
 
@@ -12,6 +13,7 @@ import logging
 import sqlite3
 import os
 import sys
+from collections.abc import Callable
 from contextlib import contextmanager
 from datetime import datetime, time, timedelta, timezone, tzinfo
 from functools import lru_cache
@@ -259,6 +261,24 @@ class Database:
             )
             return int(cur.lastrowid)
 
+    def change_profile(
+        self, profile_id: int, *, user_id: int | None, change: Callable[[Profile], None]
+    ) -> Profile | None:
+        """Change one saved base resume in place (`change` edits the Profile; used for the certifications the
+        person ticks on the Tailor page). Read and write happen in one locked transaction, so two workers or tabs
+        changing it at the same moment never undo each other. None (and nothing changed) when it is gone."""
+        with self._conn() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            row = conn.execute(
+                "SELECT data FROM profiles WHERE id = ? AND hidden = 0 AND user_id IS ?", (profile_id, user_id)
+            ).fetchone()
+            if row is None:
+                return None
+            profile = Profile.model_validate_json(row["data"])
+            change(profile)
+            conn.execute("UPDATE profiles SET data = ? WHERE id = ?", (profile.model_dump_json(), profile_id))
+        return profile
+
     def latest_profile(self, *, user_id: int | None) -> tuple[int, Profile] | None:
         with self._conn() as conn:
             row = conn.execute(
@@ -347,6 +367,13 @@ class Database:
         with self._conn() as conn:
             row = conn.execute("SELECT result FROM runs WHERE id = ?", (run_id,)).fetchone()
         return TailorResult.model_validate_json(row["result"]) if row else None
+
+    def run_source(self, run_id: int) -> tuple[int | None, int | None]:
+        """(the base resume a run was made from, the run's owner). The base resume is None for runs made without one
+        (tests, the command line) and for unknown runs."""
+        with self._conn() as conn:
+            row = conn.execute("SELECT profile_id, user_id FROM runs WHERE id = ?", (run_id,)).fetchone()
+        return (row["profile_id"], row["user_id"]) if row else (None, None)
 
     def get_run_owned(self, run_id: int) -> tuple[int | None, TailorResult] | None:
         """(owner's user id, result), or None."""

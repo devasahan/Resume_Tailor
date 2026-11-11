@@ -19,6 +19,7 @@ import os
 import re
 
 from ..parsing.heuristic import parse_resume_text
+from ..pipeline.validate import same_certification
 from ..prompts import RETRY_MARKER
 from .base import LLMClient, LLMResult, Usage
 from .registry import ModelSpec
@@ -206,6 +207,34 @@ def _title_ladder(prefix: str, base: str, count: int) -> list[str]:
     return titles
 
 
+
+# Real certifications the demo suggests when the job description mentions these words (name, issuer, words).
+DEMO_CERTIFICATIONS = [
+    ("AWS Certified Solutions Architect Professional", "Amazon Web Services", ("aws", "amazon web services")),
+    ("Microsoft Certified: Azure Solutions Architect Expert", "Microsoft", ("azure",)),
+    ("Google Cloud Professional Cloud Architect", "Google Cloud", ("gcp", "google cloud")),
+    ("Certified Kubernetes Administrator (CKA)", "The Linux Foundation", ("kubernetes", "k8s")),
+    ("Certified Information Systems Security Professional (CISSP)", "ISC2", ("security", "cissp")),
+    ("Project Management Professional (PMP)", "Project Management Institute", ("project management", "pmp")),
+    ("Certified ScrumMaster (CSM)", "Scrum Alliance", ("scrum", "agile")),
+    ("Databricks Certified Data Engineer Professional", "Databricks", ("spark", "databricks", "data engineer")),
+]
+
+
+def demo_certifications(jd: str, own: list[dict]) -> list[dict]:
+    """The demo's picks, like a real model's: the candidate's own first (by number), then real certifications the
+    job's words point to, then common ones, 4 in all."""
+    picks = [{"name": c.get("name", ""), "issuer": c.get("issuer", ""), "candidate_index": i}
+             for i, c in enumerate(own) if c.get("name")][:4]
+    low = jd.lower()
+    matched = [row for row in DEMO_CERTIFICATIONS if any(word in low for word in row[2])]
+    for name, issuer, _words in matched + [row for row in DEMO_CERTIFICATIONS if row not in matched]:
+        if len(picks) == 4:
+            break
+        if not any(same_certification(name, p["name"]) for p in picks):
+            picks.append({"name": name, "issuer": issuer, "candidate_index": -1})
+    return picks
+
 class FakeClient(LLMClient):
     def __init__(self, spec: ModelSpec):
         self.spec = spec
@@ -318,6 +347,7 @@ class FakeClient(LLMClient):
                 "keywords": keywords,
                 "key_responsibilities": ["Deliver reliable work", "Collaborate across teams", "Communicate progress clearly"],
             },
+            "certifications": demo_certifications(jd, ctx.get("profile", {}).get("certifications", []) or []),
             "career_plan": [  # recent jobs show more of the JD, with more scope
                 {"company_index": i, "product": "", "focus": k[: max(2, 6 - 2 * i)],  # it knows no companies
                  "scope": SCOPES[max(0, len(SCOPES) - 2 - i)]}

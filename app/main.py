@@ -37,10 +37,12 @@ from .pipeline.generate import GenerationFailed
 from .pipeline.job_facts import check_job_facts
 from .prompts import METRICS_MODES
 from .prompts import read_all as read_prompt_files
-from .pipeline.tailor import analysis_terms, fit_report, run_checks, run_tailor, write_cover_letter
+from .pipeline.tailor import analysis_terms, fit_report, refit, run_checks, run_tailor, write_cover_letter
 from .render.docx import cover_docx, resume_docx
 from .render.pdf import person_name, render_cover_pdf, render_resume_pdf
 from .schemas import (
+    MAX_CERTIFICATIONS,
+    Certification,
     Company,
     ExperienceOut,
     FitStyle,
@@ -98,6 +100,10 @@ class EditRequest(BaseModel):
     cover_greeting: str | None = None
     cover_paragraphs: list[str] | None = None
     cover_closing: str | None = None
+
+
+class CertificationTicks(BaseModel):
+    have: list[bool] = Field(max_length=MAX_CERTIFICATIONS)  # one "I have it" tick per row, in the page's order
 
 
 class CoverRequest(BaseModel):
@@ -203,6 +209,7 @@ def public_run(result: TailorResult) -> dict:
         "pages": result.pages, "fits": result.fits, "coverage": result.coverage.model_dump(),
         "cover_letter": result.cover_letter.model_dump() if result.cover_letter else None,
         "created_at": result.created_at, "spelling": result.spelling or "us",
+        "certifications": [row.model_dump() for row in result.certifications],
     }
 
 
@@ -1080,6 +1087,8 @@ def create_app(db: Database | None = None, registry: Registry | None = None, rou
                 ),
                 from_model=False,  # the user's own words: kept as typed, run_checks notes what to look at
             )
+            # the printed certifications are not part of the text: they stay as ticked (and count in the fit below)
+            merged.certifications = [cert.model_copy() for cert in result.resume.certifications]
             if result.cover_letter and body.cover_paragraphs is not None:
                 greeting, paragraphs, closing = validate.clean_cover_letter(
                     body.cover_greeting or result.cover_letter.greeting,
@@ -1102,6 +1111,47 @@ def create_app(db: Database | None = None, registry: Registry | None = None, rou
         run_checks(result, result.jd or analysis_terms(result.analysis))
         db.update_run(result)
         return result.model_dump()
+
+    @app.put("/api/runs/{run_id}/certifications")
+    async def api_certifications(run_id: int, body: CertificationTicks, user: auth.User = Depends(current_user)):
+        """The "I have it" ticks on the Tailor page, one per certification the AI picked for this job. A ticked one
+        is printed on the resume (after Education) and remembered on the base resume for the next jobs; an
+        unticked one comes off both. Only ticks that changed are applied, so an older run's rows never undo a tick
+        made on another run. The page is fitted again: a bullet is removed only if two pages need it (and the
+        reply says so)."""
+        result = load_run(run_id, user, write=True)
+        if result.status != "ok" or result.resume is None or result.analysis is None or not result.certifications:
+            raise HTTPException(409, "This resume has no certifications to choose from.")
+        if len(body.have) != len(result.certifications):
+            raise HTTPException(422, f"Send one tick for each of the {len(result.certifications)} certifications.")
+        changed = [(row, have) for row, have in zip(result.certifications, body.have) if row.have != have]
+        if not changed:
+            return viewed(result, user)
+        added = [Certification(name=row.name, issuer=row.issuer, year=row.year) for row, have in changed if have]
+        dropped = [row.name for row, have in changed if not have]
+        profile_id, owner = db.run_source(run_id)
+        if profile_id is not None:  # remembered for the next jobs with this base resume (if it still exists)
+            db.change_profile(profile_id, user_id=owner,
+                              change=lambda profile: validate.change_certifications(profile, added, dropped))
+        rows = [row.model_copy(update={"have": have}) for row, have in zip(result.certifications, body.have)]
+        resume = result.resume.model_copy(deep=True)
+        validate.change_certifications(resume.profile, added, dropped)
+        resume.certifications = validate.printed_certifications(rows)
+        validate.assert_certifications_held(resume)
+        resume, style, pages, fits, notes, removed = await refit(resume, result.style.paper)
+        fresh = db.get_run(run_id) or result  # a cover letter may have been written while this was in flight
+        fresh.resume, fresh.certifications = resume, rows
+        fresh.style, fresh.pages, fresh.fits = style, pages, fits
+        fresh.notes = [n for n in fresh.notes if not n.startswith(("Font reduced", "Still"))] + notes
+        run_checks(fresh, fresh.jd or analysis_terms(fresh.analysis))
+        db.update_run(fresh)
+        view = viewed(fresh, user)
+        if removed:
+            total = sum(removed.values())
+            parts = [f"{count} bullet{'' if count == 1 else 's'} from {name}" for name, count in removed.items()]
+            view["message"] = (f"To keep two pages, {' and '.join(parts)} {'was' if total == 1 else 'were'} "
+                               "removed.")
+        return view
 
     @app.post("/api/runs/{run_id}/cover-letter")
     async def api_make_cover_letter(run_id: int, body: CoverRequest, user: auth.User = Depends(current_user)):

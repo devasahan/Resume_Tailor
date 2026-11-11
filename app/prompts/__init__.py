@@ -5,14 +5,15 @@ Bump PROMPT_VERSION whenever the wording changes; every run records the version 
 from __future__ import annotations
 
 import re
+from collections.abc import Sequence
 from datetime import date
 from functools import cache
 from pathlib import Path
 
 from ..pipeline.facts import bullet_caps, experience_before, months_phrase, stay_months
-from ..schemas import CareerStep, Company, JDAnalysis, Resume
+from ..schemas import CareerStep, Certification, Company, JDAnalysis, Resume
 
-PROMPT_VERSION = "v28"
+PROMPT_VERSION = "v29"
 RETRY_MARKER = "Your previous answer was rejected"
 
 _DIR = Path(__file__).parent
@@ -73,6 +74,13 @@ def describe_companies(
     return "\n".join(lines) or "(none)"
 
 
+def describe_certifications(certifications: Sequence[Certification]) -> str:
+    """One numbered line per certification the candidate has: the model picks the ones that fit the job by number."""
+    lines = [f"{index}: " + " | ".join(part for part in (c.name, c.issuer, c.year) if part)
+             for index, c in enumerate(certifications)]
+    return "\n".join(lines) or "(none)"
+
+
 METRICS_MODES = ("estimate", "hints_only")
 SPELLING_STYLES = ("us", "eu")  # the Tailor page's US style / EU style (British spelling) buttons
 SIGN_OFF = {"us": '"Sincerely,"', "eu": '"Kind regards,"'}
@@ -93,7 +101,7 @@ def tailor_system(metrics_mode: str = "estimate", spelling: str = "us") -> str:
 
 def tailor_user(
     jd: str, companies: list[Company], hints: str, facts: str = "", shorten: bool = False,
-    bullets: list[int] | None = None, today: date | None = None,
+    bullets: list[int] | None = None, today: date | None = None, certifications: Sequence[Certification] = (),
 ) -> str:
     return _fill(
         _read("tailor.md"),
@@ -102,6 +110,7 @@ def tailor_user(
         companies=describe_companies(companies, bullets, today),
         facts=facts.strip() or "Total professional experience: unknown (do not state a number of years).",
         hints=hints.strip() or "(none given)",
+        certifications=describe_certifications(certifications),
         extra=SHORTEN_NOTE if shorten else "",
     )
 
@@ -109,6 +118,7 @@ def tailor_user(
 def revise_user(
     jd: str, companies: list[Company], hints: str, facts: str = "", *, bullets: list[int] | None = None,
     today: date | None = None, analysis: JDAnalysis, plan: list[CareerStep], draft: str, problems: str,
+    certifications: Sequence[Certification] = (),
 ) -> str:
     """The fix round: the same opening as tailor_user (so the provider can reuse its cache of it), then the final
     analysis and plan, the numbered draft and what to fix. The answer is a TailorRevision: only what changes."""
@@ -121,6 +131,7 @@ def revise_user(
         companies=describe_companies(companies, bullets, today),
         facts=facts.strip() or "Total professional experience: unknown (do not state a number of years).",
         hints=hints.strip() or "(none given)",
+        certifications=describe_certifications(certifications),
         must_haves=", ".join(analysis.must_have_skills) or "(none)",
         keywords=", ".join(analysis.keywords) or "(none)",
         plan="\n".join(steps) or "(none)",

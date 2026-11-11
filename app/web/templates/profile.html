@@ -3,7 +3,7 @@
 {% block content %}
 <div class="page-head">
   <h1>Base resumes</h1>
-  <p class="sub">Upload a resume and it is saved. The app keeps only its fixed facts (name, contact details, employers with dates and work mode, education) and writes everything else for each job.</p>
+  <p class="sub">Upload a resume and it is saved. The app keeps only its fixed facts (name, contact details, employers with dates and work mode, education, certifications) and writes everything else for each job.</p>
 </div>
 
 <div class="panel">
@@ -56,6 +56,8 @@ function resumeCard(r) {
     p.education.length ? el('div', { class: 'small' }, el('strong', { text: 'Education: ' }),
       p.education.map(e => [[e.degree, e.field].filter(Boolean).join(', '), e.school, [e.start, e.end].filter(Boolean).join(' - ')]
         .filter(Boolean).join(' | ')).join('; ')) : null,
+    (p.certifications || []).length ? el('div', { class: 'small' }, el('strong', { text: 'Certifications: ' }),
+      p.certifications.map(c => [c.name, c.issuer, c.year].filter(Boolean).join(' | ')).join('; ')) : null,
     r.warnings.length ? notice('warn', 'Check:', r.warnings) : null);
 }
 

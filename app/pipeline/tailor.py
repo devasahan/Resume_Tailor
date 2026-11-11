@@ -22,6 +22,7 @@ from ..schemas import (
     CoverLetter,
     CoverLetterOut,
     FitStyle,
+    Flag,
     JDAnalysis,
     Profile,
     Resume,
@@ -84,8 +85,8 @@ def coverage_feedback(resume: Resume, analysis: JDAnalysis) -> str | None:
         parts.append("These must-have phrases from the job description are not in the summary or any bullet yet: "
                      + ", ".join(f'"{t}"' for t in absent) + ".")
     if listed_only:
-        parts.append("These are only listed (in the skills, headline or titles) but not shown in the summary or a "
-                     "bullet: " + ", ".join(f'"{t}"' for t in listed_only) + ".")
+        parts.append("These are only listed (in the skills, headline, titles or certifications) but not shown in the "
+                     "summary or a bullet: " + ", ".join(f'"{t}"' for t in listed_only) + ".")
     return " ".join(parts) + (
         " Put each one in word for word, in the summary or in one existing bullet of the employer where it fits "
         "best (usually the most recent role), replacing weaker words so each bullet stays 20-32 words and the "
@@ -173,6 +174,13 @@ def run_checks(result: TailorResult, jd_text: str) -> None:
         )
     allowed = f"{result.hints}\n{result.facts}"
     flags = validate.claim_flags(result.resume, jd_text, allowed)
+    flags += [  # left in the text after the fix round (or written in by hand): a claim to check
+        Flag(section=where, text=term, level="verify",
+             reason="Names a certification. Certifications belong only in their own section; remove it from the text.")
+        for where, term in validate.certification_mentions(
+            result.resume, [row.name for row in result.certifications]
+            + [cert.name for cert in result.resume.profile.certifications])
+    ]
     posting = validate.posting_match_flags(result.resume, result.analysis, result.hints)
     result.flags = [f for f in flags if f.level == "verify"] + posting + [f for f in flags if f.level != "verify"]
     dense = validate.metric_density_problems(result.resume)
@@ -199,6 +207,23 @@ async def fit_report(resume: Resume, paper: str) -> tuple[FitStyle, int, bool, l
         return style, pages, True, notes
     style, pages, _pdf = await asyncio.to_thread(render_smallest, resume, paper)
     return style, pages, False, [f"Still {pages} pages at the smallest font (the limit is two). Shorten the text."]
+
+
+async def refit(resume: Resume, paper: str) -> tuple[Resume, FitStyle, int, bool, list[str], dict[str, int]]:
+    """Fit after the printed certifications changed (ticked on the Tailor page): the largest style that keeps two
+    pages, or else the fewest bullets removed (the last bullets of the jobs with the most). Returns (resume, style,
+    pages, fits, notes, {employer: bullets removed}); the resume given is never changed."""
+    found = await asyncio.to_thread(try_styles, resume, paper)
+    if found:
+        style, pages, _pdf, notes = found
+        return resume, style, pages, True, notes, {}
+    trimmed, style, pages, _pdf, notes = await asyncio.to_thread(trim_to_fit, resume, paper)
+    removed: dict[str, int] = {}
+    for before, after in zip(resume.experience, trimmed.experience):
+        if len(after.bullets) < len(before.bullets):
+            name = resume.profile.companies[before.company_index].name
+            removed[name] = removed.get(name, 0) + len(before.bullets) - len(after.bullets)
+    return trimmed, style, pages, pages <= MAX_PAGES, notes, removed
 
 
 async def run_tailor(
@@ -256,8 +281,12 @@ async def run_tailor(
             """(output, resume, notes). The analysis keeps keywords only, the headline the role's short name, and
             titles that step down are corrected, on every draft, for free. Last, every word follows the spelling
             style (after the title fixes, which match the posting's own spelling)."""
-            validate.clean_analysis(out.jd_analysis)
+            validate.clean_analysis(out.jd_analysis, out.certifications)
             resume = validate.build_resume(profile, out)
+            resume.certifications, _rows = validate.resolve_certifications(profile, out.certifications)
+            validate.assert_certifications_held(resume)
+            # a certification is printed only in its own section, and only when the person has it
+            validate.remove_certification_skills(resume, certification_names(out))
             validate.short_role_headline(resume)
             validate.general_role_fixes(resume, out.jd_analysis)  # 'Voice AI Engineer' -> 'AI Engineer'
             notes = validate.fix_title_regressions(resume)
@@ -267,6 +296,9 @@ async def run_tailor(
 
         def parse(data: dict):
             return build(TailorOutput.model_validate(data))
+
+        def certification_names(out: TailorOutput) -> list[str]:
+            return [pick.name for pick in out.certifications] + [cert.name for cert in profile.certifications]
 
         allowed_figures = f"{hints}\n{facts}"
 
@@ -392,6 +424,15 @@ async def run_tailor(
                     f"summary and job titles use the common title '{common[1]}' (the COMMON TITLE rule). Rewrite "
                     "them without it, keeping their length and everything else they say."
                 )
+            named = validate.certification_mentions(value[1], certification_names(value[0]))
+            if named:
+                feedback.append(
+                    "These certification names appear in the headline, summary or bullets: "
+                    + ", ".join(f"'{name}'" for name in dict.fromkeys(term for _where, term in named))
+                    + ". Certifications are shown only in their own section (the CERTIFICATIONS rule), so take every "
+                    "one out of the text. Keep the skill itself and the work it describes (for example 'AWS', not "
+                    "'AWS Certified Solutions Architect'), and keep each sentence's length."
+                )
             titles = validate.title_growth_problems(value[1])
             if titles:
                 feedback.append(
@@ -414,14 +455,15 @@ async def run_tailor(
             return Ask(
                 user=revise_user(jd, profile.companies, hints, facts, bullets=budget, today=today,
                                  analysis=output.jd_analysis, plan=output.career_plan, draft=draft_text(resume),
-                                 problems=" ".join(feedback)),
+                                 problems=" ".join(feedback), certifications=profile.certifications),
                 schema=revision_schema, schema_name="tailor_revision",
                 parse=revised,
                 context={**context, "draft": resume.model_dump(exclude={"profile"})},  # read only by the demo models
             )
 
         system_prompt = tailor_system(metrics_mode, spelling)
-        user_prompt = tailor_user(jd, profile.companies, hints, facts, bullets=budget, today=today)
+        user_prompt = tailor_user(jd, profile.companies, hints, facts, bullets=budget, today=today,
+                                  certifications=profile.certifications)
         steps.mark("prompts")
         await generate_validated(
             router, chain, system=system_prompt, user=user_prompt,
@@ -440,7 +482,8 @@ async def run_tailor(
             try:
                 await generate_validated(
                     router, [outcome.final_model_id], system=tailor_system(metrics_mode, spelling),
-                    user=tailor_user(jd, profile.companies, hints, facts, shorten=True, bullets=smaller, today=today),
+                    user=tailor_user(jd, profile.companies, hints, facts, shorten=True, bullets=smaller, today=today,
+                                     certifications=profile.certifications),
                     schema=schema, schema_name="tailor_output", parse=parse,
                     context={**context, "shorten": True, "bullets": smaller}, outcome=second,
                     refine=None,  # the shorten call is already the extra call; never let it ask a third time
@@ -478,6 +521,7 @@ async def run_tailor(
         result.resume = resume
         result.analysis = output.jd_analysis
         result.career_plan = output.career_plan
+        result.certifications = validate.resolve_certifications(profile, output.certifications)[1]
         result.style, result.pages, result.fits = style, pages, fits
         result.served_model = outcome.served_model
         result.status = "ok"

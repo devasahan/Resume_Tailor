@@ -7,7 +7,8 @@ from __future__ import annotations
 
 import re
 
-from ..schemas import Company, Contact, Education, Profile
+from ..pipeline.validate import cert_keys
+from ..schemas import Certification, Company, Contact, Education, Profile
 
 EMAIL_RE = re.compile(r"[\w.+-]+@[\w-]+(?:\.[\w-]+)+")
 PHONE_RE = re.compile(r"(?<!\d)(?:\+?\d{1,3}[\s.-]?)?(?:\(\d{3}\)|\d{3})[\s.-]?\d{3}[\s.-]?\d{4}(?!\d)")
@@ -29,8 +30,34 @@ EXPERIENCE_HEAD = re.compile(
 )
 EDUCATION_HEAD = re.compile(r"^education", re.IGNORECASE)
 OTHER_HEAD = re.compile(
-    r"^(skills|summary|profile|objective|projects|certifications?|awards|languages|"
+    r"^(skills|summary|profile|objective|projects|awards|languages|"
     r"publications|references|interests|technical skills|core competencies)\b",
+    re.IGNORECASE,
+)
+# Sections that often follow the certifications. The whole line must match, so a bullet that starts with
+# "Training ..." is never taken for a heading.
+OTHER_FULL = re.compile(
+    r"^(?:honou?rs(?:\s+(?:&|and)\s+awards)?|awards\s+(?:&|and)\s+honou?rs|achievements|activities|affiliations|"
+    r"(?:professional\s+)?memberships|courses|coursework|training|professional\s+development)$",
+    re.IGNORECASE,
+)
+_CERTS = r"(?:(?:professional\s+)?certifications?|certificates?|credentials|licen[cs]es?)"
+_CERT_PAIR = rf"{_CERTS}(?:\s*(?:&|and)\s*{_CERTS})?"
+CERT_HEAD = re.compile(rf"^{_CERT_PAIR}$", re.IGNORECASE)  # the whole line: "Certificate in Data Analytics" is none
+CERT_INLINE = re.compile(rf"^{_CERT_PAIR}\s*:\s*(\S.*)$", re.IGNORECASE)  # "Certifications: AWS SAA, CKA"
+CERT_WORD = re.compile(r"\bcertif|\blicen[cs]e|\bcredential", re.IGNORECASE)
+# One date for a certification: the date it was earned, after a separator or a word such as "Issued" ("Mar 2023",
+# "2021"), with an end date ("- Mar 2026", "- Present") taken out too. A number inside a name ("Windows Server 2016",
+# "ISO 9001") is not a date.
+_CERT_YEAR = rf"(?:{_MONTH}\s+)?(?:19|20)\d{{2}}"
+CERT_DATE_RE = re.compile(
+    rf"(?:\s*[,|(]|\s+[-–—]|\s*\b(?:issued|earned|obtained|awarded|completed|since)\b:?)\s*({_CERT_YEAR})"
+    rf"(?:\s*(?:-|–|—|to)\s*(?:{_CERT_YEAR}|present|current|no\s+expiration(?:\s+date)?))?\s*\)?",
+    re.IGNORECASE,
+)
+_ISSUED_LINE = re.compile(r"^(?:issued|earned|obtained)\b", re.IGNORECASE)
+_SKIP_CERT_LINE = re.compile(
+    r"^(?:expires?|expired|expiration|no\s+expiration|credential\s+(?:id|url)|(?:see|show)\s+credential)\b",
     re.IGNORECASE,
 )
 SCHOOL_RE = re.compile(r"\b(University|College|Institute|School|Academy|Polytechnic)\b", re.IGNORECASE)
@@ -49,23 +76,32 @@ def _is_header(line: str) -> str | None:
     bare = line.strip(" :").strip()
     if len(bare) > 40:
         return None
+    if CERT_HEAD.match(bare):
+        return "certifications"
     if EXPERIENCE_HEAD.match(bare):
         return "experience"
-    if EDUCATION_HEAD.match(bare):
-        return "education"
-    if OTHER_HEAD.match(bare):
+    if EDUCATION_HEAD.match(bare):  # "Education & Certifications": each line goes where it belongs
+        return "education_and_certifications" if CERT_WORD.search(bare) else "education"
+    if OTHER_HEAD.match(bare) or OTHER_FULL.match(bare):
         return "other"
     return None
 
 
 def _split_sections(lines: list[str]) -> tuple[list[str], dict[str, list[str]]]:
     head: list[str] = []
-    sections: dict[str, list[str]] = {"experience": [], "education": [], "other": []}
+    sections: dict[str, list[str]] = {"experience": [], "education": [], "certifications": [], "other": []}
     current: str | None = None
     for line in lines:
+        inline = CERT_INLINE.match(line.strip())
+        if inline:  # a list on the heading's own line belongs to it; the section around it goes on
+            sections["certifications"] += [part for part in re.split(r"\s*[,;]\s*", inline.group(1)) if part]
+            continue
         kind = _is_header(line)
         if kind:
             current = kind
+            continue
+        if current == "education_and_certifications":
+            sections["certifications" if CERT_WORD.search(line) else "education"].append(line)
             continue
         (sections[current] if current else head).append(line)
     return head, sections
@@ -146,6 +182,45 @@ def _parse_education(lines: list[str]) -> list[Education]:
     return [e for e in entries if e.school or e.degree]
 
 
+def _balanced(part: str) -> str:
+    """A piece without a stray bracket left by the split: '(CKA)' stays, 'Foundation)' loses its ')'."""
+    while part.endswith(")") and part.count(")") > part.count("("):
+        part = part[:-1].rstrip()
+    while part.startswith("(") and part.count("(") > part.count(")"):
+        part = part[1:].lstrip()
+    return part
+
+
+def _parse_certifications(lines: list[str]) -> list[Certification]:
+    """One certification per line: 'Name, Issuer, 2023', 'Name | Issuer | Mar 2023', '• Name (2021)'. A name is
+    never split at a dash ('AWS Certified Solutions Architect – Professional'). LinkedIn's own lines ('Issued Jan
+    2023 · Expires Jan 2026', 'Credential ID ...') are not certifications: an 'Issued' date is the one above's."""
+    certifications: list[Certification] = []
+    for raw in lines:
+        line = raw.strip().lstrip("•·▪◦‣*>").strip()
+        if not line or _SKIP_CERT_LINE.match(line):
+            continue
+        dated = CERT_DATE_RE.search(" " + line)
+        if _ISSUED_LINE.match(line):
+            if dated and certifications and not certifications[-1].year:
+                certifications[-1].year = dated.group(1)
+            continue
+        year = ""
+        if dated:
+            year = dated.group(1)
+            spaced = " " + line
+            line = (spaced[: dated.start()] + spaced[dated.end():]).strip()
+        parts = [_balanced(part.strip(" ,;|")) for part in re.split(r"\s+\|\s+|\s*[|·]\s*|,\s+", line)]
+        parts = [part for part in parts if part]
+        if not parts or not re.search(r"[A-Za-z]", parts[0]):
+            continue
+        name, issuer = parts[0], parts[1] if len(parts) > 1 else ""
+        if any(cert_keys(name) & cert_keys(c.name) for c in certifications):
+            continue
+        certifications.append(Certification(name=name, issuer=issuer, year=year))
+    return certifications
+
+
 def parse_resume_text(text: str) -> Profile:
     lines = [ln.strip() for ln in text.replace("\r", "").splitlines() if ln.strip()]
     head, sections = _split_sections(lines)
@@ -192,4 +267,5 @@ def parse_resume_text(text: str) -> Profile:
         contact=Contact(email=email, phone=phone, linkedin=linkedin, location=location),
         companies=companies,
         education=_parse_education(sections["education"]),
+        certifications=_parse_certifications(sections["certifications"]),
     )

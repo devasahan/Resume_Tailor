@@ -7,6 +7,8 @@
   claim_flags             numbers and skills the user never supplied, for the review step
   unshown_must_haves      required JD terms missing, or only listed, instead of shown in the summary or a bullet
   posting_match_flags     sentences added to match the JD that the user's hints do not back up
+  resolve_certifications  the model's certification picks: only the person's own are printed, the rest are ideas
+  certification_mentions  certification names in the text (they belong only in their own section)
 """
 from __future__ import annotations
 
@@ -15,8 +17,12 @@ import unicodedata
 from itertools import pairwise
 
 from ..schemas import (
-    CoverLetter,
+    MAX_CERTIFICATIONS,
+    Certification,
+    CertificationChoice,
+    CertificationPick,
     Coverage,
+    CoverLetter,
     ExperienceOut,
     Flag,
     JDAnalysis,
@@ -586,12 +592,152 @@ def clean_terms(items: list[str]) -> list[str]:
     return terms
 
 
-def clean_analysis(analysis: JDAnalysis) -> JDAnalysis:
-    """The analysis with keyword lists only (changed in place, and returned)."""
-    analysis.must_have_skills = clean_terms(analysis.must_have_skills)
-    analysis.nice_to_have_skills = clean_terms(analysis.nice_to_have_skills)
+def clean_analysis(analysis: JDAnalysis, picks: list[CertificationPick] | tuple = ()) -> JDAnalysis:
+    """The analysis with keyword lists only (changed in place, and returned). A certification is never a must-have
+    or nice-to-have skill (the prompt says so, and this makes sure): the fix round would otherwise push its name into
+    a bullet, claiming it. The keywords keep it, so the keyword score stays honest and a printed one counts."""
+    keys = {key for pick in picks for key in cert_keys(pick.name)}
+    analysis.must_have_skills = [t for t in clean_terms(analysis.must_have_skills) if not names_certification(t, keys)]
+    analysis.nice_to_have_skills = [t for t in clean_terms(analysis.nice_to_have_skills)
+                                    if not names_certification(t, keys)]
     analysis.keywords = clean_terms(analysis.keywords)
     return analysis
+
+
+# ------------------------------------------------------------------ certifications
+# The model picks the 4 certifications that best support the application (see CERTIFICATIONS in the prompt). Only
+# the person's own are printed, in their own section; the others are shown on the Tailor page to tick ("I have it")
+# or to earn. A certification is never named in the headline, summary, skills or bullets.
+CERT_NAME_LIMIT = 120
+_BRACKETED = re.compile(r"\(([A-Za-z0-9][A-Za-z0-9+&./ -]{0,19})\)")
+_CREDENTIAL_TERM = re.compile(r"^certified\b|\b(?:certification|certified|licen[cs]e)s?$", re.IGNORECASE)
+_CREDENTIAL_WORD = re.compile(r"\bcertifi(?:ed|cations?)\b", re.IGNORECASE)
+
+
+def _letters(text: str) -> str:
+    return re.sub(r"[^a-z0-9]", "", text.lower())
+
+
+def cert_keys(name: str) -> set[str]:
+    """How one certification is recognised in other spellings: its letters and digits in lower case, with and
+    without the part in brackets ('AWS Certified Solutions Architect – Associate' ~ 'AWS Certified Solutions
+    Architect Associate'), and the abbreviation in brackets ('Project Management Professional (PMP)' ~ 'PMP')."""
+    keys = {_letters(name), _letters(re.sub(r"\([^)]*\)", " ", name))}
+    keys |= {key for key in map(_letters, _BRACKETED.findall(name)) if len(key) >= 2}
+    keys.discard("")
+    return keys
+
+
+def same_certification(a: str, b: str) -> bool:
+    return bool(cert_keys(a) & cert_keys(b))
+
+
+def names_certification(term: str, keys: set[str] | frozenset = frozenset()) -> bool:
+    """True for a job-description term that is a certification or license: one of the model's picks ('CISSP' for
+    'Certified Information Systems Security Professional (CISSP)'), or plainly a credential ('PMP certification',
+    'Certified ScrumMaster', 'RN license'). 'AWS', 'certificate management' and 'software licensing' are skills."""
+    return bool(cert_keys(term) & keys) or bool(_CREDENTIAL_TERM.search(term.strip()))
+
+
+def resolve_certifications(
+    profile: Profile, picks: list[CertificationPick]
+) -> tuple[list[Certification], list[CertificationChoice]]:
+    """(printed, rows) for the model's picks. A pick is one of the person's own when its number points at one of
+    their certifications, or when its name is one of theirs in another spelling: that certification is then printed
+    exactly as the person wrote it. Any other pick is a row the person can tick on the Tailor page, never printed
+    on its own. Duplicates go; at most MAX_CERTIFICATIONS rows, in the model's order (best first)."""
+    own = profile.certifications
+    rows: list[CertificationChoice] = []
+    seen: set[str] = set()
+    for pick in picks:
+        name = clean_text(pick.name)[:CERT_NAME_LIMIT].strip()
+        index = pick.candidate_index if 0 <= pick.candidate_index < len(own) else -1
+        if index < 0 and name:
+            index = next((i for i, cert in enumerate(own) if same_certification(cert.name, name)), -1)
+        if index >= 0:
+            cert = own[index]
+            row = CertificationChoice(name=cert.name, issuer=cert.issuer, year=cert.year, have=True)
+        elif name:
+            row = CertificationChoice(name=name, issuer=clean_text(pick.issuer)[:CERT_NAME_LIMIT].strip())
+        else:
+            continue
+        keys = cert_keys(row.name)
+        if keys & seen:
+            continue
+        seen |= keys
+        rows.append(row)
+        if len(rows) == MAX_CERTIFICATIONS:
+            break
+    return printed_certifications(rows), rows
+
+
+def printed_certifications(rows: list[CertificationChoice]) -> list[Certification]:
+    """What the resume prints for these rows: the ones the person has, best first."""
+    return [Certification(name=r.name, issuer=r.issuer, year=r.year) for r in rows if r.have][:MAX_CERTIFICATIONS]
+
+
+def change_certifications(profile: Profile, added: list[Certification], dropped: list[str]) -> None:
+    """Remember ticks from the Tailor page on a profile (changed in place): `added` are certifications the person
+    has (one that is already there in another spelling is not added twice); `dropped` are names of ones they
+    unticked (every spelling of each goes)."""
+    drop = {key for name in dropped for key in cert_keys(name)}
+    kept = [cert for cert in profile.certifications if not cert_keys(cert.name) & drop]
+    for cert in added:
+        if not any(cert_keys(cert.name) & cert_keys(other.name) for other in kept):
+            kept.append(cert.model_copy())
+    profile.certifications = kept
+
+
+def assert_certifications_held(resume: Resume) -> None:
+    """The one rule that never bends: every printed certification is one the person has."""
+    for cert in resume.certifications:
+        if cert not in resume.profile.certifications:
+            raise ValueError(f"'{cert.name}' is not one of the person's certifications, so it cannot be printed.")
+
+
+def certification_terms(names: list[str]) -> list[str]:
+    """What a certification is called in a sentence: its full name without the bracket, and the abbreviation in the
+    bracket ('Certified Information Systems Security Professional (CISSP)' -> both)."""
+    terms: list[str] = []
+    for name in names:
+        for term in (re.sub(r"\s*\([^)]*\)", "", name).strip(), *(_BRACKETED.findall(name))):
+            term = term.strip()
+            if len(term) >= 2 and term.lower() not in {t.lower() for t in terms}:
+                terms.append(term)
+    return terms
+
+
+def remove_certification_skills(resume: Resume, names: list[str]) -> list[str]:
+    """Take certifications out of the skills list (changed in place): they are printed only in their own section,
+    and only when the person has them. Returns what was removed. A group left empty goes too."""
+    keys = {key for name in names for key in cert_keys(name)}
+    removed: list[str] = []
+    for group in resume.skills:
+        kept = []
+        for item in group.skills:
+            if names_certification(item, keys) or _CREDENTIAL_WORD.search(item):
+                removed.append(item)
+            else:
+                kept.append(item)
+        group.skills = kept
+    if removed and any(group.skills for group in resume.skills):
+        resume.skills = [group for group in resume.skills if group.skills]
+    return removed
+
+
+def certification_mentions(resume: Resume, names: list[str]) -> list[tuple[str, str]]:
+    """(where, name) for each certification named in the headline, summary or a bullet ('summary',
+    'experience:<company_index>'). Certifications belong only in their own section: a name in the text would claim
+    one the person may not have, and unticking it on the Tailor page could not take it off the resume."""
+    terms = certification_terms(names)
+    places = [("headline", resume.headline), ("summary", resume.summary)]
+    places += [(f"experience:{exp.company_index}", bullet) for exp in resume.experience for bullet in exp.bullets]
+    found: list[tuple[str, str]] = []
+    for where, text in places:
+        for term in terms:
+            if mentions(text, term) and (where, term) not in found:
+                found.append((where, term))
+    return found
 
 
 # ------------------------------------------------------------------ merge
@@ -706,7 +852,8 @@ def apply_revision(out: TailorOutput, draft: Resume, rev: TailorRevision) -> Tai
 
 def assert_fixed_fields_intact(original: Profile, resume: Resume) -> None:
     if resume.profile.model_dump() != original.model_dump():
-        raise ValueError("Fixed profile fields (name, contact, companies, dates, education) were altered.")
+        raise ValueError("Fixed profile fields (name, contact, companies, dates, education, certifications) were "
+                         "altered.")
     if [e.company_index for e in resume.experience] != list(range(len(original.companies))):
         raise ValueError("Experience entries no longer map one-to-one onto the profile's companies.")
 
@@ -720,6 +867,7 @@ def resume_text(resume: Resume) -> str:
     for exp in resume.experience:
         parts.append(exp.job_title)
         parts.extend(exp.bullets)
+    parts.extend(cert.name for cert in resume.certifications)  # a printed certification the posting names is found
     return "\n".join(parts)
 
 
@@ -2037,6 +2185,7 @@ def known_names(resume: Resume, analysis: JDAnalysis | None = None, company: str
     """What keeps its own spelling: the employers, the schools, the hiring company (each also in its short form) and
     the hiring manager, also by each part of their name ('Ms. Gray')."""
     names = [c.name for c in resume.profile.companies] + [e.school for e in resume.profile.education]
+    names += [cert.name for cert in resume.certifications]
     if analysis is not None:
         names.append(analysis.company)
     kept = [form for name in [*names, company, manager] if name and name.strip() for form in _name_forms(name)]

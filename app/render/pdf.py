@@ -18,7 +18,7 @@ from pathlib import Path
 from fpdf import FPDF
 from fpdf.enums import XPos, YPos
 
-from ..schemas import Company, Contact, CoverLetter, FitStyle, Resume
+from ..schemas import Certification, Company, Contact, CoverLetter, FitStyle, Resume
 from ..timing import FONTS
 
 FONT_DIR = Path(__file__).parent / "fonts"
@@ -332,6 +332,11 @@ def job_header(company: Company, title: str, stacked: bool) -> list[tuple[list[R
     return [([Run(company.name, True), Run(" | "), Run(title, italic=True), Run(place)], dates)]
 
 
+def certification_runs(cert: Certification) -> list[Run]:
+    """A certification's line, like an education line: the name in bold, then the issuer."""
+    return [Run(cert.name, True)] + ([Run(f" | {cert.issuer}")] if cert.issuer else [])
+
+
 def resume_sheet(resume: Resume, style: FitStyle, document: str = "Resume") -> Sheet:
     """The resume laid out on pages: `pdf.page` pages, `last_page_fill()`, and the file from `finish()`."""
     p = resume.profile
@@ -383,6 +388,14 @@ def resume_sheet(resume: Resume, style: FitStyle, document: str = "Resume") -> S
             sheet.row(left, dates)
             if extra:
                 sheet.para(extra)
+
+    if resume.certifications:  # only ones the person has, best for the job first
+        rows = [(certification_runs(cert), cert.year) for cert in resume.certifications]
+        heights = [sheet.row_height(left, year) for left, year in rows]
+        sheet.heading("CERTIFICATIONS", keep=heights[0])
+        for (left, year), height in zip(rows, heights):
+            sheet.keep(height)
+            sheet.row(left, year)
     return sheet
 
 

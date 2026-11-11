@@ -12,7 +12,7 @@ from __future__ import annotations
 
 from typing import Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 
 # ---------------------------------------------------------------- fixed facts (from the base resume)
@@ -41,11 +41,33 @@ class Education(BaseModel):
     details: str = ""
 
 
+MAX_CERTIFICATIONS = 4  # the model picks this many per job; a resume prints at most this many
+
+
+def _as_text(value):
+    """A model may send null or a number ("year": 2021) for a text field: read as text instead of failing the answer."""
+    if value is None:
+        return ""
+    return str(value) if isinstance(value, (int, float)) and not isinstance(value, bool) else value
+
+
+class Certification(BaseModel):
+    """A certification or license the person has, copied exactly as written."""
+    # From the uploaded resume, or ticked "I have it" on the Tailor page. Only these are ever printed on a resume.
+    # (The docstring above is part of the AI resume reader's schema; this comment is not.)
+    name: str
+    issuer: str = ""
+    year: str = ""  # when it was earned, as written ("2023", "Mar 2023"); "" when not stated
+
+    _text = field_validator("name", "issuer", "year", mode="before")(_as_text)
+
+
 class Profile(BaseModel):
     name: str
     contact: Contact = Field(default_factory=Contact)
     companies: list[Company] = Field(default_factory=list)  # most recent first
     education: list[Education] = Field(default_factory=list)
+    certifications: list[Certification] = Field(default_factory=list)  # what the person has ([] in older profiles)
 
 
 # ---------------------------------------------------------------- what the model returns
@@ -93,12 +115,46 @@ class CareerStep(BaseModel):
     scope: str = Field(description="implemented, built, designed, owned or led")
 
 
+class CertificationPick(BaseModel):
+    """One of the certifications the model picks for the job (see CERTIFICATIONS in the prompt). Only a pick that is
+    one of the candidate's own is printed; the others are shown to the person as suggestions to tick or to earn."""
+    name: str = Field(description=(
+        "the certification's official full name, without dash punctuation (for example \"AWS Certified Solutions "
+        "Architect Professional\"); for one of the candidate's own, its name exactly as listed"))
+    issuer: str = Field("", description="the organization that awards it (for example \"Amazon Web Services\")")
+    candidate_index: int = Field(-1, description=(
+        "its number in <candidate_certifications> when it is one of the candidate's own, otherwise -1"))
+
+    _text = field_validator("name", "issuer", mode="before")(_as_text)
+
+    @field_validator("candidate_index", mode="before")
+    @classmethod
+    def _number(cls, value):  # null, "" or "none" from a model: not one of the candidate's
+        try:
+            return int(value)
+        except (TypeError, ValueError):
+            return -1
+
+
 class TailorOutput(BaseModel):
     jd_analysis: JDAnalysis
+    # Up to 4, best first, decided right after the analysis. Required in the model's schema; the default only serves
+    # code that builds an output by hand and older outputs.
+    certifications: list[CertificationPick] = Field(default_factory=list, description=(
+        "the 4 certifications that best support this application, best and highest level first (see CERTIFICATIONS)"))
     # Written before `sections`, so the bullets follow the plan. Required in the model's schema; the default only
     # serves code that builds an output by hand.
     career_plan: list[CareerStep] = Field(default_factory=list)
     sections: TailoredSections
+
+    @field_validator("certifications", mode="before")
+    @classmethod
+    def _usable_picks(cls, value):
+        """A malformed pick is dropped, not the whole draft: the picks are the smallest part of the answer."""
+        if not isinstance(value, list):
+            return []
+        return [item for item in value if isinstance(item, CertificationPick)
+                or (isinstance(item, dict) and str(item.get("name") or "").strip())]
 
 
 class TitleChange(BaseModel):
@@ -153,6 +209,18 @@ class Resume(BaseModel):
     summary: str
     skills: list[SkillGroup]
     experience: list[ResumeExperience]
+    # Printed under CERTIFICATIONS, at most 4, best for the job first: always ones the person has (each is also in
+    # profile.certifications). [] in older runs.
+    certifications: list[Certification] = Field(default_factory=list)
+
+
+class CertificationChoice(BaseModel):
+    """One of the model's picks for a run, as the Tailor page lists it: `have` means the person has it, so it is
+    printed on the resume. The person ticks or unticks it there."""
+    name: str
+    issuer: str = ""
+    year: str = ""
+    have: bool = False
 
 
 class CoverLetter(BaseModel):
@@ -217,4 +285,5 @@ class TailorResult(BaseModel):
     metrics_mode: str = ""  # the "Numbers in bullets" setting the run was made with ("" for older runs)
     spelling: Literal["", "us", "eu"] = ""  # the Tailor page's US/EU style button ("" for older runs: US)
     career_plan: list[CareerStep] = Field(default_factory=list)  # how the model spread the JD across the jobs
+    certifications: list[CertificationChoice] = Field(default_factory=list)  # the model's picks; [] in older runs
     created_at: str = ""

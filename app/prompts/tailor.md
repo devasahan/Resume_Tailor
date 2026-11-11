@@ -14,4 +14,8 @@
 {{hints}}
 </candidate_hints>
 
+<candidate_certifications>
+{{certifications}}
+</candidate_certifications>
+
 Write the tailored sections for this candidate. Return one entry in `sections.experience` for every employer above, using its `company_index`.{{extra}}
