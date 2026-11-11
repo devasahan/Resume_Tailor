@@ -30,6 +30,7 @@
   <div class="grid2">
     <div><label for="daily_cost_cap_usd">Daily cost cap, USD <span class="opt">(0 = none; soft cap; the day starts at midnight Texas time)</span></label><input type="number" id="daily_cost_cap_usd" min="0" step="0.5"></div>
     <div><label for="retention_days">Delete tailored runs after, days <span class="opt">(and their download history; 0 = keep; uploaded resumes stay until their owner deletes them)</span></label><input type="number" id="retention_days" min="0" max="3650"></div>
+    <div><label for="resume_time_limit_s">Time limit for a resume, seconds <span class="opt">(when the AI is slow, its second polishing pass is skipped to stay within it; 0 = no limit: always polish, best quality but slower)</span></label><input type="number" id="resume_time_limit_s" min="0" max="600" step="5"></div>
     <div><label for="paper_size">Paper size</label><select id="paper_size"><option>Letter</option><option>A4</option></select></div>
     <div><label for="metrics_mode">Numbers in bullets</label><select id="metrics_mode">
       <option value="estimate">Add realistic estimates (each one flagged for you to confirm)</option>
@@ -93,7 +94,7 @@ async function init() {
     `Automatic (${s.automatic.parser ? labelOf(s.automatic.parser) : 'built-in rules'})`,
     [{ value: 'rules', text: 'Rules only (free, nothing is sent)' }]);
   field('fallbacks').replaceChildren(...models.filter(x => x.available).map(x => el('label', {}, el('input', { type: 'checkbox', value: x.id, checked: st.fallback_models.includes(x.id) }), x.label)), notSetUpLine());
-  field('daily_cost_cap_usd').value = st.daily_cost_cap_usd; field('retention_days').value = st.retention_days; field('paper_size').value = st.paper_size; field('metrics_mode').value = st.metrics_mode;
+  field('daily_cost_cap_usd').value = st.daily_cost_cap_usd; field('retention_days').value = st.retention_days; field('resume_time_limit_s').value = st.resume_time_limit_s ?? 30; field('paper_size').value = st.paper_size; field('metrics_mode').value = st.metrics_mode;
   field('regions').replaceChildren(...regions.map(r => el('label', {}, el('input', { type: 'checkbox', value: r, checked: st.allowed_regions.includes(r) }), r)));
   field('spent').textContent = `Spent today (since midnight Texas time): ${money(s.cost_today)}.`;
   field('check-list').replaceChildren(...models.filter(x => x.available && !x.demo).map(x => el('label', {}, el('input', { type: 'checkbox', value: x.id }), x.label)), notSetUpLine());
@@ -105,7 +106,7 @@ field('save').addEventListener('click', async () => {
     resume_model: field('resume_model').value || null, cover_letter_model: field('cover_letter_model').value || null,
     parser_model: field('parser_model').value || null,
     fallback_models: $$('#fallbacks input:checked').map(i => i.value),
-    daily_cost_cap_usd: Number(field('daily_cost_cap_usd').value || 0), retention_days: Number(field('retention_days').value || 0),
+    daily_cost_cap_usd: Number(field('daily_cost_cap_usd').value || 0), retention_days: Number(field('retention_days').value || 0), resume_time_limit_s: Number(field('resume_time_limit_s').value || 0),
     paper_size: field('paper_size').value, metrics_mode: field('metrics_mode').value, allowed_regions: $$('#regions input:checked').map(i => i.value),
   };
   try { await api('/api/settings', { method: 'PUT', body }); field('save-status').textContent = 'Saved.'; await init(); }

@@ -86,6 +86,7 @@ Costs shown in the app are estimates: `tokens reported by the provider x the pri
 - allowed data regions (models hosted in `CN` or `UNKNOWN` regions stay off until you allow them)
 - retention (tailored runs are deleted after N days; uploaded resumes stay until you delete them), paper size (Letter / A4)
 - numbers in bullets: realistic estimates flagged for you to confirm (default), or only the numbers you give
+- **time limit for a resume** (default 30 seconds): the first draft always comes back; the extra rewrite pass (and the shorter-draft call when a draft runs over two pages) runs only when it can finish within the limit, and is stopped at the limit, keeping the first draft with the app's own fixes (two pages, titles, dashes, spelling). A rewrite that removes a certification named in the text always runs. 0 = no limit: always polish, best quality but slower. Each job's time per step is in the server log ("job finished in ...").
 
 ## Choosing a model: the bake-off
 

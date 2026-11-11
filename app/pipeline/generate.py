@@ -1,6 +1,7 @@
 """One reliable "ask a model for structured data" step: validate, retry once with feedback, then fall back."""
 from __future__ import annotations
 
+import asyncio
 import logging
 import time
 from dataclasses import dataclass, field, replace
@@ -13,6 +14,8 @@ from ..prompts import retry_suffix
 T = TypeVar("T")
 log = logging.getLogger(__name__)
 
+MIN_FOLLOW_UP_SECONDS = 6.0  # a follow-up (the rewrite pass) is not started with less time than this left
+
 
 @dataclass(frozen=True)
 class Ask(Generic[T]):
@@ -22,6 +25,7 @@ class Ask(Generic[T]):
     schema_name: str
     parse: Callable[[dict], T]
     context: dict | None = None
+    required: bool = False  # a follow-up that runs even past the deadline (it removes a certification claim)
 
 
 class GenerationFailed(Exception):
@@ -44,6 +48,7 @@ class Outcome(Generic[T]):
     output_tokens: int = 0
     cost_usd: float = 0.0
     errors: list[str] = field(default_factory=list)
+    follow_up: str = ""  # "skipped" or "stopped" when the deadline left no time for the follow-up, else ""
 
     def add_usage(self, usage: Usage, price_cost: float) -> None:
         self.input_tokens += usage.input_tokens
@@ -63,6 +68,7 @@ async def generate_validated(
     context: dict | None = None,
     outcome: Outcome | None = None,
     refine: Callable[[T], Ask[T] | None] | None = None,
+    deadline: float | None = None,
 ) -> Outcome[T]:
     """Try each model in turn. Per model: up to 2 attempts, the second one told what was wrong.
 
@@ -71,6 +77,9 @@ async def generate_validated(
     `refine` may return a follow-up request for a VALID first answer (style, not correctness), with its own
     prompt, schema and parser (a small "fix only this" answer instead of a full rewrite). It is asked once, and if
     that second answer fails for any reason the first one is kept.
+    `deadline` (a time.perf_counter() value) limits only that follow-up: it is not started with less than
+    MIN_FOLLOW_UP_SECONDS left, and it is stopped at the deadline; the first answer is kept either way. A follow-up
+    marked `required` ignores the deadline.
     """
     out = outcome or Outcome()
     first = Ask(user, schema, schema_name, parse, context)
@@ -78,14 +87,21 @@ async def generate_validated(
         out.chain.append(model_id)
         ask = first
         kept: tuple | None = None  # (value, served_model) of a valid first answer under refinement
+        time_left: float | None = None  # how long the follow-up may take
         for attempt in (1, 2):
             out.attempts += 1
             started = time.perf_counter()
             try:
-                result, spec = await router.call(
+                call = router.call(
                     model_id, system=system, user=ask.user, schema=ask.schema, schema_name=ask.schema_name,
                     context=ask.context,
                 )
+                result, spec = await (asyncio.wait_for(call, time_left) if time_left is not None else call)
+            except TimeoutError:  # the follow-up ran past the deadline: the first answer is kept
+                log.info("%s %s attempt %d stopped at the time limit after %.1fs", model_id, ask.schema_name,
+                         attempt, time.perf_counter() - started)
+                out.follow_up = "stopped"
+                break
             except CostCapError:
                 if kept is not None:
                     break
@@ -115,6 +131,12 @@ async def generate_validated(
                 break
             if attempt == 1 and refine is not None:
                 follow_up = refine(value)
+                if follow_up is not None and not follow_up.required and deadline is not None:
+                    time_left = deadline - time.perf_counter()
+                    if time_left < MIN_FOLLOW_UP_SECONDS:
+                        log.info("%s %s follow-up skipped: %.1fs left of the time limit", model_id,
+                                 follow_up.schema_name, time_left)
+                        out.follow_up, follow_up = "skipped", None
                 if follow_up is not None:
                     kept, ask = (value, result.served_model), follow_up
                     out.retries += 1

@@ -479,6 +479,8 @@ def validate_settings(registry: Registry, values: dict) -> dict:
                 out[key] = list(value)
             elif key == "retention_days":
                 out[key] = max(0, min(3650, int(value)))
+            elif key == "resume_time_limit_s":
+                out[key] = max(0, min(600, int(value)))
             elif key == "metrics_mode":
                 if value not in METRICS_MODES:
                     raise ValueError(f"metrics_mode must be one of {', '.join(METRICS_MODES)}")

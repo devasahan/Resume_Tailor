@@ -194,6 +194,9 @@ DEFAULT_SETTINGS: dict = {
     "retention_days": 30,  # stored profiles and runs are deleted after this; 0 = keep
     "paper_size": "Letter",  # Letter | A4
     "metrics_mode": "estimate",  # estimate: realistic figures, flagged for the user | hints_only: only the user's numbers
+    # A resume is ready within about this many seconds: the extra rewrite pass and the shorter-draft call run only when
+    # they can finish in time (they are stopped at the limit). 0 = no limit: always run them (best quality, slower).
+    "resume_time_limit_s": 30,
 }
 
 # Used only when a task has no model chosen in Settings. Real models first, demo last.

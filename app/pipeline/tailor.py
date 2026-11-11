@@ -49,6 +49,10 @@ log = logging.getLogger(__name__)
 # Must-have JD terms missing from the summary and bullets (absent, or only listed) that justify the one rewrite
 # pass. 1 means every required term is covered automatically; 2 roughly halves how often the rewrite runs.
 MIN_UNCOVERED_FOR_RETRY = 1
+# The time limit for a resume (Settings, default 30 s): the AI calls must end this much earlier, leaving time for the
+# layout, the checks and saving; the shorter-draft call is not started with less than MIN_SHORTER_SECONDS left.
+CHECKS_RESERVE_SECONDS = 4.0
+MIN_SHORTER_SECONDS = 10.0
 
 
 def jd_hash(jd: str) -> str:
@@ -252,6 +256,8 @@ async def run_tailor(
     settings = router.settings()
     paper = settings["paper_size"]
     metrics_mode = settings.get("metrics_mode", "estimate")
+    limit = float(settings.get("resume_time_limit_s", 30) or 0)  # 0: no limit
+    deadline = started + limit - CHECKS_RESERVE_SECONDS if limit > 0 else None
     today = date.today()  # one date for the facts, the bullet budget and the stay lengths in the prompt
     facts = candidate_facts(profile, today)
     result = TailorResult(
@@ -459,6 +465,7 @@ async def run_tailor(
                 return out, fixed, [n for n in first_notes if n.split(": ", 1)[0] in same] + notes
 
             return Ask(
+                required=bool(named),  # a certification claim is removed even past the time limit
                 user=revise_user(jd, profile.companies, hints, facts, bullets=budget, today=today,
                                  analysis=without_certifications(output), plan=output.career_plan,
                                  draft=draft_text(resume), problems=" ".join(feedback),
@@ -475,19 +482,26 @@ async def run_tailor(
         await generate_validated(
             router, chain, system=system_prompt, user=user_prompt,
             schema=schema, schema_name="tailor_output", parse=parse, context=context, outcome=outcome,
-            refine=refine,
+            refine=refine, deadline=deadline,
         )
         steps.mark("AI")
+        if outcome.follow_up:
+            notes.append(f"The rewrite pass was {outcome.follow_up} to finish within the time limit of {limit:g} "
+                         "seconds (Settings), so this is the first draft with the app's own fixes.")
         output, resume, title_notes = outcome.value  # type: ignore[misc]
 
         # --- fit two pages at most: pick the style -> ask once more with a smaller bullet budget -> trim bullets
         fit = await asyncio.to_thread(try_styles, resume, paper)
         steps.mark("layout")
-        if fit is None:
+        time_left = None if deadline is None else deadline - time.perf_counter()
+        if fit is None and time_left is not None and time_left < MIN_SHORTER_SECONDS:
+            notes.append("There was no time left (Settings > Time limit) to ask the model for shorter bullets, so the "
+                         "text was trimmed to fit two pages.")
+        elif fit is None:
             second = Outcome()
             smaller = smaller_budget(budget)
             try:
-                await generate_validated(
+                shorter = generate_validated(
                     router, [outcome.final_model_id], system=tailor_system(metrics_mode, spelling),
                     user=tailor_user(jd, profile.companies, hints, facts, shorten=True, bullets=smaller, today=today,
                                      certifications=profile.certifications),
@@ -495,6 +509,7 @@ async def run_tailor(
                     context={**context, "shorten": True, "bullets": smaller}, outcome=second,
                     refine=None,  # the shorten call is already the extra call; never let it ask a third time
                 )
+                await (asyncio.wait_for(shorter, time_left) if time_left is not None else shorter)
                 _absorb(outcome, second)
                 short_output, short_resume, short_title_notes = second.value  # type: ignore[misc]
                 fit = await asyncio.to_thread(try_styles, short_resume, paper)
@@ -504,6 +519,10 @@ async def run_tailor(
             except GenerationFailed as exc:
                 _absorb(outcome, exc.outcome)
                 notes.append("Asking the model for shorter bullets failed, so the text was trimmed instead.")
+            except TimeoutError:
+                _absorb(outcome, second)
+                notes.append("Asking the model for shorter bullets ran past the time limit (Settings), so the text was "
+                             "trimmed instead.")
             steps.mark("shorter draft")
         if fit:
             style, pages, _pdf, fit_notes = fit
