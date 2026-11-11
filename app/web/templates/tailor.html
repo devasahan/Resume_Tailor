@@ -165,7 +165,8 @@ function showCertifications(run) {
   $('#cert-rows').replaceChildren(...rows.map((c, i) => {
     const box = el('input', { type: 'checkbox', id: `cert-${i}`, checked: c.have, disabled: working });
     box.addEventListener('change', () => tickCertification(run.run_id));
-    const more = [c.issuer, c.year].filter(Boolean).join(' · ');
+    const dates = c.year && c.expires ? `${c.year} - ${c.expires}` : c.year || (c.expires ? `Expires ${c.expires}` : '');
+    const more = [c.issuer, dates].filter(Boolean).join(' · ');
     return el('label', { class: 'cert', for: `cert-${i}` }, box,
       el('span', { class: 'cert-have', text: 'I have it' }),
       el('span', { class: 'cert-name' }, el('strong', { text: c.name }),

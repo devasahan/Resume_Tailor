@@ -21,7 +21,7 @@ from ..schemas import (
     ResumeExperience,
     SkillGroup,
 )
-from .facts import bullet_caps, stay_months
+from .facts import bullet_caps, is_expired, stay_months
 
 LADDER = [(10.5, 0.65), (10.25, 0.6), (10.0, 0.55), (9.75, 0.5), (9.5, 0.5)]
 MAX_PAGES = 2
@@ -63,7 +63,8 @@ def _plan_resume(profile: Profile, counts: list[int]) -> Resume:
             for i, n in enumerate(counts)
         ],
         # room for the certifications the person has: the ones that fit the job are printed
-        certifications=[cert.model_copy() for cert in profile.certifications[:MAX_CERTIFICATIONS]],
+        certifications=[cert.model_copy() for cert in profile.certifications
+                        if not is_expired(cert.expires)][:MAX_CERTIFICATIONS],
     )
 
 

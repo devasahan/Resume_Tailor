@@ -60,15 +60,26 @@ function resumeCard(r) {
     r.warnings.length ? notice('warn', 'Check:', r.warnings) : null);
 }
 
+// A certification's dates as printed: 'Mar 2023 - Mar 2026', 'Feb 2020', 'Expires Mar 2026'
+function certDates(c) {
+  return c.year && c.expires ? `${c.year} - ${c.expires}` : c.year || (c.expires ? `Expires ${c.expires}` : '');
+}
+
 // The certifications this person has passed: for each job the best ones that fit (up to 4) are printed.
 function certificationsBox(r) {
   let certs = r.profile.certifications || [];  // as shown: the save is refused if it changed since (another tab)
   const box = el('textarea', { rows: Math.min(12, Math.max(4, certs.length + 1)), maxlength: 20000, spellcheck: 'false',
     'aria-label': `Certifications ${r.profile.name} has passed, one per line`,
-    placeholder: 'One per line, for example:\nAWS Certified Developer – Associate | Amazon Web Services | 2024\nCertified Kubernetes Application Developer (CKAD)' });
-  const asText = list => list.map(c => [c.name, c.issuer, c.year].filter(Boolean).join(' | ')).join('\n');
+    placeholder: 'One per line: name | issuer | date earned - date it expires. For example:\nAWS Certified Developer – Associate | Amazon Web Services | Mar 2024 - Mar 2027\nCertified ScrumMaster (CSM) | Scrum Alliance | Feb 2020' });
+  const asText = list => list.map(c => [c.name, c.issuer, certDates(c)].filter(Boolean).join(' | ')).join('\n');
   box.value = box.dataset.saved = asText(certs);
   const status = el('span', { class: 'small muted' });
+  const expiredNote = el('p', { class: 'small muted' });
+  const showExpired = (list, names) => {  // the server says which have expired (their dates are as written)
+    const gone = list.filter(c => names.includes(c.name));
+    expiredNote.textContent = gone.length ? 'Expired, so never printed: ' + gone.map(c => `${c.name} (expired ${c.expires})`).join('; ') + '. Change the date when it is renewed.' : '';
+  };
+  showExpired(certs, r.expired || []);
   const save = el('button', { type: 'button', class: 'small primary', text: 'Save certifications' });
   save.addEventListener('click', async () => {
     save.disabled = true;
@@ -78,6 +89,7 @@ function certificationsBox(r) {
       const saved = data.resume.profile.certifications;
       certs = saved;
       box.value = box.dataset.saved = asText(saved);  // as it was read
+      showExpired(saved, data.resume.expired || []);
       box.rows = Math.min(12, Math.max(4, saved.length + 1));
       summary.textContent = `Certifications you have passed (${saved.length})`;
       status.textContent = `Saved ${saved.length}. Your next resumes use the best of them for each job.`;
@@ -86,8 +98,8 @@ function certificationsBox(r) {
   });
   const summary = el('summary', { text: `Certifications you have passed (${certs.length})` });
   return el('details', { class: 'cert-list', 'data-resume': r.id }, summary,
-    el('p', { class: 'small muted', text: 'Paste the certifications this person has passed, one per line (rows copied from a table work too). For each job, the best ones that fit, up to 4, are put on the resume automatically, after Education. List only exams that were really passed: employers check them.' }),
-    box, el('div', { class: 'row' }, save, status));
+    el('p', { class: 'small muted', text: 'Paste the certifications this person has passed, one per line: name | issuer | date earned - date it expires (rows copied from a table work too). For each job, the best ones that fit, up to 4, are put on the resume automatically, after Education, with their dates. An expired one is never printed. List only exams that were really passed: employers check them.' }),
+    box, expiredNote, el('div', { class: 'row' }, save, status));
 }
 
 async function load() {

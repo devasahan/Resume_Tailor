@@ -57,9 +57,12 @@ class Certification(BaseModel):
     # (The docstring above is part of the AI resume reader's schema; this comment is not.)
     name: str
     issuer: str = ""
-    year: str = ""  # when it was earned, as written ("2023", "Mar 2023"); "" when not stated
+    # 'year' (not 'earned') so resumes saved before the expiry date was kept still load
+    year: str = Field("", description='the date it was earned, as written ("2023", "Mar 2023"); "" when not stated')
+    expires: str = Field("", description='the date it expires, as written ("Mar 2026"); "" when it does not expire '
+                                         'or this is not stated')
 
-    _text = field_validator("name", "issuer", "year", mode="before")(_as_text)
+    _text = field_validator("name", "issuer", "year", "expires", mode="before")(_as_text)
 
 
 class Profile(BaseModel):
@@ -228,7 +231,8 @@ class CertificationChoice(BaseModel):
     printed on the resume. The person ticks or unticks it there."""
     name: str
     issuer: str = ""
-    year: str = ""
+    year: str = ""  # earned
+    expires: str = ""
     have: bool = False
 
 

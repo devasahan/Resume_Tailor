@@ -326,7 +326,7 @@ def test_every_prompt_carries_the_persons_certifications(router, db, registry, c
     kinds = ["fix" if RETRY_MARKER in p else "shorter" if SHORTEN_NOTE in p else "first" for p in client.prompts]
     assert {"first", "fix", "shorter"} <= set(kinds), kinds
     listed = ("<candidate_certifications>\n0: AWS Certified Solutions Architect – Professional | Amazon Web Services"
-              " | 2023\n1: Certified ScrumMaster (CSM) | Scrum Alliance | 2020\n</candidate_certifications>")
+              " | earned 2023\n1: Certified ScrumMaster (CSM) | Scrum Alliance | earned 2020\n</candidate_certifications>")
     assert all(listed in prompt for prompt in client.prompts)
     fix = next(p for p in client.prompts if RETRY_MARKER in p)
     assert "These certification names appear in the headline, summary or bullets: 'Certified ScrumMaster'" in fix
@@ -372,14 +372,14 @@ def test_a_tick_that_needs_room_removes_the_fewest_bullets(certified):
 
 # ------------------------------------------------------------------ prompts
 def test_the_prompts_list_the_persons_certifications_and_the_rule():
-    assert PROMPT_VERSION == "v31"
+    assert PROMPT_VERSION == "v32"
     system = tailor_system()
     assert "CERTIFICATIONS: `certifications` lists the 4 certifications that best support this application" in system
     assert "never name one in the headline, the summary, the skills or the bullets" in system
     assert "Do NOT invent client or product names, certifications" in system
     user = tailor_user(SAMPLE_JD, [], "", certifications=[AWS, Certification(name="CKA")])
     assert ("<candidate_certifications>\n0: AWS Certified Solutions Architect – Professional | Amazon Web Services"
-            " | 2023\n1: CKA\n</candidate_certifications>") in user
+            " | earned 2023\n1: CKA\n</candidate_certifications>") in user
     assert "<candidate_certifications>\n(none)\n</candidate_certifications>" in tailor_user(SAMPLE_JD, [], "")
 
 
@@ -457,7 +457,7 @@ def test_wrong_ticks_are_refused(client, user_client):
 def test_a_user_sees_the_rows_but_never_the_model(client, user_client):
     upload(user_client)
     run = tailor(user_client).json()
-    assert set(run["certifications"][0]) == {"name", "issuer", "year", "have"}
+    assert set(run["certifications"][0]) == {"name", "issuer", "year", "expires", "have"}
     assert "served_model" not in run and "cost_usd" not in run and "resume" not in run
     ticked = ticks(user_client, run["run_id"], [False, True, False, False])
     assert ticked.status_code == 200 and [r["have"] for r in ticked.json()["certifications"]] == [False, True, False, False]
@@ -595,7 +595,7 @@ def test_pasted_certifications_are_printed_without_asking(client):
     assert set(printed) <= {c.name for c in read_certification_list(TABLE)}  # only the person's own
     # pasting again replaces the list; an empty box clears it
     assert client.put(f"/api/resumes/{resume_id}/certifications", json={"text": "CKAD"}).json()[
-        "resume"]["profile"]["certifications"] == [{"name": "CKAD", "issuer": "", "year": ""}]
+        "resume"]["profile"]["certifications"] == [{"name": "CKAD", "issuer": "", "year": "", "expires": ""}]
     assert client.put(f"/api/resumes/{resume_id}/certifications", json={"text": ""}).json()[
         "resume"]["profile"]["certifications"] == []
 
@@ -639,3 +639,80 @@ def test_no_name_in_the_checks_module_is_defined_twice():
         elif isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
             names[node.name] += 1
     assert [name for name, count in names.items() if count > 1] == []
+
+
+
+# ------------------------------------------------------------------ dates: earned and expires
+def test_both_dates_are_read_in_every_usual_form():
+    found = [(c.name, c.year, c.expires) for c in _parse_certifications([
+        "AWS Certified Developer – Associate, Amazon Web Services, Mar 2023 - Mar 2026",
+        "PMP, PMI, 2021, expires 2027",
+        "CompTIA Security+ (valid until Dec 2025)",
+        "Google Cloud Professional Data Engineer", "Google Cloud", "Issued Jan 2024 · Expires Jan 2026",
+        "Azure Fundamentals", "Issued Feb 2023 · No Expiration Date",
+        "HashiCorp Terraform Associate", "Issued Mar 2024", "Expires Mar 2026",  # LinkedIn, on lines of their own
+        "Lean Six Sigma Green Belt, 2019 - Present"])]
+    assert found == [
+        ("AWS Certified Developer – Associate", "Mar 2023", "Mar 2026"), ("PMP", "2021", "2027"),
+        ("CompTIA Security+", "", "Dec 2025"), ("Google Cloud Professional Data Engineer", "Jan 2024", "Jan 2026"),
+        ("Azure Fundamentals", "Feb 2023", ""), ("HashiCorp Terraform Associate", "Mar 2024", "Mar 2026"),
+        ("Lean Six Sigma Green Belt", "2019", "")]
+    table = "Certification\tIssuer\tIssued\tExpires\nCKAD\tThe Linux Foundation\tMar 2024\t03/2026\nPMP\tPMI\t2021\tNo Expiration"
+    assert [(c.name, c.year, c.expires) for c in read_certification_list(table)] == [
+        ("CKAD", "Mar 2024", "03/2026"), ("PMP", "2021", "")]
+    box = "AWS Certified Developer – Associate | Amazon Web Services | Mar 2024 - Mar 2027\nCSM | Scrum Alliance | Expires Feb 2026"
+    assert [(c.year, c.expires) for c in read_certification_list(box)] == [("Mar 2024", "Mar 2027"), ("", "Feb 2026")]
+
+
+def test_a_date_has_expired_only_once_its_month_is_over():
+    from datetime import date
+
+    from app.pipeline.facts import is_expired
+
+    today = date(2026, 11, 11)
+    assert [is_expired(d, today) for d in ("Oct 2026", "03/2026", "2025")] == [True, True, True]
+    assert [is_expired(d, today) for d in ("Nov 2026", "2026", "No Expiration", "", "soon")] == [False] * 5
+
+
+def test_an_expired_certification_is_never_picked_or_printed(certified):
+    from datetime import date
+
+    from app.prompts import describe_certifications
+
+    today = date(2026, 11, 11)
+    certified.certifications[0].expires = "Jan 2025"  # AWS has expired; CSM has no expiry
+    certified.certifications[1].expires = "Feb 2027"
+    printed, rows = validate.resolve_certifications(
+        certified, [pick("AWS", 0), pick("AWS Certified Solutions Architect Professional"), pick("CSM", 1)], today)
+    assert [r.name for r in rows] == [CSM.name] and [c.name for c in printed] == [CSM.name]
+    assert printed[0].expires == "Feb 2027" and rows[0].expires == "Feb 2027"
+    # the model is never shown it; the others keep their numbers
+    assert describe_certifications(certified.certifications, today) == (
+        "1: Certified ScrumMaster (CSM) | Scrum Alliance | earned 2020, expires Feb 2027")
+
+
+def test_the_resume_shows_both_dates(certified):
+    certified.certifications = [
+        Certification(name="AWS Certified Developer – Associate", issuer="Amazon Web Services", year="Mar 2023",
+                      expires="Mar 2026"),
+        Certification(name="Certified ScrumMaster (CSM)", issuer="Scrum Alliance", year="Feb 2020"),
+        Certification(name="PMP", expires="Jun 2027")]
+    resume = validate.build_resume(certified, make_output())
+    resume.certifications = list(certified.certifications)
+    text = " ".join(text_of(render_resume_pdf(resume, FitStyle())[0]).split())
+    assert "Amazon Web Services Mar 2023 - Mar 2026" in text and "Scrum Alliance Feb 2020" in text
+    assert "PMP Expires Jun 2027" in text
+    words = [p.text for p in Document(io.BytesIO(resume_docx(resume, FitStyle()))).paragraphs]
+    assert "AWS Certified Developer – Associate | Amazon Web Services\tMar 2023 - Mar 2026" in words
+
+
+def test_the_profile_page_names_the_expired_ones(client):
+    resume_id = save_profile(client)["id"]
+    saved = client.put(f"/api/resumes/{resume_id}/certifications", json={
+        "text": "CKAD | The Linux Foundation | Mar 2020 - Mar 2023\nPMP | PMI | Jun 2021 - Jun 2099"}).json()["resume"]
+    assert saved["expired"] == ["CKAD"]
+    assert [(c["year"], c["expires"]) for c in saved["profile"]["certifications"]] == [
+        ("Mar 2020", "Mar 2023"), ("Jun 2021", "Jun 2099")]
+    run = tailor(client, profile_id=resume_id).json()
+    assert [c["name"] for c in run["resume"]["certifications"]] == ["PMP"]  # the expired one is left off
+    assert "Expired, so never printed" in client.get("/profile").text

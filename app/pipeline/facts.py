@@ -41,6 +41,14 @@ def parse_point(text: str, is_end: bool, today: date | None = None) -> tuple[int
     return None
 
 
+def is_expired(expires: str, today: date | None = None) -> bool:
+    """True when this expiry date ('Mar 2026', '03/2026', '2026': the end of that year) is before this month. An empty
+    or unreadable one ('No Expiration') is not expired."""
+    today = today or date.today()
+    point = parse_point(expires, is_end=True, today=today) if expires and expires.strip() else None
+    return point is not None and point < (today.year, today.month)
+
+
 def _index(point: tuple[int, int]) -> int:
     return point[0] * 12 + (point[1] - 1)
 

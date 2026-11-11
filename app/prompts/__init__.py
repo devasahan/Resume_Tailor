@@ -10,10 +10,16 @@ from datetime import date
 from functools import cache
 from pathlib import Path
 
-from ..pipeline.facts import bullet_caps, experience_before, months_phrase, stay_months
+from ..pipeline.facts import (
+    bullet_caps,
+    experience_before,
+    is_expired,
+    months_phrase,
+    stay_months,
+)
 from ..schemas import CareerStep, Certification, Company, JDAnalysis, Resume
 
-PROMPT_VERSION = "v31"
+PROMPT_VERSION = "v32"
 RETRY_MARKER = "Your previous answer was rejected"
 
 _DIR = Path(__file__).parent
@@ -74,10 +80,16 @@ def describe_companies(
     return "\n".join(lines) or "(none)"
 
 
-def describe_certifications(certifications: Sequence[Certification]) -> str:
-    """One numbered line per certification the candidate has: the model picks the ones that fit the job by number."""
-    lines = [f"{index}: " + " | ".join(part for part in (c.name, c.issuer, c.year) if part)
-             for index, c in enumerate(certifications)]
+def describe_certifications(certifications: Sequence[Certification], today: date | None = None) -> str:
+    """One numbered line per certification the candidate has, with its dates: the model picks the ones that fit the job
+    by number. An expired one is left out (the others keep their numbers)."""
+    lines = []
+    for index, c in enumerate(certifications):
+        if is_expired(c.expires, today):
+            continue
+        dates = ", ".join(part for part in (f"earned {c.year}" if c.year else "",
+                                            f"expires {c.expires}" if c.expires else "") if part)
+        lines.append(f"{index}: " + " | ".join(part for part in (c.name, c.issuer, dates) if part))
     return "\n".join(lines) or "(none)"
 
 
@@ -110,7 +122,7 @@ def tailor_user(
         companies=describe_companies(companies, bullets, today),
         facts=facts.strip() or "Total professional experience: unknown (do not state a number of years).",
         hints=hints.strip() or "(none given)",
-        certifications=describe_certifications(certifications),
+        certifications=describe_certifications(certifications, today),
         extra=SHORTEN_NOTE if shorten else "",
     )
 
@@ -131,7 +143,7 @@ def revise_user(
         companies=describe_companies(companies, bullets, today),
         facts=facts.strip() or "Total professional experience: unknown (do not state a number of years).",
         hints=hints.strip() or "(none given)",
-        certifications=describe_certifications(certifications),
+        certifications=describe_certifications(certifications, today),
         must_haves=", ".join(analysis.must_have_skills) or "(none)",
         keywords=", ".join(analysis.keywords) or "(none)",
         plan="\n".join(steps) or "(none)",

@@ -15,6 +15,7 @@ from ..schemas import CoverLetter, FitStyle, Resume
 from .pdf import (
     HEADER_GAP,
     Run,
+    certification_dates,
     certification_runs,
     contact_line,
     fmt_dates,
@@ -151,7 +152,7 @@ def resume_docx(resume: Resume, style: FitStyle, document: str = "Resume") -> by
     if resume.certifications:  # only ones the person has, best for the job first
         _heading(doc, "CERTIFICATIONS", style.font_pt)
         for cert in resume.certifications:
-            _row(doc, certification_runs(cert), cert.year, text_width)
+            _row(doc, certification_runs(cert), certification_dates(cert), text_width)
 
     buffer = BytesIO()
     doc.save(buffer)

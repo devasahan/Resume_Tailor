@@ -35,7 +35,7 @@ from ..schemas import (
     TailorRevision,
 )
 from . import spelling
-from .facts import months_phrase, parse_point, stay_months
+from .facts import is_expired, months_phrase, parse_point, stay_months
 
 _PUNCT_MAP = str.maketrans({
     "\u2019": "'", "\u2018": "'", "\u201c": '"', "\u201d": '"', "\u2013": "-", "\u2014": " - ", "\u2015": " - ",
@@ -750,12 +750,13 @@ def names_certification(term: str, names: list[str] | tuple = ()) -> bool:
 
 
 def resolve_certifications(
-    profile: Profile, picks: list[CertificationPick]
+    profile: Profile, picks: list[CertificationPick], today=None
 ) -> tuple[list[Certification], list[CertificationChoice]]:
     """(printed, rows) for the model's picks. A pick is one of the person's own when its number points at one of
     their certifications, or when its name is one of theirs in another spelling: that certification is then printed
-    exactly as the person wrote it. Any other pick is a row the person can tick on the Tailor page, never printed
-    on its own. Duplicates go; at most MAX_CERTIFICATIONS rows, in the model's order (best first)."""
+    exactly as the person wrote it, with its dates. One of theirs that has expired is never printed (nor shown).
+    Any other pick is a row the person can tick on the Tailor page, never printed on its own. Duplicates go; at
+    most MAX_CERTIFICATIONS rows, in the model's order (best first)."""
     own = profile.certifications
     rows: list[CertificationChoice] = []
     for pick in picks:
@@ -765,7 +766,10 @@ def resolve_certifications(
             index = next((i for i, cert in enumerate(own) if same_certification(cert.name, name)), -1)
         if index >= 0:
             cert = own[index]
-            row = CertificationChoice(name=cert.name, issuer=cert.issuer, year=cert.year, have=True)
+            if is_expired(cert.expires, today):
+                continue
+            row = CertificationChoice(name=cert.name, issuer=cert.issuer, year=cert.year, expires=cert.expires,
+                                      have=True)
         elif name:
             row = CertificationChoice(name=name, issuer=clean_text(pick.issuer)[:CERT_NAME_LIMIT].strip())
         else:
@@ -780,7 +784,8 @@ def resolve_certifications(
 
 def printed_certifications(rows: list[CertificationChoice]) -> list[Certification]:
     """What the resume prints for these rows: the ones the person has, best first."""
-    return [Certification(name=r.name, issuer=r.issuer, year=r.year) for r in rows if r.have][:MAX_CERTIFICATIONS]
+    return [Certification(name=r.name, issuer=r.issuer, year=r.year, expires=r.expires)
+            for r in rows if r.have][:MAX_CERTIFICATIONS]
 
 
 def change_certifications(profile: Profile, added: list[Certification], dropped: list[str]) -> None:

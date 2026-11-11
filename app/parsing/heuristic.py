@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import re
 
+from ..pipeline.facts import parse_point
 from ..pipeline.validate import same_certification
 from ..schemas import Certification, Company, Contact, Education, Profile
 
@@ -63,22 +64,38 @@ _ACRONYM = re.compile(r"\b[A-Z][A-Z0-9+]{1,6}\b")
 _TITLE_IS_CREDENTIAL = re.compile(
     r"\b(?:certif\w*|licen[cs]\w*|credential|associate|professional|expert|practitioner|specialist|fundamentals|"
     r"foundations?)\b", re.IGNORECASE)
-# One date for a certification: the date it was earned, after a separator or a word such as "Issued" ("Mar 2023",
-# "2021"), with an end date ("- Mar 2026", "- Present") taken out too. A number inside a name ("Windows Server 2016",
-# "ISO 9001") is not a date.
+# A certification's dates: the date it was earned, after a separator or a word such as "Issued" ("Mar 2023", "2021"),
+# and the end of a range, the date it expires ("- Mar 2026"; "- Present" or "No Expiration" is none). A number inside
+# a name ("Windows Server 2016", "ISO 9001") is not a date.
 _CERT_YEAR = rf"(?:{_MONTH}\s+)?(?:19|20)\d{{2}}"
+_RANGE_END = rf"(?:\s*(?:-|–|—|to)\s*({_CERT_YEAR}|present|current|no\s+expiration(?:\s+date)?))?"
 CERT_DATE_RE = re.compile(
     rf"(?:\s*[,|(]|\s+[-–—]|\s*\b(?:issued|earned|obtained|awarded|completed|since)\b:?)\s*({_CERT_YEAR})"
-    rf"(?:\s*(?:-|–|—|to)\s*(?:{_CERT_YEAR}|present|current|no\s+expiration(?:\s+date)?))?\s*\)?",
+    rf"{_RANGE_END}\s*\)?",
     re.IGNORECASE,
 )
+# The date it expires, said in words: 'Expires Jan 2026', 'expiry: 2026', 'valid until Dec 2025', '(exp. 2027)'
+_EXPIRES_RE = re.compile(
+    rf"(?:\s*[,|(·]\s*|\s+)?\b(?:expires?|expiry|expiration(?:\s+date)?|exp\.|valid\s+(?:until|through|thru|till))"
+    rf"(?:\s+on)?\s*:?\s*({_CERT_YEAR})\s*\)?",
+    re.IGNORECASE,
+)
+
+
+def _expiry(end: str | None) -> str:
+    """The end of a date range, or an Expires cell, as an expiry date: a date ('Mar 2026', '03/2026', '2026'), never
+    'Present' or 'No Expiration'."""
+    end = (end or "").strip()
+    if not end or end.lower() in ("present", "current", "now", "today"):
+        return ""
+    return end if parse_point(end, is_end=True) is not None else ""
 _ISSUED_LINE = re.compile(r"^(?:issued|earned|obtained)\b", re.IGNORECASE)
 # A date that comes first: '2021 | AWS Certified Developer', 'Mar 2023 - Mar 2026 · Certified Kubernetes Administrator'
 _LEAD_DATE = re.compile(
-    rf"^\(?({_CERT_YEAR})\)?(?:\s*(?:-|–|—|to)\s*(?:{_CERT_YEAR}|present|current))?\s*(?:[|,·:]|\s[-–—])\s*",
+    rf"^\(?({_CERT_YEAR})\)?{_RANGE_END}\s*(?:[|,·:]|\s[-–—])\s*",
     re.IGNORECASE)
 _SKIP_CERT_LINE = re.compile(
-    r"^(?:expires?|expired|expiration|no\s+expiration|credential\s+(?:id|url)|(?:see|show)\s+credential)\b",
+    r"^(?:expired|no\s+expiration|credential\s+(?:id|url)|(?:see|show)\s+credential)\b",
     re.IGNORECASE,
 )
 SCHOOL_RE = re.compile(r"\b(University|College|Institute|School|Academy|Polytechnic)\b", re.IGNORECASE)
@@ -229,31 +246,44 @@ def _balanced(part: str) -> str:
 
 
 def _parse_certifications(lines: list[str]) -> list[Certification]:
-    """One certification per line: 'Name, Issuer, 2023', 'Name | Issuer | Mar 2023', '• Name (2021)'. A name is
-    never split at a dash ('AWS Certified Solutions Architect – Professional'). LinkedIn's own lines ('Issued Jan
-    2023 · Expires Jan 2026', 'Credential ID ...') are not certifications: an 'Issued' date is the one above's."""
+    """One certification per line: 'Name, Issuer, 2023', 'Name | Issuer | Mar 2023 - Mar 2026', '• Name (2021,
+    expires 2024)'. A name is never split at a dash ('AWS Certified Solutions Architect – Professional'). LinkedIn's own
+    lines ('Issued Jan 2023 · Expires Jan 2026', 'Expires Jan 2026', 'Credential ID ...') are not certifications: their
+    dates are the one above's."""
     certifications: list[Certification] = []
     for raw in lines:
         line = _LIST_MARK.sub("", raw.strip())
         if not line or _SKIP_CERT_LINE.match(line):
             continue
+        expiring = _EXPIRES_RE.match(line)
+        if expiring and not line[expiring.end():].strip(" ·|,"):  # a line of its own: 'Expires Jan 2026'
+            if certifications and not certifications[-1].expires:
+                certifications[-1].expires = expiring.group(1)
+            continue
         if _ISSUED_LINE.match(line):
             dated = CERT_DATE_RE.search(" " + line)
+            expiring = _EXPIRES_RE.search(line)
             if (len(certifications) >= 2 and not certifications[-1].issuer and not certifications[-1].year
                     and not certifications[-2].issuer and not _CREDENTIAL_LINE.search(certifications[-1].name)):
                 issuer = certifications.pop().name  # LinkedIn: name / issuer / Issued ...
                 certifications[-1].issuer = issuer
             if dated and certifications and not certifications[-1].year:
                 certifications[-1].year = dated.group(1)
+            if certifications and not certifications[-1].expires:
+                certifications[-1].expires = (expiring.group(1) if expiring else "") or _expiry(
+                    dated.group(2) if dated else None)
             continue
-        year = ""
+        year = expires = ""
+        expiring = _EXPIRES_RE.search(line)
+        if expiring:  # 'Name, Issuer, 2023, expires 2026'
+            expires, line = expiring.group(1), (line[: expiring.start()] + line[expiring.end():]).strip()
         lead = _LEAD_DATE.match(line)
         if lead:
-            year, line = lead.group(1), line[lead.end():]
+            year, expires, line = lead.group(1), expires or _expiry(lead.group(2)), line[lead.end():]
         line = re.sub(r"\s*\(([^()]*,[^()]*)\)\s*$", r", \1", line)  # 'Name (Issuer, 2020)' -> fields
         dated = CERT_DATE_RE.search(" " + line)
         if dated:
-            year = year or dated.group(1)
+            year, expires = year or dated.group(1), expires or _expiry(dated.group(2))
             spaced = " " + line
             line = (spaced[: dated.start()] + spaced[dated.end():]).strip()
         # ' | ' is the box's own separator, so a name may keep a comma ('Oracle Certified Professional, Java SE 11')
@@ -265,7 +295,7 @@ def _parse_certifications(lines: list[str]) -> list[Certification]:
         name, issuer = parts[0], parts[1] if len(parts) > 1 else ""
         if any(same_certification(name, c.name) for c in certifications):
             continue
-        certifications.append(Certification(name=name, issuer=issuer, year=year))
+        certifications.append(Certification(name=name, issuer=issuer, year=year, expires=expires))
     return certifications
 
 
@@ -278,7 +308,9 @@ _HEADER_CELLS = frozenset({"s.no.", "s.no", "no.", "no", "#", "certification", "
 _COLUMNS = {
     "name": {"certification", "certifications", "certificate", "name", "credential", "license", "licence"},
     "issuer": {"issuer", "issued by", "organization", "organisation", "provider", "vendor", "authority", "body"},
-    "year": {"year", "date", "issued", "earned", "obtained", "date earned"},
+    "year": {"year", "date", "issued", "earned", "obtained", "date earned", "issue date", "issued on"},
+    "expires": {"expires", "expiry", "expiration", "expiration date", "expiry date", "expires on", "valid until",
+                "valid through", "valid till"},
 }
 
 
@@ -291,8 +323,8 @@ def _table_header(cells: list[str]) -> dict[int, str] | None:
 def read_certification_list(text: str) -> list[Certification]:
     """The certifications a person pastes on the Profile page: one per line ('Name', 'Name, Issuer, 2023',
     'Name | Issuer | Mar 2023'), or rows copied from a table, whose cells are split by tabs. A header row says which
-    column is the name (and the issuer and the year); without one, a row's first cell is the name and a year cell
-    its year. Number and exam-code columns and numbered titles between the rows ('2. Backend Engineer') are left
+    column is the name (and the issuer, the year earned and the expiry date); without one, a row's first cell is the
+    name, its first date the year earned and a second date the expiry date. Number and exam-code columns and numbered titles between the rows ('2. Backend Engineer') are left
     out, and so is a bullet copied from Word ('•<tab>Name'). The same certification twice is kept once."""
     lines = [line for line in text.replace("\r", "").splitlines() if line.strip()]
     table = any("\t" in line for line in lines)
@@ -308,6 +340,7 @@ def read_certification_list(text: str) -> list[Certification]:
             if header:
                 pick = {role: raw[index] for index, role in header.items() if index < len(raw)}
                 name, issuer, year = pick.get("name", ""), pick.get("issuer", ""), pick.get("year", "")
+                expires = _expiry(pick.get("expires", ""))
             else:
                 cells = [c for c in raw if c and not _ROW_NUMBER.fullmatch(c) and _LIST_MARK.sub("", c).strip()]
                 if not cells or cells[0].lower() in _HEADER_CELLS:
@@ -316,10 +349,12 @@ def read_certification_list(text: str) -> list[Certification]:
                     found += _parse_certifications(cells)
                     continue
                 name, issuer = cells[0], ""
-                year = next((c for c in cells[1:] if re.fullmatch(r"(?:19|20)\d{2}", c)), "")
+                dates = [c for c in cells[1:] if re.fullmatch(_CERT_YEAR, c, re.IGNORECASE)]
+                year, expires = (dates + ["", ""])[:2]
             name = _LIST_MARK.sub("", name).strip()
             if name and re.search(r"[A-Za-z]", name):
-                found.append(Certification(name=name, issuer=issuer.strip(), year=year.strip()))
+                found.append(Certification(name=name, issuer=issuer.strip(), year=year.strip(),
+                                           expires=_expiry(expires)))
             continue
         if table and _LEAD_NUMBER.match(line) and not _TITLE_IS_CREDENTIAL.search(line):
             continue  # a numbered title between a table's rows ('2. Backend Engineer', '4. AI Engineer')

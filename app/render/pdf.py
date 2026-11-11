@@ -337,6 +337,14 @@ def certification_runs(cert: Certification) -> list[Run]:
     return [Run(cert.name, True)] + ([Run(f" | {cert.issuer}")] if cert.issuer else [])
 
 
+def certification_dates(cert: Certification) -> str:
+    """Its dates on the right, like a job's: 'Mar 2023 - Mar 2026' (earned - expires), 'Feb 2020' when it does not
+    expire, 'Expires Mar 2026' when the date it was earned is not known."""
+    if cert.year and cert.expires:
+        return fmt_dates(cert.year, cert.expires)
+    return cert.year or (f"Expires {cert.expires}" if cert.expires else "")
+
+
 def resume_sheet(resume: Resume, style: FitStyle, document: str = "Resume") -> Sheet:
     """The resume laid out on pages: `pdf.page` pages, `last_page_fill()`, and the file from `finish()`."""
     p = resume.profile
@@ -390,7 +398,7 @@ def resume_sheet(resume: Resume, style: FitStyle, document: str = "Resume") -> S
                 sheet.para(extra)
 
     if resume.certifications:  # only ones the person has, best for the job first
-        rows = [(certification_runs(cert), cert.year) for cert in resume.certifications]
+        rows = [(certification_runs(cert), certification_dates(cert)) for cert in resume.certifications]
         heights = [sheet.row_height(left, year) for left, year in rows]
         sheet.heading("CERTIFICATIONS", keep=heights[0])
         for (left, year), height in zip(rows, heights):

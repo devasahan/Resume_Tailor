@@ -289,7 +289,7 @@ async def run_tailor(
             style (after the title fixes, which match the posting's own spelling)."""
             validate.clean_analysis(out.jd_analysis, certification_names(out))
             resume = validate.build_resume(profile, out)
-            resume.certifications, _rows = validate.resolve_certifications(profile, out.certifications)
+            resume.certifications, _rows = validate.resolve_certifications(profile, out.certifications, today)
             validate.assert_certifications_held(resume)
             # a certification is printed only in its own section, and only when the person has it
             validate.remove_certification_skills(resume, certification_names(out))
@@ -547,7 +547,7 @@ async def run_tailor(
         result.resume = resume
         result.analysis = output.jd_analysis
         result.career_plan = output.career_plan
-        result.certifications = validate.resolve_certifications(profile, output.certifications)[1]
+        result.certifications = validate.resolve_certifications(profile, output.certifications, today)[1]
         result.style, result.pages, result.fits = style, pages, fits
         result.served_model = outcome.served_model
         result.status = "ok"

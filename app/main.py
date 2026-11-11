@@ -34,6 +34,7 @@ from .llm.router import Router
 from .parsing.heuristic import MAX_OWN_CERTIFICATIONS, read_certification_list
 from .parsing.resume_parser import MAX_BYTES, extract_text, parse_resume, profile_warnings, read_resume
 from .pipeline import validate
+from .pipeline.facts import is_expired
 from .pipeline.generate import GenerationFailed
 from .pipeline.job_facts import check_job_facts
 from .prompts import METRICS_MODES
@@ -245,13 +246,16 @@ def profile_problem(profile: Profile) -> str | None:
 
 
 def resume_entry(entry: dict, registry: Registry, admin: bool) -> dict:
-    """An uploaded resume as the Profile and Tailor pages show it. Users do not see which model read it."""
+    """An uploaded resume as the Profile and Tailor pages show it. Users do not see which model read it. `expired`
+    names the certifications whose expiry date has passed: they are never printed."""
     method = entry["method"]
     profile: Profile = entry["profile"]
+    expired = [cert.name for cert in profile.certifications if is_expired(cert.expires)]
     if not admin:
         return {
             "id": entry["id"], "created_at": entry["created_at"], "filename": entry["filename"], "method": "",
             "read_with": "", "profile": profile.model_dump(), "warnings": profile_warnings(profile),
+            "expired": expired,
         }
     if method.startswith("model:"):
         model_id = method.split(":", 1)[1]
@@ -264,7 +268,7 @@ def resume_entry(entry: dict, registry: Registry, admin: bool) -> dict:
     return {
         "id": entry["id"], "created_at": entry["created_at"], "filename": entry["filename"], "method": method,
         "read_with": read_with, "profile": profile.model_dump(),
-        "warnings": entry["notes"] + profile_warnings(profile),
+        "warnings": entry["notes"] + profile_warnings(profile), "expired": expired,
     }
 
 
@@ -1169,7 +1173,8 @@ def create_app(db: Database | None = None, registry: Registry | None = None, rou
         changed = [(row, have) for row, have in zip(result.certifications, body.have) if row.have != have]
         if not changed:
             return viewed(result, user)
-        added = [Certification(name=row.name, issuer=row.issuer, year=row.year) for row, have in changed if have]
+        added = [Certification(name=row.name, issuer=row.issuer, year=row.year, expires=row.expires)
+                 for row, have in changed if have]
         dropped = [row.name for row, have in changed if not have]
         profile_id, owner = db.run_source(run_id)
         if profile_id is not None:  # remembered for the next jobs with this base resume (if it still exists)

@@ -19,6 +19,7 @@ import os
 import re
 
 from ..parsing.heuristic import parse_resume_text
+from ..pipeline.facts import is_expired
 from ..pipeline.validate import same_certification
 from ..prompts import RETRY_MARKER
 from .base import LLMClient, LLMResult, Usage
@@ -225,7 +226,7 @@ def demo_certifications(jd: str, own: list[dict]) -> list[dict]:
     """The demo's picks, like a real model's: the candidate's own first (by number), then real certifications the
     job's words point to, then common ones, 4 in all."""
     picks = [{"name": c.get("name", ""), "issuer": c.get("issuer", ""), "candidate_index": i}
-             for i, c in enumerate(own) if c.get("name")][:4]
+             for i, c in enumerate(own) if c.get("name") and not is_expired(str(c.get("expires") or ""))][:4]
     low = jd.lower()
     matched = [row for row in DEMO_CERTIFICATIONS if any(word in low for word in row[2])]
     for name, issuer, _words in matched + [row for row in DEMO_CERTIFICATIONS if row not in matched]:
