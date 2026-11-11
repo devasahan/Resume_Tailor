@@ -35,6 +35,19 @@ def test_key_and_region_gating(registry, router, monkeypatch):
     assert registry.status(registry.get("deepseek-v4-flash"), router.settings()["allowed_regions"]).available
 
 
+def test_gpt_is_the_automatic_choice_only_without_a_gemini_or_claude_key(registry, router, monkeypatch):
+    for spec in registry.all():
+        if spec.key_env:
+            monkeypatch.delenv(spec.key_env, raising=False)
+    monkeypatch.setenv("OPENAI_API_KEY", "k")
+    assert router.default_model("resume") == "gpt-6.1-sol"
+    monkeypatch.setenv("GEMINI_API_KEY", "k")
+    assert router.default_model("resume") == "gemini-3.8-flash"  # a Gemini setup stays as it was
+    gpt = registry.get("gpt-6.1-sol")
+    assert (gpt.provider, gpt.base_url, gpt.key_env) == ("openai_compat", "https://api.openai.com/v1", "OPENAI_API_KEY")
+    assert gpt.data_region == "US" and not gpt.verified  # Settings shows it 'unverified' until its check passes
+
+
 def test_user_choice_overrides_priority_and_unavailable_choice_is_ignored(router, monkeypatch):
     router.db.set_settings({"resume_model": "demo-detailed", "cover_letter_model": "claude-sonnet-5-5"})
     monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)

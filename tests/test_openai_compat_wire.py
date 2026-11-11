@@ -94,3 +94,19 @@ def test_auth_failure_is_reported_with_status(server):
     with pytest.raises(ProviderError) as info:
         call(client_for(server, json_mode="json_object"))
     assert info.value.status == 401 and len(server["seen"]) == 1
+
+
+def test_the_gpt_entry_sends_what_openai_expects(server, monkeypatch):
+    from dataclasses import replace
+
+    from app.llm.registry import Registry
+
+    monkeypatch.setenv("OPENAI_API_KEY", "openai-secret")
+    gpt = Registry.load().get("gpt-6.1-sol")
+    call(OpenAICompatClient(replace(gpt, base_url=server["url"])))  # its own settings, to a local server
+    sent = server["seen"][0]
+    assert sent["auth"] == "Bearer openai-secret"
+    body = sent["body"]
+    assert body["model"] == "gpt-6.1-sol" and body["max_completion_tokens"] == 777 and "max_tokens" not in body
+    assert body["reasoning_effort"] == "low" and body["response_format"]["json_schema"]["strict"] is True
+    assert "temperature" not in body  # OpenAI's reasoning models accept only the default

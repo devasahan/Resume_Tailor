@@ -96,6 +96,7 @@ DEFAULT_SETTINGS: dict = {
 DEFAULT_PRIORITY = [  # Automatic resume model: the first one with a key (the Settings choice always wins)
     "gemini-3.8-flash",
     "claude-sonnet-5-5",
+    "gpt-6.1-sol",
     "grok-4.3",
     "mistral-large",
     "gemini-3.5-flash-lite",
@@ -115,5 +116,6 @@ PARSER_PRIORITY = [
     "gemini-3.8-flash",
     "claude-sonnet-5-5",
     "grok-4.3",
+    "gpt-6.1-sol",
     "demo-concise",
 ]

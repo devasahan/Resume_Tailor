@@ -63,6 +63,19 @@ models:
     settings: {reasoning_effort: low, json_mode: json_schema, max_output_tokens: 16000}
     notes: Cheap model, good for parsing the uploaded base resume.
 
+  - id: gpt-6.1-sol
+    label: GPT-6.1 Sol
+    provider: openai_compat
+    model: gpt-6.1-sol
+    base_url: https://api.openai.com/v1
+    key_env: OPENAI_API_KEY
+    price_in: 2.00
+    price_out: 10.00
+    data_region: US
+    verified: false
+    settings: {reasoning_effort: low, json_mode: json_schema, max_tokens_param: max_completion_tokens, max_output_tokens: 16000}
+    notes: "Needs an OpenAI API key from platform.openai.com (paid per use; a ChatGPT Plus or Pro subscription cannot be used by apps). Model id and price from OpenAI's GPT-6.1 Sol announcement (November 2026): run the check in Settings. A free PythonAnywhere account may not reach api.openai.com."
+
   - id: grok-4.3
     label: Grok 4.3
     provider: openai_compat

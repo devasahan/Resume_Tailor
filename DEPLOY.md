@@ -43,6 +43,7 @@ Fill in these lines. Write the value right after `=`, with no spaces and no quot
 ADMIN_EMAIL=your email
 ADMIN_PASSWORD=your admin password (at least 10 characters)
 GEMINI_API_KEY=your Gemini key
+OPENAI_API_KEY=your OpenAI API key (optional, for GPT; not a ChatGPT subscription)
 ```
 `COOKIE_SECURE=1` and `FORCE_HTTPS=1` are already set. On a free account the script also adds
 `HTTPS_PROXY=` and `HTTP_PROXY=` lines: the website reaches Gemini through PythonAnywhere's proxy. Save with **Ctrl+O**, **Enter**, then close with
@@ -116,6 +117,8 @@ Changing `.env` also needs this restart. A new `ADMIN_PASSWORD` replaces the old
 | "Cross-site request refused" | Tell Claude: the hosting proxy changes a header the app checks |
 | Check models says "network error (ConnectError)" | The website does not know PythonAnywhere's proxy. In a PythonAnywhere Bash console run `echo $https_proxy`, add `HTTPS_PROXY=` and `HTTP_PROXY=` lines with that address (usually `http://proxy.server:3128`) to `.env`, and restart the website |
 | Gemini check fails with "403" or "Tunnel connection failed" | The free account cannot reach that address; a paid account has full internet access |
+| GPT check fails with "403" or "Tunnel connection failed" | The free account cannot reach api.openai.com. A paid account has full internet access, or ask PythonAnywhere to allow the site (their help page "Requesting allowlist additions") |
+| GPT check fails with "401" | The OpenAI API key is wrong, or the OpenAI account has no payment method yet (platform.openai.com, Billing) |
 | Gemini says "HTTP 503" and "high demand" | Google's servers for that model are overloaded, for paid keys too. The app already waits about a minute and tries again before it shows this; wait a few minutes and try again |
 | "Gateway Time-out" or "finished is not defined" while tailoring | Update to the newest version (see **Updating** above), then press **Ctrl+F5** on the Tailor page once. Slow work then goes on in the background and the page shows "Tailoring your resume" with its timer |
 | Tailoring feels slow | Run the command under this table in a Bash console. Each run's "job finished" line gives every step's time, the CPU used and the time spent waiting for a CPU ("quota throttled" is the part of that wait caused by the host's CPU limit for the site, not the Gemini quota), and how many database steps and font loads ran; "attempt" lines are the AI calls; "slow database step" and "slow request" lines name anything that took long |

@@ -62,10 +62,12 @@ Nothing leaves your computer except the calls to the model providers you pick. S
 | Provider type | Used for | How |
 |---|---|---|
 | `anthropic` | Claude Sonnet 5.5 | Official Anthropic SDK; JSON schema via `output_config.format`, adaptive thinking, refusal fallback |
-| `openai_compat` | Gemini, Grok, Mistral, DeepSeek, Qwen, GLM, Kimi | One adapter for any `POST {base_url}/chat/completions` API. If a provider rejects `json_schema` or `reasoning_effort`, it retries with fewer features and remembers what worked |
+| `openai_compat` | Gemini, GPT (OpenAI), Grok, Mistral, DeepSeek, Qwen, GLM, Kimi | One adapter for any `POST {base_url}/chat/completions` API. If a provider rejects `json_schema` or `reasoning_effort`, it retries with fewer features and remembers what worked |
 | `fake` | Offline demo models | No network, no cost |
 
 **To add a model**, add an entry to `models.yaml` (id, model string, base URL, key variable, price, region), set the key, restart. No code change is needed for any OpenAI-compatible provider.
+
+**GPT** needs an OpenAI API key (`OPENAI_API_KEY`) from platform.openai.com, paid per use: a ChatGPT Plus or Pro subscription cannot be used by apps. Its model name and price are marked unverified until the check on the Settings page passes.
 
 **Models marked `verified: false` need checking.** Their model strings and prices came from third-party websites in October 2026 and were not confirmed against the vendors. Run:
 
