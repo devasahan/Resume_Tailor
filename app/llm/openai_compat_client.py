@@ -10,6 +10,8 @@ from __future__ import annotations
 
 import asyncio
 import json
+import re
+from urllib.parse import urlsplit
 
 import httpx
 
@@ -30,6 +32,59 @@ from .schema import extract_json
 TRANSIENT = {408, 409, 429, 500, 502, 503, 504}
 KEY_ERROR_MARKERS = ("api key not valid", "api_key_invalid", "missing or invalid authorization", "invalid api key",
                      "incorrect api key", "invalid x-api-key")
+
+
+QUOTA_MARKERS = ("resource_exhausted", "exceeded your current quota", "insufficient_quota")
+# Where the owner sees a key's plan, billing and limits, per API host
+BILLING = {
+    "generativelanguage.googleapis.com": ("Google", "aistudio.google.com"),
+    "api.openai.com": ("OpenAI", "platform.openai.com (Settings > Billing)"),
+}
+
+
+def is_quota_error(resp: httpx.Response) -> bool:
+    """The key's quota is used up (Google's RESOURCE_EXHAUSTED, OpenAI's insufficient_quota): not a short hiccup, so
+    it is not retried. A plain 429 (too many requests at once) still is."""
+    return resp.status_code == 429 and any(marker in resp.text.lower() for marker in QUOTA_MARKERS)
+
+
+def _error_body(resp: httpx.Response) -> dict:
+    try:
+        payload = resp.json()
+    except ValueError:
+        return {}
+    if isinstance(payload, list):  # Google sometimes wraps it in a list
+        payload = payload[0] if payload else {}
+    return payload if isinstance(payload, dict) else {}
+
+
+def error_message(resp: httpx.Response) -> str:
+    """The provider's own words from its JSON error ({"error": {"message": ...}}, also in a list), else the start of
+    the body: readable, not raw JSON."""
+    error = _error_body(resp).get("error")
+    message = error.get("message") if isinstance(error, dict) else error if isinstance(error, str) else None
+    return " ".join(str(message or resp.text).split())[:300]
+
+
+def first_sentence(text: str) -> str:
+    """The provider's first sentence ("You exceeded your current quota, please check your plan and billing details."),
+    at most 160 characters: the rest is links and quota metric names."""
+    return re.split(r"(?<=[.!?])\s", text, maxsplit=1)[0][:160]
+
+
+def retry_after(resp: httpx.Response) -> float | None:
+    """Seconds until the quota lets a request through, when the provider says: a Retry-After header ("33"), or
+    Google's RetryInfo ("retryDelay": "33s"). Only plain seconds count (never a date, a negative number or "inf")."""
+    error = _error_body(resp).get("error")
+    details = error.get("details") if isinstance(error, dict) else None
+    delays = [resp.headers.get("retry-after", "")]
+    delays += [detail.get("retryDelay", "") for detail in (details if isinstance(details, list) else [])
+               if isinstance(detail, dict)]
+    for delay in delays:
+        match = re.fullmatch(r"(\d{1,9}(?:\.\d+)?)s?", str(delay).strip())
+        if match:
+            return float(match.group(1))
+    return None
 
 
 def is_key_error(resp: httpx.Response) -> bool:
@@ -116,11 +171,10 @@ class OpenAICompatClient(LLMClient):
                 last = ProviderError(f"{self.spec.label}: network error ({type(exc).__name__})")
                 delays = RETRY_DELAYS
             else:
-                if resp.status_code not in TRANSIENT:
+                if resp.status_code not in TRANSIENT or is_quota_error(resp):
                     return resp
-                last = ProviderError(
-                    f"{self.spec.label}: HTTP {resp.status_code}: {resp.text[:200]}", resp.status_code
-                )
+                last = ProviderError(f"{self.spec.label}: HTTP {resp.status_code}: {error_message(resp)[:200]}",
+                                     resp.status_code)
                 delays = BUSY_RETRY_DELAYS if resp.status_code in BUSY else RETRY_DELAYS
             if attempt >= len(delays):
                 raise last
@@ -153,12 +207,20 @@ class OpenAICompatClient(LLMClient):
                     self._start = index  # remember only a variant that actually worked
                 break
         assert resp is not None
+        if resp.status_code >= 400 and is_quota_error(resp):
+            provider, where = BILLING.get(urlsplit(self.spec.base_url).hostname or "",
+                                          ("the provider", "the provider's site"))
+            raise ProviderError(
+                f"{self.spec.label}: the API key's quota is used up ({provider}: '{first_sentence(error_message(resp))}'). "
+                f"Check the plan and billing at {where}, or wait until it resets.",
+                resp.status_code, quota=True, retry_after=retry_after(resp))
         if resp.status_code >= 400:
             hint = ""
             if is_key_error(resp):
                 hint = (f" -> The API key was rejected. In use: {config.key_hint(self.spec.key_env) or 'none'}. "
                         "Put a valid key in .env and restart.")
-            raise ProviderError(f"{self.spec.label}: HTTP {resp.status_code}: {resp.text[:300]}{hint}", resp.status_code)
+            raise ProviderError(f"{self.spec.label}: HTTP {resp.status_code}: {error_message(resp)}{hint}",
+                                resp.status_code)
         return self._parse(resp)
 
     # ------------------------------------------------------------------ response parsing

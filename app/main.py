@@ -456,6 +456,7 @@ def model_info(registry: Registry, spec: ModelSpec, allowed_regions: list[str]) 
         "verified": spec.verified, "notes": spec.notes, "available": status.available, "reason": status.reason,
         "demo": spec.provider == "fake",
         "key_hint": config.key_hint(spec.key_env) if spec.key_env else "",
+        "key_env": spec.key_env,  # the variable's name only, to tell which models share a key
     }
 
 

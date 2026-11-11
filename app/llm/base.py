@@ -10,11 +10,15 @@ class LLMError(Exception):
 
 
 class ProviderError(LLMError):
-    """HTTP / transport / auth / rate-limit failure."""
+    """HTTP / transport / auth / rate-limit failure. `quota`: the API key's quota is used up (no retry helps until it
+    resets); `retry_after`: seconds until it lets a request through, when the provider says."""
 
-    def __init__(self, message: str, status: int | None = None):
+    def __init__(self, message: str, status: int | None = None, *, quota: bool = False,
+                 retry_after: float | None = None):
         super().__init__(message)
         self.status = status
+        self.quota = quota
+        self.retry_after = retry_after
 
 
 class RefusedError(LLMError):

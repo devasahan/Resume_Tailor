@@ -22,14 +22,15 @@ _FOLLOW_UP_SECONDS: dict[tuple[str, str], float] = {}
 # A model that did not answer in time, or failed for a provider reason (overloaded, rate-limited, network), rests this
 # long: while another model follows it in the chain, it is skipped, so every run does not wait for it again first.
 MODEL_REST_SECONDS = 300.0
+QUOTA_REST_SECONDS = 3600.0  # a used-up quota rests the model this long, or less when the provider says so
 _RESTING_UNTIL: dict[str, float] = {}  # model id -> time.monotonic() until which it is skipped
 _REST_STATUSES = frozenset({408, 409, 429, 500, 502, 503, 504, 529})
 
 
-def _rest(model_id: str, why: str) -> None:
-    _RESTING_UNTIL[model_id] = time.monotonic() + MODEL_REST_SECONDS
-    log.info("%s rests for %.0f minutes (%s): the next model in the chain is used meanwhile", model_id,
-             MODEL_REST_SECONDS / 60, why)
+def _rest(model_id: str, why: str, seconds: float = MODEL_REST_SECONDS) -> None:
+    _RESTING_UNTIL[model_id] = time.monotonic() + seconds
+    span = f"{seconds:.0f} seconds" if seconds < 120 else f"{seconds / 60:.0f} minutes"
+    log.info("%s rests for %s (%s): the next model in the chain is used meanwhile", model_id, span, why)
 
 
 def resting(model_id: str) -> bool:
@@ -134,8 +135,8 @@ async def generate_validated(
     for position, model_id in enumerate(model_ids):
         last = position == len(model_ids) - 1
         if not last and resting(model_id):
-            log.info("%s %s skipped: it failed or did not answer in the last %.0f minutes, so %s is used", model_id,
-                     schema_name, MODEL_REST_SECONDS / 60, model_ids[position + 1])
+            log.info("%s %s skipped: it is resting after a recent failure, so %s is used", model_id, schema_name,
+                     model_ids[position + 1])
             continue
         answer_limit = last_after if last else switch_after
         out.chain.append(model_id)
@@ -185,7 +186,10 @@ async def generate_validated(
                 out.errors.append(f"{model_id}: {exc}")
                 log.info("%s %s attempt %d failed after %.1fs: %s", model_id, ask.schema_name, attempt,
                          time.perf_counter() - started, str(exc)[:200])
-                if isinstance(exc, ProviderError) and (exc.status is None or exc.status in _REST_STATUSES):
+                if isinstance(exc, ProviderError) and exc.quota:
+                    _rest(model_id, "its API key's quota is used up", QUOTA_REST_SECONDS if exc.retry_after is None
+                          else min(exc.retry_after, QUOTA_REST_SECONDS))
+                elif isinstance(exc, ProviderError) and (exc.status is None or exc.status in _REST_STATUSES):
                     _rest(model_id, f"HTTP {exc.status}" if exc.status else "network error")
                 break
             took = time.perf_counter() - started

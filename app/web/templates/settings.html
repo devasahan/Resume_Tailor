@@ -79,6 +79,17 @@ function modelOptions(select, current, blankLabel, extra = []) {
 }
 const labelOf = id => (models.find(m => m.id === id) || {}).label || id;
 
+// A backup that uses the same API key as the resume model stops with it (a used-up quota, a refused key)
+function sameKeyNote(st, resumeId) {
+  const resume = models.find(m => m.id === resumeId);
+  if (!resume || resume.demo || !resume.key_env) return null;
+  const backups = models.filter(m => m.available && st.fallback_models.includes(m.id));
+  if (backups.some(m => m.key_env && m.key_env !== resume.key_env)) return null;
+  const other = models.find(m => m.available && !m.demo && m.key_env && m.key_env !== resume.key_env);
+  if (!other) return null;
+  return el('div', { class: 'small note notice warn', text: `No backup model uses a different API key from the resume model (${resume.key_env}). When that key's quota is used up, tailoring stops. Tick a backup with another key, for example ${other.label}.` });
+}
+
 async function init() {
   const [m, s] = await Promise.all([api('/api/models'), api('/api/settings')]);
   models = m.models; regions = m.regions; cfg = s;
@@ -93,12 +104,13 @@ async function init() {
   modelOptions(field('parser_model'), st.parser_model,
     `Automatic (${s.automatic.parser ? labelOf(s.automatic.parser) : 'built-in rules'})`,
     [{ value: 'rules', text: 'Rules only (free, nothing is sent)' }]);
-  field('fallbacks').replaceChildren(...models.filter(x => x.available).map(x => el('label', {}, el('input', { type: 'checkbox', value: x.id, checked: st.fallback_models.includes(x.id) }), x.label)), notSetUpLine());
+  field('fallbacks').replaceChildren(...models.filter(x => x.available).map(x => el('label', {}, el('input', { type: 'checkbox', value: x.id, checked: st.fallback_models.includes(x.id) }), x.label)),
+    ...[notSetUpLine(), sameKeyNote(st, s.resolved.resume)].filter(Boolean));
   field('daily_cost_cap_usd').value = st.daily_cost_cap_usd; field('retention_days').value = st.retention_days; field('resume_time_limit_s').value = st.resume_time_limit_s ?? 30; field('paper_size').value = st.paper_size; field('metrics_mode').value = st.metrics_mode;
   field('regions').replaceChildren(...regions.map(r => el('label', {}, el('input', { type: 'checkbox', value: r, checked: st.allowed_regions.includes(r) }), r)));
   field('spent').textContent = `Spent today (since midnight Texas time): ${money(s.cost_today)}.`;
-  field('check-list').replaceChildren(...models.filter(x => x.available && !x.demo).map(x => el('label', {}, el('input', { type: 'checkbox', value: x.id }), x.label)), notSetUpLine());
-  if (!models.some(x => x.available && !x.demo)) field('check-list').replaceChildren(el('span', { class: 'muted small', text: 'No real models are available yet (no API keys set).' }), notSetUpLine());
+  field('check-list').replaceChildren(...models.filter(x => x.available && !x.demo).map(x => el('label', {}, el('input', { type: 'checkbox', value: x.id }), x.label)), ...[notSetUpLine()].filter(Boolean));
+  if (!models.some(x => x.available && !x.demo)) field('check-list').replaceChildren(el('span', { class: 'muted small', text: 'No real models are available yet (no API keys set).' }), ...[notSetUpLine()].filter(Boolean));
 }
 
 field('save').addEventListener('click', async () => {

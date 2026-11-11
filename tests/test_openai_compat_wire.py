@@ -5,13 +5,14 @@ import socket
 import threading
 import time
 
+import httpx
 import pytest
 import uvicorn
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
 
 from app.llm.base import ProviderError
-from app.llm.openai_compat_client import OpenAICompatClient
+from app.llm.openai_compat_client import OpenAICompatClient, retry_after
 from app.llm.registry import ModelSpec
 
 SCHEMA = {"type": "object", "properties": {"a": {"type": "integer"}}, "required": ["a"], "additionalProperties": False}
@@ -20,7 +21,8 @@ SCHEMA = {"type": "object", "properties": {"a": {"type": "integer"}}, "required"
 @pytest.fixture
 def server():
     seen: list[dict] = []
-    behaviour = {"reject_schema": False, "reject_effort": False, "status": 200, "total": 0, "reasoning": 0}
+    behaviour = {"reject_schema": False, "reject_effort": False, "status": 200, "total": 0, "reasoning": 0,
+                 "body": None}
     app = FastAPI()
 
     @app.post("/v1/chat/completions")
@@ -28,7 +30,7 @@ def server():
         body = await request.json()
         seen.append({"body": body, "auth": request.headers.get("authorization")})
         if behaviour["status"] != 200:
-            return JSONResponse({"error": "nope"}, status_code=behaviour["status"])
+            return JSONResponse(behaviour["body"] or {"error": "nope"}, status_code=behaviour["status"])
         if behaviour["reject_effort"] and "reasoning_effort" in body:
             return JSONResponse({"error": "unknown parameter reasoning_effort"}, status_code=400)
         if behaviour["reject_schema"] and body.get("response_format", {}).get("type") == "json_schema":
@@ -153,3 +155,80 @@ def test_both_gemini_flash_entries_share_their_prices():
     registry = Registry.load()
     flash, fast = registry.get("gemini-3.8-flash"), registry.get("gemini-3.8-flash-fast")
     assert (fast.price_in, fast.price_out) == (flash.price_in, flash.price_out)
+
+
+
+GOOGLE_QUOTA = [{"error": {
+    "code": 429, "status": "RESOURCE_EXHAUSTED",
+    "message": "You exceeded your current quota, please check your plan and billing details. For more information "
+               "on this error, head to: https://ai.google.dev/gemini-api/docs/rate-limits.",
+    "details": [{"@type": "type.googleapis.com/google.rpc.RetryInfo", "retryDelay": "33s"}]}}]
+
+
+def no_wait():
+    async def sleep(_seconds):
+        return None
+    return sleep
+
+
+def test_a_used_up_quota_is_not_retried_and_says_what_to_do(server):
+    server["behaviour"].update(status=429, body=GOOGLE_QUOTA)
+    spec = ModelSpec(id="m", label="Gemini 3.8 Flash", provider="openai_compat", model="m-1", base_url=server["url"],
+                     key_env="WIRE_KEY", price_in=1, price_out=2, settings={"json_mode": "json_schema"})
+    with pytest.raises(ProviderError) as info:
+        call(OpenAICompatClient(spec, sleep=no_wait()))
+    error = info.value
+    assert len(server["seen"]) == 1  # retrying a used-up quota only wastes time and more quota
+    assert error.quota and error.status == 429 and error.retry_after == 33.0
+    assert str(error).startswith("Gemini 3.8 Flash: the API key's quota is used up (the provider: 'You exceeded "
+                                 "your current quota, please check your plan and billing details.")
+    assert "Check the plan and billing at the provider's site, or wait until it resets." in str(error)
+    assert "{" not in str(error)  # words, not raw JSON
+
+
+def test_a_plain_rate_limit_is_still_retried(server):
+    server["behaviour"].update(status=429, body={"error": {"message": "Too many requests at once"}})
+    with pytest.raises(ProviderError) as info:
+        call(OpenAICompatClient(client_for(server, json_mode="json_schema").spec, sleep=no_wait()))
+    assert len(server["seen"]) == 3 and not info.value.quota  # 1.5 s and 4 s pauses, then given up
+    assert str(info.value) == "M: HTTP 429: Too many requests at once"
+
+
+def test_openais_insufficient_quota_counts_as_a_used_up_quota(server):
+    server["behaviour"].update(status=429, body={"error": {
+        "message": "You exceeded your current quota, please check your plan and billing details.",
+        "type": "insufficient_quota", "code": "insufficient_quota"}})
+    with pytest.raises(ProviderError) as info:
+        call(OpenAICompatClient(client_for(server, json_mode="json_schema").spec, sleep=no_wait()))
+    assert info.value.quota and len(server["seen"]) == 1 and info.value.retry_after is None
+
+
+def test_the_quota_message_names_googles_billing_page(server, monkeypatch):
+    from dataclasses import replace
+
+    from app.llm.registry import Registry
+
+    monkeypatch.setenv("GEMINI_API_KEY", "gemini-secret")
+    flash = Registry.load().get("gemini-3.8-flash")
+    from app.llm import openai_compat_client as module
+
+    monkeypatch.setitem(module.BILLING, "127.0.0.1", module.BILLING["generativelanguage.googleapis.com"])
+    server["behaviour"].update(status=429, body=GOOGLE_QUOTA)
+    with pytest.raises(ProviderError) as info:
+        call(OpenAICompatClient(replace(flash, base_url=server["url"]), sleep=no_wait()))
+    assert "(Google: 'You exceeded your current quota" in str(info.value)
+    assert "Check the plan and billing at aistudio.google.com" in str(info.value)
+
+
+@pytest.mark.parametrize(("headers", "body", "expected"), [
+    ({"retry-after": "12"}, {}, 12.0),
+    ({}, {"error": {"details": [{"retryDelay": "33s"}]}}, 33.0),
+    ({"retry-after": "Wed, 21 Oct 2026 07:28:00 GMT"}, {"error": {"details": [{"retryDelay": "4.5s"}]}}, 4.5),
+    ({"retry-after": "inf"}, {"error": {"details": None}}, None),  # an odd body never crashes the run
+    ({"retry-after": "-5"}, {"error": {"details": {"retryDelay": "33s"}}}, None),
+    ({}, [{"error": "quota"}], None),
+    ({}, {"error": {"details": [{"retryDelay": "nan"}, "x", {"retryDelay": "2s"}]}}, 2.0),
+])
+def test_retry_after_reads_only_plain_seconds(headers, body, expected):
+    resp = httpx.Response(429, headers=headers, json=body)
+    assert retry_after(resp) == expected

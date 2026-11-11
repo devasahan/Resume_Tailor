@@ -56,7 +56,7 @@ MIN_SHORTER_SECONDS = 10.0
 # With the time limit on: the resume model is given (limit + SWITCH_EXTRA_SECONDS) to answer before the next model in
 # the chain (Settings > Fallback models) is used instead, and the last model LAST_MODEL_SECONDS, never minutes.
 SWITCH_EXTRA_SECONDS = 10.0
-LAST_MODEL_SECONDS = 90.0
+LAST_MODEL_SECONDS = 60.0  # the backup usually answers in 11-21 s
 
 
 def jd_hash(jd: str) -> str:
@@ -495,8 +495,8 @@ async def run_tailor(
         steps.mark("AI")
         if outcome.final_model_id and outcome.final_model_id != model_id:
             reason = next((e.split(": ", 1)[1] for e in outcome.errors if e.startswith(f"{model_id}: ")),
-                          "it failed or did not answer in time a few minutes ago")
-            notes.append(f"{model_id} could not be used ({reason[:160]}), so {outcome.final_model_id} made this "
+                          "it is resting after a recent failure, see the server log")
+            notes.append(f"{model_id} could not be used ({reason[:300]}), so {outcome.final_model_id} made this "
                          "resume.")
         if outcome.follow_up:
             notes.append(f"The rewrite pass was {outcome.follow_up} to finish within the time limit of {limit:g} "

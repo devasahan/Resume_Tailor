@@ -220,7 +220,7 @@ def test_a_model_that_does_not_answer_is_left_for_the_backup(router, db, profile
     # the next resume does not wait for it again: it rests, and the backup answers at once
     again, took = run_with_backup(router, db, profile, monkeypatch)
     assert hanging.calls == 1 and again.fallback_chain == ["demo-concise"] and took < 2
-    assert any("failed or did not answer in time a few minutes ago" in note for note in again.notes)
+    assert any("it is resting after a recent failure" in note for note in again.notes)
     generate._RESTING_UNTIL["demo-detailed"] = 0.0  # its rest is over: it is tried again
     run_with_backup(router, db, profile, monkeypatch)
     assert hanging.calls == 2
@@ -263,3 +263,63 @@ def test_a_failed_attempt_is_logged_with_its_reason(router, caplog):
     assert out.final_model_id == "demo-concise"
     assert "demo-detailed job_facts attempt 1 failed after" in caplog.text and "HTTP 503" in caplog.text
     assert "demo-detailed rests for 5 minutes (HTTP 503)" in caplog.text and generate.resting("demo-detailed")
+
+
+
+def test_a_used_up_quota_rests_the_model_as_long_as_the_provider_says(router, caplog):
+    from app.llm.base import ProviderError
+
+    class OutOfQuota(LLMClient):
+        def __init__(self, retry_after):
+            self.retry_after = retry_after
+
+        async def generate_structured(self, **kwargs):
+            raise ProviderError("Gemini 3.8 Flash: the API key's quota is used up", 429, quota=True,
+                                retry_after=self.retry_after)
+
+    def ask():
+        return asyncio.run(generate.generate_validated(
+            router, ["demo-detailed", "demo-concise"], system="s", user="u", schema={}, schema_name="job_facts",
+            parse=lambda data: data, context={"jd": "A remote job paying $100,000 a year."}))
+
+    router.overrides["demo-detailed"] = OutOfQuota(33.0)
+    with caplog.at_level("INFO", logger="app.pipeline.generate"):
+        assert ask().final_model_id == "demo-concise"
+    assert "rests for 33 seconds (its API key's quota is used up)" in caplog.text
+    assert 30 < generate._RESTING_UNTIL["demo-detailed"] - time.monotonic() <= 33
+    generate._RESTING_UNTIL.clear()
+    router.overrides["demo-detailed"] = OutOfQuota(None)  # the provider did not say: an hour
+    ask()
+    assert 3500 < generate._RESTING_UNTIL["demo-detailed"] - time.monotonic() <= 3600
+    generate._RESTING_UNTIL.clear()
+    router.overrides["demo-detailed"] = OutOfQuota(86400.0)  # never longer than an hour: a reload is not needed
+    ask()
+    assert 3500 < generate._RESTING_UNTIL["demo-detailed"] - time.monotonic() <= 3600
+    assert tailor.LAST_MODEL_SECONDS == 60
+
+
+def test_settings_warns_when_every_backup_uses_the_same_key(client):
+    page = client.get("/settings").text
+    assert "No backup model uses a different API key from the resume model" in page
+    models = client.get("/api/models").json()["models"]
+    flash = next(m for m in models if m["id"] == "gemini-3.8-flash")
+    assert flash["key_env"] == "GEMINI_API_KEY"  # the variable's name only, never a key
+    assert all(not m["key_env"] or m["key_env"].endswith("_API_KEY") for m in models)  # names, no values
+
+
+def test_the_note_keeps_the_quota_advice_whole(router, db, profile, monkeypatch):
+    from app.llm.base import ProviderError
+
+    message = ("Gemini 3.8 Flash: the API key's quota is used up (Google: 'You exceeded your current quota, please "
+               "check your plan and billing details.'). Check the plan and billing at aistudio.google.com, or wait "
+               "until it resets.")
+
+    class OutOfQuota(LLMClient):
+        async def generate_structured(self, **kwargs):
+            raise ProviderError(message, 429, quota=True)
+
+    router.overrides["demo-detailed"] = OutOfQuota()
+    result, _ = run_with_backup(router, db, profile, monkeypatch)
+    assert result.status == "ok"
+    assert any(f"demo-detailed could not be used ({message}), so demo-concise made this resume" in note
+               for note in result.notes)
