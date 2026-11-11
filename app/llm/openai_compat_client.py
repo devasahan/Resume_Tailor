@@ -59,18 +59,21 @@ class OpenAICompatClient(LLMClient):
     # ------------------------------------------------------------------ request building
     def _variants(self) -> list[tuple[str, bool]]:
         """Most capable first. When only the schema format is refused, keep the reasoning setting (dropping it
-        would switch some providers to a costlier default amount of thinking)."""
+        would switch some providers to a costlier default amount of thinking). With `keep_effort` the reasoning setting
+        is never dropped: a provider that refuses it fails the call (and Run check) instead of thinking at its own,
+        slower default."""
         mode = self.spec.settings.get("json_mode", "json_object")
         effort = bool(self.spec.settings.get("reasoning_effort"))
+        keep = effort and bool(self.spec.settings.get("keep_effort"))
         ladder = [(mode, effort)]
         if mode == "json_schema" and effort:
             ladder.append(("json_object", True))
-        if effort:
+        if effort and not keep:
             ladder.append((mode, False))
         if mode == "json_schema":
-            ladder.append(("json_object", False))
+            ladder.append(("json_object", keep))
         if mode != "none":
-            ladder.append(("none", False))
+            ladder.append(("none", keep))
         seen, out = set(), []
         for item in ladder:
             if item not in seen:
@@ -190,7 +193,7 @@ class OpenAICompatClient(LLMClient):
         output = max(completion, total - prompt)
         return LLMResult(
             data=data,
-            usage=Usage(prompt, output),
+            usage=Usage(prompt, output, max(0, total - prompt - completion) if total else 0),
             served_model=str(payload.get("model") or self.spec.model),
             raw_text=text,
         )

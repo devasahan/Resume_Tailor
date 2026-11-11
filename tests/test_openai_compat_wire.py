@@ -20,7 +20,7 @@ SCHEMA = {"type": "object", "properties": {"a": {"type": "integer"}}, "required"
 @pytest.fixture
 def server():
     seen: list[dict] = []
-    behaviour = {"reject_schema": False, "reject_effort": False, "status": 200}
+    behaviour = {"reject_schema": False, "reject_effort": False, "status": 200, "total": 0}
     app = FastAPI()
 
     @app.post("/v1/chat/completions")
@@ -36,7 +36,8 @@ def server():
         return JSONResponse({
             "model": "served-model-v2",
             "choices": [{"message": {"role": "assistant", "content": "```json\n" + json.dumps({"a": 7}) + "\n```"}, "finish_reason": "stop"}],
-            "usage": {"prompt_tokens": 20, "completion_tokens": 9},
+            "usage": {"prompt_tokens": 20, "completion_tokens": 9, **({"total_tokens": behaviour["total"]}
+                                                                    if behaviour["total"] else {})},
         })
 
     with socket.socket() as s:
@@ -110,3 +111,28 @@ def test_the_gpt_entry_sends_what_openai_expects(server, monkeypatch):
     assert body["model"] == "gpt-6.1-sol" and body["max_completion_tokens"] == 777 and "max_tokens" not in body
     assert body["reasoning_effort"] == "low" and body["response_format"]["json_schema"]["strict"] is True
     assert "temperature" not in body  # OpenAI's reasoning models accept only the default
+
+
+def test_the_fast_gemini_entry_never_drops_its_thinking_setting(server, monkeypatch):
+    """A refused 'minimal' must fail the call (and Run check), never retry without it: Gemini would then think at its
+    own, slower default while the check said OK."""
+    from dataclasses import replace
+
+    from app.llm.registry import Registry
+
+    monkeypatch.setenv("GEMINI_API_KEY", "gemini-secret")
+    fast = replace(Registry.load().get("gemini-3.8-flash-fast"), base_url=server["url"])
+    assert fast.model == "gemini-3.8-flash" and not fast.verified
+    call(OpenAICompatClient(fast))
+    assert server["seen"][0]["body"]["reasoning_effort"] == "minimal"
+    server["seen"].clear()
+    server["behaviour"]["reject_effort"] = True
+    with pytest.raises(ProviderError):
+        call(OpenAICompatClient(fast))
+    assert server["seen"] and all(s["body"].get("reasoning_effort") == "minimal" for s in server["seen"])
+
+
+def test_thinking_tokens_are_counted_as_output_and_shown_apart(server):
+    server["behaviour"]["total"] = 20 + 9 + 50  # Gemini: thinking only in the total
+    usage = call(client_for(server, json_mode="json_schema", reasoning_effort="low")).usage
+    assert (usage.input_tokens, usage.output_tokens, usage.thinking_tokens) == (20, 59, 50)

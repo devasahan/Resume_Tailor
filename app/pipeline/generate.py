@@ -15,6 +15,17 @@ T = TypeVar("T")
 log = logging.getLogger(__name__)
 
 MIN_FOLLOW_UP_SECONDS = 6.0  # a follow-up (the rewrite pass) is not started with less time than this left
+FOLLOW_UP_SHARE = 0.5  # a follow-up (a fix, not a whole draft) takes at least about this share of the first call
+# How long the last follow-up took, per (model, kind of answer), in this process; one that was stopped at the time
+# limit counts as at least the time it ran. A follow-up that cannot finish in time is not started at all.
+_FOLLOW_UP_SECONDS: dict[tuple[str, str], float] = {}
+
+
+def follow_up_seconds(model_id: str, schema_name: str, first_call_seconds: float) -> float:
+    """About how long a follow-up will take: at least MIN_FOLLOW_UP_SECONDS, half the first call, and as long as
+    the last one for this model took."""
+    return max(MIN_FOLLOW_UP_SECONDS, FOLLOW_UP_SHARE * first_call_seconds,
+               _FOLLOW_UP_SECONDS.get((model_id, schema_name), 0.0))
 
 
 @dataclass(frozen=True)
@@ -77,9 +88,9 @@ async def generate_validated(
     `refine` may return a follow-up request for a VALID first answer (style, not correctness), with its own
     prompt, schema and parser (a small "fix only this" answer instead of a full rewrite). It is asked once, and if
     that second answer fails for any reason the first one is kept.
-    `deadline` (a time.perf_counter() value) limits only that follow-up: it is not started with less than
-    MIN_FOLLOW_UP_SECONDS left, and it is stopped at the deadline; the first answer is kept either way. A follow-up
-    marked `required` ignores the deadline.
+    `deadline` (a time.perf_counter() value) limits only that follow-up: it is not started when it would not finish
+    in time (see follow_up_seconds), and it is stopped at the deadline; the first answer is kept either way. A
+    follow-up marked `required` ignores the deadline.
     """
     out = outcome or Outcome()
     first = Ask(user, schema, schema_name, parse, context)
@@ -88,6 +99,7 @@ async def generate_validated(
         ask = first
         kept: tuple | None = None  # (value, served_model) of a valid first answer under refinement
         time_left: float | None = None  # how long the follow-up may take
+        first_call = 0.0  # seconds the first answer took
         for attempt in (1, 2):
             out.attempts += 1
             started = time.perf_counter()
@@ -98,8 +110,11 @@ async def generate_validated(
                 )
                 result, spec = await (asyncio.wait_for(call, time_left) if time_left is not None else call)
             except TimeoutError:  # the follow-up ran past the deadline: the first answer is kept
+                ran = time.perf_counter() - started
                 log.info("%s %s attempt %d stopped at the time limit after %.1fs", model_id, ask.schema_name,
-                         attempt, time.perf_counter() - started)
+                         attempt, ran)
+                key = (model_id, ask.schema_name)
+                _FOLLOW_UP_SECONDS[key] = max(_FOLLOW_UP_SECONDS.get(key, 0.0), ran)  # it needed at least this
                 out.follow_up = "stopped"
                 break
             except CostCapError:
@@ -116,8 +131,14 @@ async def generate_validated(
             except LLMError as exc:
                 out.errors.append(f"{model_id}: {exc}")
                 break
-            log.info("%s %s attempt %d: %.1fs, %d tokens in, %d out", model_id, ask.schema_name, attempt,
-                     time.perf_counter() - started, result.usage.input_tokens, result.usage.output_tokens)
+            took = time.perf_counter() - started
+            thinking = f" (thinking {result.usage.thinking_tokens})" if result.usage.thinking_tokens else ""
+            log.info("%s %s attempt %d: %.1fs, %d tokens in, %d out%s", model_id, ask.schema_name, attempt, took,
+                     result.usage.input_tokens, result.usage.output_tokens, thinking)
+            if kept is not None:  # a follow-up that finished: how long the next one may take
+                _FOLLOW_UP_SECONDS[(model_id, ask.schema_name)] = took
+            elif attempt == 1:
+                first_call = took
             out.add_usage(result.usage, spec.cost(result.usage))
             try:
                 value = ask.parse(result.data)
@@ -133,9 +154,10 @@ async def generate_validated(
                 follow_up = refine(value)
                 if follow_up is not None and not follow_up.required and deadline is not None:
                     time_left = deadline - time.perf_counter()
-                    if time_left < MIN_FOLLOW_UP_SECONDS:
-                        log.info("%s %s follow-up skipped: %.1fs left of the time limit", model_id,
-                                 follow_up.schema_name, time_left)
+                    needed = follow_up_seconds(model_id, follow_up.schema_name, first_call)
+                    if time_left < needed:
+                        log.info("%s %s follow-up skipped: %.1fs left of the time limit, it needs about %.1fs",
+                                 model_id, follow_up.schema_name, time_left, needed)
                         out.follow_up, follow_up = "skipped", None
                 if follow_up is not None:
                     kept, ask = (value, result.served_model), follow_up

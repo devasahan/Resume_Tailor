@@ -36,7 +36,8 @@ class CostCapError(LLMError):
 @dataclass
 class Usage:
     input_tokens: int = 0
-    output_tokens: int = 0
+    output_tokens: int = 0  # billed output, thinking included
+    thinking_tokens: int = 0  # of which thinking, when the provider says (0 when it does not)
 
 
 @dataclass

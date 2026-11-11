@@ -14,7 +14,9 @@
 #   settings     provider-specific knobs:
 #                  effort            (anthropic) low | medium | high | xhigh | max
 #                  refusal_fallback  (anthropic) retry a safety-declined request on Anthropic's default fallback model
-#                  reasoning_effort  (openai_compat) low | medium | high, sent only if the provider accepts it
+#                  reasoning_effort  (openai_compat) minimal | low | medium | high, sent only if the provider accepts it
+#                  keep_effort       (openai_compat) true: never retry without reasoning_effort; a provider that
+#                                    refuses it fails the call (and Run check) instead of thinking at its default
 #                  json_mode         (openai_compat) json_schema | json_object | none
 #                  max_tokens_param  (openai_compat) name of the token-limit field: max_tokens (default) or
 #                                    max_completion_tokens for providers that reject the older name
@@ -49,6 +51,19 @@ models:
     verified: true
     settings: {reasoning_effort: low, json_mode: json_schema, max_output_tokens: 16000}
     notes: "Introductory price $0.75 / $3.75 per 1M tokens until 2026-12-31; standard $1.50 / $7.50 from 2027-01-01 (update price_in / price_out then). Use a paid key: free-tier data may be used to improve Google models."
+
+  - id: gemini-3.8-flash-fast
+    label: Gemini 3.8 Flash (fast)
+    provider: openai_compat
+    model: gemini-3.8-flash
+    base_url: https://generativelanguage.googleapis.com/v1beta/openai
+    key_env: GEMINI_API_KEY
+    price_in: 0.75
+    price_out: 3.75
+    data_region: US
+    verified: false
+    settings: {reasoning_effort: minimal, keep_effort: true, json_mode: json_schema, max_output_tokens: 16000}
+    notes: "The same model with the least thinking, for faster drafts (so the polishing pass fits the time limit more often). Test it first in Settings > Check models > Run check: if Gemini does not accept this setting, the check fails instead of quietly thinking at its slower default. Prices as for Gemini 3.8 Flash."
 
   - id: gemini-3.5-flash-lite
     label: Gemini 3.5 Flash-Lite

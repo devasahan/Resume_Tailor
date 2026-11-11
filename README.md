@@ -68,6 +68,8 @@ Nothing leaves your computer except the calls to the model providers you pick. S
 
 **To add a model**, add an entry to `models.yaml` (id, model string, base URL, key variable, price, region), set the key, restart. No code change is needed for any OpenAI-compatible provider.
 
+**Gemini 3.8 Flash (fast)** is the same model with the least thinking ("minimal"), for faster drafts, so the polishing pass fits the time limit more often. It is marked unverified: tick it under Check models in Settings and press Run check. If Gemini refuses the setting, the check fails (the app never quietly falls back to slower thinking); if it passes, choose it as the Resume model and compare the "job finished" lines in the server log (each AI call's line also shows its thinking tokens).
+
 **GPT** needs an OpenAI API key (`OPENAI_API_KEY`) from platform.openai.com, paid per use: a ChatGPT Plus or Pro subscription cannot be used by apps. Its model name and price are marked unverified until the check on the Settings page passes.
 
 **Models marked `verified: false` need checking.** Their model strings and prices came from third-party websites in October 2026 and were not confirmed against the vendors. Run:
@@ -86,7 +88,7 @@ Costs shown in the app are estimates: `tokens reported by the provider x the pri
 - allowed data regions (models hosted in `CN` or `UNKNOWN` regions stay off until you allow them)
 - retention (tailored runs are deleted after N days; uploaded resumes stay until you delete them), paper size (Letter / A4)
 - numbers in bullets: realistic estimates flagged for you to confirm (default), or only the numbers you give
-- **time limit for a resume** (default 30 seconds): the first draft always comes back; the extra rewrite pass (and the shorter-draft call when a draft runs over two pages) runs only when it can finish within the limit, and is stopped at the limit, keeping the first draft with the app's own fixes (two pages, titles, dashes, spelling). A rewrite that removes a certification named in the text always runs. 0 = no limit: always polish, best quality but slower. Each job's time per step is in the server log ("job finished in ...").
+- **time limit for a resume** (default 30 seconds): the first draft always comes back; the extra rewrite pass (and the shorter-draft call when a draft runs over two pages) runs only when it can finish within the limit (a rewrite is expected to take at least half as long as the draft, or as long as the last one took), and is stopped at the limit, keeping the first draft with the app's own fixes (two pages, titles, dashes, spelling). A rewrite that removes a certification named in the text always runs. 0 = no limit: always polish, best quality but slower. Each job's time per step is in the server log ("job finished in ...").
 
 ## Choosing a model: the bake-off
 
