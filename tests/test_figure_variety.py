@@ -325,6 +325,50 @@ def test_a_period_after_the_bracket_stays_with_its_base(period):
             f"Reduced inbound tickets by 41.2%, from 97 to 57, {words} with a chatbot.")
 
 
+@pytest.mark.parametrize("words", ["a quarter ahead of plan", "per release cycle"])
+def test_a_time_phrase_after_the_bracket_is_never_glued_to_the_base(words):
+    """A period joins the base only when the clause ends right after it: never 'from 47 to 36 days a quarter, ahead of
+    plan'."""
+    text = f"Cut onboarding time by 23.4% (from 47 to 36 days) {words}."
+    assert validate._varied([FIRST, REAL, text], "")[2] == (
+        f"Cut onboarding time by 23.4%, from 47 to 36 days, {words}.")
+
+
+@pytest.mark.parametrize("sentence", [
+    "Cut churn from 4.1% to 3.6%, a 12.2% drop, NPS up from 31 to 38.",
+    "Saved $41,300 a year on EC2, a 17.8% cut, MTTR down from 41 to 28 minutes.",
+    "Raised test coverage from 61% to 87%, a 42.6% increase, P1 bugs down from 41 to 27 a quarter.",
+])
+def test_a_labelled_second_result_is_not_the_base_of_the_result_before_it(sentence):
+    assert validate.unbased_percentages(sentence) == [] and validate.base_mismatches(sentence) == []
+
+
+@pytest.mark.parametrize("sentence,bare", [
+    ("Cut churn by 12.2%, NPS rose from 31 to 38.", "by 12.2%"),
+    ("Cut on-call pages by 41.2%, SRE team from 4 to 7 engineers.", "by 41.2%"),
+    ("Grew ARR by 24.3%, NRR up from 104% to 112%.", "by 24.3%"),
+])
+def test_a_labelled_result_after_by_is_no_base_unless_it_names_what_changed(sentence, bare):
+    assert validate.unbased_percentages(sentence) == [bare] and validate.base_mismatches(sentence) == []
+    # what changed, named again before the percentage, or a pair that agrees, is the base and is checked
+    assert validate.unbased_percentages("Cut API latency by 21%, p95 latency from 847 to 669 ms.") == []
+    assert validate.unbased_percentages("Cut API latency by 21%, p95 from 847 to 669 ms.") == []
+    assert validate.base_mismatches("Cut API latency by 21%, p95 latency from 820 to 701 ms.") == [
+        "p95 latency from 820 to 701 ms"]
+
+
+def test_a_beat_over_a_plan_is_no_amount_of_the_change():
+    for sentence in ("Grew enterprise pipeline by 31%, or 12 more deals than the target.",
+                     "Raised headcount by 21%, or 12 more hires than planned."):
+        assert len(validate.unbased_percentages(sentence)) == 1, sentence
+    assert validate.unbased_percentages("Cut false alerts by 37.2%, or 1,213 fewer alerts a month.") == []
+    assert validate.unbased_percentages("Cut defects by 21.4%, or 141 fewer defects than in 2022.") == []
+    assert validate._as_clause("12 more deals than the target") is None
+    assert validate._as_clause("1,213 fewer alerts a month") == "or 1,213 fewer alerts a month"
+    later = "Grew qualified pipeline by 31% (12 more deals than the target) with partner events."
+    assert validate._varied([FIRST, REAL, later], "")[2] == later  # never 'or' a beat over the target
+
+
 @pytest.mark.parametrize("given,expected", [
     ("Raised 90-day retention by 22.6% (up from 31% to 38%) with lifecycle emails.",
      "Raised 90-day retention by 22.6%, up from 31% to 38%, with lifecycle emails."),
@@ -439,8 +483,9 @@ def test_a_second_result_after_a_percentage_is_not_taken_for_its_base(text):
 
 
 def test_a_percentage_that_agrees_with_neither_pair_is_still_reported():
+    # the drop's own base is the pair right before it, not the p99 result after it
     assert validate.base_mismatches("Cut p95 latency from 820 to 701 ms, a 21% drop, p99 from 1,900 to 1,200 ms.") == [
-        "p99 from 1,900 to 1,200 ms"]
+        "from 820 to 701 ms"]
 
 
 def test_the_posts_own_figure_is_the_posts_with_or_without_its_point_zero(profile):

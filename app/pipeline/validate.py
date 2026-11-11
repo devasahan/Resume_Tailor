@@ -751,26 +751,71 @@ def names_certification(term: str, names: list[str] | tuple = ()) -> bool:
     spelling ('CISSP' for 'Certified Information Systems Security Professional (CISSP)'), or plainly a credential
     ('PMP certification', 'Certified ScrumMaster', 'RN license'). 'AWS', 'GitHub Actions', 'certificate management',
     'software licensing' and 'SOC 2 certification' are skills or work."""
-    key = _letters(term)
-    return any(key == _letters(t) for t in certification_terms(list(names))) or is_credential_phrase(term)
+    keys = {_letters(term), _credential_key(term)}
+    return any(_letters(t) in keys for t in certification_terms(list(names))) or is_credential_phrase(term)
 
 
-# Abbreviations that stand for nothing but a certification. A job post that names one ('CISSP required', 'PMP or CCNA
-# preferred') names a certification, whatever the model lists, so the checks keep it out of the skills and the text
-# in both Settings modes. Left out because they also name other things: CAPM (the Capital Asset Pricing Model), CISA
-# (a US government agency), CSM (Customer Success Manager), CPA (cost per acquisition).
-CREDENTIAL_ABBREVIATIONS = ("PMP", "CISSP", "CISM", "CRISC", "CCSP", "SSCP", "OSCP", "CEH", "CCNA", "CCNP", "CCIE",
-                            "CKA", "CKAD", "CKS", "RHCSA", "RHCE")
-# One of them as a whole word, in capitals: 'CKA/CKAD', 'CISSP-certified', 'PMPs'; never 'CKA' inside 'CKAD'
-_CREDENTIAL_WORD = re.compile(r"(?<![A-Za-z0-9])(" + "|".join(CREDENTIAL_ABBREVIATIONS) + r")s?(?![A-Za-z0-9+#])")
+# Abbreviations that stand for nothing but a certification. A job post that names one ('CISSP required', 'CCNA or
+# CCNP preferred') names a certification, whatever the model lists, so the checks keep it out of the skills and the
+# text in both Settings modes.
+CREDENTIAL_ABBREVIATIONS = ("CISSP", "CRISC", "CCSP", "SSCP", "OSCP", "CCNA", "CCNP", "CCIE", "CKA", "CKAD", "CKS",
+                            "RHCSA", "RHCE")
+# Abbreviations that also name other things count only beside a credential word or another credential ('PMP
+# required', 'PMP-certified', 'CISM certification', 'Certifications: PMP', 'PMP or PRINCE2', 'CISA/CISSP'), never in
+# 'PMP deals' (a private marketplace in ad tech), 'the state PMP' (a prescription monitoring program), 'a regional
+# CISM team' (critical incident stress management), '24 CEH a year' (continuing education hours), 'CISA advisories'
+# (a US agency), 'our CSM' (Customer Success Manager), 'CPA targets' (cost per acquisition), 'CAPM models' (pricing).
+AMBIGUOUS_CREDENTIALS = ("PMP", "CISM", "CEH", "CISA", "CSM", "CPA", "CAPM")
+# Names that are only ever certifications, which make a neighbour one too: 'PMP or PRINCE2', 'CISA/CISSP'
+_CREDENTIAL_NEIGHBOURS = CREDENTIAL_ABBREVIATIONS + ("PRINCE2", "ITIL", "PMI-ACP", "CSPO")
+# After a name: a plural, a '+' or an exam version: 'PMPs', 'CISSPS', 'OSCP+', 'CEHv12'
+_CREDENTIAL_SUFFIX = r"(?:s|S|\+|\s?v\d{1,2}(?:\.\d)?)?"
+# One of them as a whole word, in capitals: 'CKA/CKAD', 'CISSP-certified'; never 'CKA' inside 'CKAD'
+_CREDENTIAL_WORD = re.compile(r"(?<![A-Za-z0-9])(" + "|".join(CREDENTIAL_ABBREVIATIONS + AMBIGUOUS_CREDENTIALS)
+                              + r")" + _CREDENTIAL_SUFFIX + r"(?![A-Za-z0-9+#])")
+_CUE_AFTER = re.compile(r"®|(?:'s|’s)?[ \t-]*(?:(?:is|are|a)\s+)*(?:required|preferred|desired|plus|certifi\w*"
+                        r"|credential\w*|holders?|exam)\b", re.IGNORECASE)  # 'PMP required', "the PMP's exam"
+_CUE_BEFORE = re.compile(r"\b(?:certifi\w*|credential\w*)\b[^.;\n]{0,40}$|\bmust[\s-]+(?:have|hold)\s*:?\s*$",
+                         re.IGNORECASE)  # 'Certifications: PMP', 'Must have PMPs'; never 'must have run PMP deals'
+_NEIGHBOUR = "|".join(re.escape(name) for name in _CREDENTIAL_NEIGHBOURS)
+_NEIGHBOUR_AFTER = re.compile(rf"\s*(?:,|/|\bor\b|\band\b)\s*(?:{_NEIGHBOUR})(?![A-Za-z0-9])")
+_NEIGHBOUR_BEFORE = re.compile(rf"(?<![A-Za-z0-9])(?:{_NEIGHBOUR})s?\s*(?:,|/|\bor\b|\band\b)\s*$")
+
+
+def in_credential_context(text: str, start: int, end: int) -> bool:
+    """Whether the abbreviation at text[start:end] is named as a credential: a credential word right after it ('PMP
+    required', 'PMP-certified', 'PMP®', 'CISM certification') or shortly before it in its sentence ('Certifications:
+    PMP'), or a certification beside it ('PMP or PRINCE2', 'CISA/CISSP')."""
+    after, before = text[end:], text[:start]
+    return bool(_CUE_AFTER.match(after) or _CUE_BEFORE.search(before) or _NEIGHBOUR_AFTER.match(after)
+                or _NEIGHBOUR_BEFORE.search(before))
 
 
 def credential_abbreviations(text: str) -> list[str]:
-    """The CREDENTIAL_ABBREVIATIONS a text (a job post) names as whole words, in the list's order. They join the
+    """The credential abbreviations a text (a job post) names as whole words, in the lists' order: any of
+    CREDENTIAL_ABBREVIATIONS, and one of AMBIGUOUS_CREDENTIALS only where it is named as a credential. They join the
     certification names the checks use, so one the person does not hold never stays in the skills or the text, even
-    when the model did not list it ('CISSP required' -> ['CISSP'])."""
-    named = {match.group(1) for match in _CREDENTIAL_WORD.finditer(text)}
-    return [abbreviation for abbreviation in CREDENTIAL_ABBREVIATIONS if abbreviation in named]
+    when the model did not list it ('CISSP required' -> ['CISSP'], 'PMP deals' -> [])."""
+    named = {match.group(1) for match in _CREDENTIAL_WORD.finditer(text)
+             if match.group(1) not in AMBIGUOUS_CREDENTIALS or in_credential_context(text, match.start(), match.end())}
+    return [name for name in CREDENTIAL_ABBREVIATIONS + AMBIGUOUS_CREDENTIALS if name in named]
+
+
+def _credential_key(item: str) -> str:
+    """'CEHv12' and 'OSCP+' compare as 'ceh' and 'oscp': an exam version or a '+' names the same credential."""
+    return _letters(re.sub(r"(?<=[A-Z])(?:\s?v\d{1,2}(?:\.\d)?|\+)$", "", item.strip()))
+
+
+def names_credential(text: str, term: str, confirmed: bool = False) -> bool:
+    """Whether a text names one certification term. An abbreviation also matches with a plural, a '+' or an exam
+    version ('OSCP+', 'CEHv12'), and one that also names other things ('PMP', 'CISA') only where it is named as a
+    credential ('Tracked CISA KEV advisories' names the agency), unless it is `confirmed`: the job post named it as a
+    credential ('PMP required'), so 'applying PMP practices' names it too."""
+    if term not in CREDENTIAL_ABBREVIATIONS + AMBIGUOUS_CREDENTIALS:
+        return mentions(text, term)
+    pattern = re.compile(r"(?<![A-Za-z0-9])" + re.escape(term) + _CREDENTIAL_SUFFIX + r"(?![A-Za-z0-9+#])")
+    return any(confirmed or term not in AMBIGUOUS_CREDENTIALS or in_credential_context(text, found.start(), found.end())
+               for found in pattern.finditer(text))
 
 
 def resolve_certifications(
@@ -843,7 +888,8 @@ def remove_certification_skills(resume: Resume, names: list[str]) -> list[str]:
             continue
         kept = []
         for item in group.skills:
-            (removed if _letters(item) in terms or is_credential_phrase(item) else kept).append(item)
+            certification = _letters(item) in terms or _credential_key(item) in terms or is_credential_phrase(item)
+            (removed if certification else kept).append(item)
         group.skills = kept
     if removed and any(group.skills for group in resume.skills):
         resume.skills = [group for group in resume.skills if group.skills]
@@ -856,11 +902,14 @@ def certification_mentions(resume: Resume, names: list[str]) -> list[tuple[str, 
     'AWS-certified', 'PMP certification'). Certifications belong only in their own section: a name in the text would
     claim one the person may not have, and unticking it on the Tailor page could not take it off the resume."""
     terms = certification_terms(names)
+    # a name given on its own ('PMP', as credential_abbreviations finds it in the job post, or as saved) is confirmed;
+    # one taken from a full name ('CISA' of 'Certified Information Systems Auditor') counts only as a credential
+    confirmed = {name.strip() for name in names}
     places = [("headline", resume.headline), ("summary", resume.summary)]
     places += [(f"experience:{exp.company_index}", bullet) for exp in resume.experience for bullet in exp.bullets]
     found: list[tuple[str, str]] = []
     for where, text in places:
-        named = [term for term in terms if mentions(text, term)]
+        named = [term for term in terms if names_credential(text, term, term in confirmed)]
         named += [m.group(0).strip() for m in _CERT_CLAIM.finditer(text) if is_credential_phrase(m.group(0))]
         for term in named:
             if (where, term) not in found:
@@ -1877,8 +1926,11 @@ _AMOUNT = (r"\d[\d,.]*\s*(?:[a-z%]+\s+){0,4}?(?:(?:a|per|each|every)\s+(?:day|we
            r"|night|run)|fewer|more|less|saved)\b")
 _AMOUNT_IN_BRACKET = re.compile(_AMOUNT, re.IGNORECASE)
 # ... never a comparison: ', or 3 times more than the year before', ', or 2 points more than planned', ', or 4x more'
-_OR_AMOUNT_AFTER = re.compile(rf"^,?\s*or\s+(?!\d[\d,.]*\s*(?:x|times|points?|pts?)\b){_AMOUNT}(?!\s+than\b)",
-                              re.IGNORECASE)
+# ... nor a beat over a plan: ', or 12 more deals than the target' ('than in 2022' is a change, and counts)
+_NO_PLAN_COMPARISON = (r"(?!(?:(?![,;.]).)*\bthan\s+(?:the\s+|our\s+|its\s+)?(?:target|plan(?:ned)?|goal|forecast"
+                       r"|budget|quota|expected|benchmark|average|industry|peers|region)\b)")
+_OR_AMOUNT_AFTER = re.compile(rf"^,?\s*or\s+(?!\d[\d,.]*\s*(?:x|times|points?|pts?)\b){_NO_PLAN_COMPARISON}{_AMOUNT}"
+                              rf"(?!\s+than\b)", re.IGNORECASE)
 # A few words of the percentage's own clause before a base in words count, the way they do before a bracket: 'a 22%
 # reduction in queue time, from 41 to 32 seconds', 'by 17.8% across 41 services, or $41,300 a year'
 _WORDS_TO_COMMA = re.compile(rf"^(?:\.\d|,\d|{_SAME_CLAUSE}[^.;:()%,]){{1,60}}?(?=,\s)")
@@ -1957,6 +2009,29 @@ def _pair_before(match: re.Match, before: str) -> re.Match | None:
     return None
 
 
+def _base_before(match: re.Match, before: str) -> _Base | None:
+    """The base right before a noun or adjective percentage, or None: a pair ('from 41 to 32 seconds, a 22% drop';
+    checked for agreement like any base), money ('saving $41,300 a year, a 17.8% cut') or levels ('from 4.1% to
+    3.6%, a 12.2% drop')."""
+    pair = _pair_before(match, before)
+    if pair:
+        return _Base(True, pair, 0, "pair before")
+    if _MONEY_BEFORE.search(before):
+        return _Base(True, None, 0, "money before")
+    if _LEVELS_BEFORE.search(before):
+        return _Base(True, None, 0, "levels before")
+    return None
+
+
+def _names_what_changed(lead: str, before: str) -> bool:
+    """Whether a word that leads a base to its 'from' (', p95 latency from ...') also stands before the percentage
+    ('Cut API latency by 21%'): then it measures the same thing, not another result."""
+    cut = re.search(r"\bfrom\b", lead, re.IGNORECASE)
+    words = re.findall(r"[A-Za-z][\w.]*", lead[: cut.start()] if cut else lead)
+    return any(re.search(rf"(?<![\w-]){re.escape(word)}(?![\w-])", before, re.IGNORECASE)
+               for word in words if word.lower() not in ("down", "up"))
+
+
 def _attached_base(match: re.Match, before: str, after: str) -> _Base:
     """Whether the percentage has its base beside it, which kind and where: in brackets after it, in words after it
     (also after a few words of its own clause), or before it ('from 41 to 32 seconds, a 22% drop')."""
@@ -1974,14 +2049,20 @@ def _attached_base(match: re.Match, before: str, after: str) -> _Base:
     if words:
         found = _base_after(after, words.end())
     noun = match.group("noun") or match.group("adj")
+    if found and found.kind in ("pair", "levels"):
+        labelled = not _UNLABELLED_FROM.match(after, found.start)
+        agrees = _agrees(match, found.pair, before) if found.pair else None
+        if (words is not None or labelled) and agrees is not True:
+            # 'from 820 to 648 ms, a 21% drop, p99 from 1,900 to 1,200 ms': what only a label or a few words lead to,
+            # and does not agree, is another result; a base right before the percentage is its own
+            own = _base_before(match, before) if noun else None
+            if own:
+                return own
+            # 'Cut churn by 12.2%, NPS up from 31 to 38': another result, unless it names what changed ('Cut API
+            # latency by 21%, p95 latency from 820 to 648 ms')
+            if labelled and not _names_what_changed(after[found.start:], before):
+                return _Base(False)
     if found:
-        # 'from 820 to 648 ms, a 21% drop, p99 from 1,900 to 1,200 ms': a pair after it that only a label or a few
-        # words lead to, and that disagrees, is another result; the agreeing pair right before it is its base
-        loose = words is not None or not _UNLABELLED_FROM.match(after, found.start)
-        if noun and found.pair and found.kind == "pair" and loose and _agrees(match, found.pair, before) is False:
-            pair = _pair_before(match, before)
-            if pair and _agrees(match, pair, before):
-                return _Base(True, pair, 0, "pair before")
         return found
     if noun:
         pair = _pair_before(match, before)
@@ -2101,7 +2182,9 @@ def _mismatch(sentence: str, match: re.Match, base: _Base) -> str | None:
     """The base of one percentage when it does not agree with it ('from 41 to 38 seconds' for 'by 22%'), else None."""
     if base.pair is None or _agrees(match, base.pair, sentence[: match.start()]) is not False:
         return None
-    return base.pair.group(0).strip(" ,")  # 'from 41 to 38', not ', from 41 to 38'
+    pair = base.pair  # the pair itself: 'from 41 to 38 seconds', never ', from 41 to 38' or 'from 41 to 38, a'
+    end = pair.end("now_unit") if pair.group("now_unit") else pair.end("now")
+    return pair.string[pair.start():end].strip(" ,")
 
 
 def base_mismatches(text: str) -> list[str]:
@@ -2178,9 +2261,11 @@ _APPOSITION_END = re.compile(r"\s*(?:,(?!\s*and\b)|[.;:!?)]|$)|\s+(?:for|with|by
                              r"|so|when|once|since)\b", re.IGNORECASE)
 _GOES_ON = re.compile(r"\s*[\w$€£]")  # the sentence goes on with a word after a clause: a comma closes it
 # A period after a bracket belongs to its base: '(from 97 to 57) a week', never 'a year later' or 'each quarter of'
+# ... only when the clause ends right after it: never 'a quarter ahead of plan' or 'per release cycle'
 _PERIOD_PHRASE = re.compile(r"\s+(?:(?:a|per|each|every)\s+(?:day|week|month|quarter|year|sprint|release|night|run)"
                             r"|annually|yearly|quarterly|monthly|weekly|daily)\b(?!-)"
-                            r"(?!\s+(?:later|ago|earlier|after|before|on|of)\b)", re.IGNORECASE)
+                            r"(?=\s*(?:[,.;:!?)]|$)|\s+(?:with|by|for|across|through|using|via|while|so|when|once"
+                            r"|since)\b)", re.IGNORECASE)
 VARY_SENTENCE_LIMIT = 1200  # characters: a longer sentence is no resume sentence, and is left as it is
 VARY_FIGURES_LIMIT = 48  # percentages read per document: a resume holds far fewer, so odd text never takes long
 
@@ -2294,6 +2379,8 @@ def _as_clause(content: str) -> str | None:
         return content
     if content[:1] in "$€£":
         return "or " + content if _MONEY_AMOUNT.fullmatch(content) else None
+    if re.match(_NO_PLAN_COMPARISON, content, re.IGNORECASE) is None:
+        return None  # '(12 more deals than the target)': a beat over a plan, never 'or' the change itself
     return "or " + content if _AMOUNT_IN_BRACKET.match(content) else None
 
 

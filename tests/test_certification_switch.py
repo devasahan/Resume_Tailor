@@ -10,6 +10,7 @@ before (test_certifications.py switches it on for its own tests).
 import asyncio
 import io
 import json
+from types import SimpleNamespace
 
 import pytest
 from docx import Document
@@ -362,6 +363,71 @@ def test_the_credential_abbreviations_a_job_post_names_are_found():
     assert found("Build CAPM valuation models, follow CISA advisories, work with our CSM and CPA targets") == []
     names = found("CISSP required")
     assert validate.names_certification("CISSP", names) and validate.certification_terms(names) == ["CISSP"]
+
+
+@pytest.mark.parametrize("post", [
+    "You will run PMP and programmatic guaranteed deals in our demand-side platform.",  # a private marketplace
+    "Prepare PMP and PMF studies for dam safety reviews.",  # probable maximum precipitation
+    "Check the state PMP before dispensing controlled substances.",  # a prescription monitoring program
+    "Deliver the Project Management Plan (PMP) for each federal contract.",
+    "Join the regional CISM team after critical incidents.",  # critical incident stress management
+    "Complete 24 CEH each year to keep your license.",  # continuing education hours
+])
+def test_an_abbreviation_with_another_meaning_is_no_credential_there(post):
+    assert validate.credential_abbreviations(post) == []
+
+
+def test_an_abbreviation_with_another_meaning_counts_where_it_is_a_credential():
+    found = validate.credential_abbreviations
+    assert found("PMP required.") == ["PMP"] and found("PMP-certified project lead") == ["PMP"]
+    assert found("CISM certification a plus") == ["CISM"] and found("Certifications: PMP, CSM") == ["PMP", "CSM"]
+    assert found("PMP or PRINCE2") == ["PMP"] and found("CISA or CISSP certification preferred") == ["CISSP", "CISA"]
+    # a '+', an exam version and a plural in capitals are the same credential
+    assert found("OSCP+ required") == ["OSCP"] and found("CEHv12 required") == ["CEH"]
+    assert found("MUST HAVE: CISSPS") == ["CISSP"]
+    assert found("Study the PMP's exam outline") == ["PMP"] and found("Must have PMPs") == ["PMP"]
+    assert found("You must have run PMP deals before") == []
+
+
+def test_a_credential_with_a_plus_or_an_exam_version_leaves_the_skills():
+    resume = SimpleNamespace(skills=[SimpleNamespace(category="Security", skills=["OSCP+", "CEHv12", "Burp Suite"])])
+    assert validate.remove_certification_skills(resume, ["OSCP", "CEH"]) == ["OSCP+", "CEHv12"]
+    assert resume.skills[0].skills == ["Burp Suite"] and validate.names_certification("CEHv12", ["CEH"])
+
+
+def test_a_listed_name_with_another_meaning_counts_in_the_text_only_as_a_credential():
+    """'CISA' taken from the model's 'Certified Information Systems Auditor (CISA)' is the agency in 'Tracked CISA KEV
+    advisories'; named on its own (the job post asked for it as a credential), every mention counts."""
+    agency = "Tracked CISA KEV advisories against 4,313 hosts with a weekly patch report."
+    exam = "Passed the CISA certification exam while leading 3 audits."
+
+    def resume(bullet):
+        return SimpleNamespace(headline="Security Engineer", summary="Security engineer for cloud platforms.",
+                               experience=[SimpleNamespace(company_index=0, bullets=[bullet])])
+
+    listed = ["Certified Information Systems Auditor (CISA)"]
+    assert validate.certification_mentions(resume(agency), listed) == []
+    assert ("experience:0", "CISA") in validate.certification_mentions(resume(exam), listed)
+    assert validate.certification_mentions(resume(agency), ["CISA"]) == [("experience:0", "CISA")]
+
+
+ADTECH_JD = ("Programmatic Trader at Larkspur Media. You will run PMP and programmatic guaranteed deals in our "
+             "demand-side platform, report on pacing with SQL and Python, and work with publishers. 3+ years of "
+             "experience required.")
+
+
+def test_an_ad_tech_post_keeps_its_pmp_deals(router, registry, profile):
+    """'PMP deals' is a private marketplace: the word stays in the skills and the bullets, with no fix round and no
+    flag about certifications."""
+    client = Slips(FakeClient(registry.get("demo-concise")), "PMP", complies=False)
+    router.overrides["demo-concise"] = client
+    result = tailored(router, profile, jd=ADTECH_JD)
+    assert result.status == "ok"
+    assert "PMP" in [skill for group in result.resume.skills for skill in group.skills]
+    assert "PMP" in " ".join(result.resume.experience[0].bullets)
+    fixes = [problems_of(call["user"]) for call in client.calls if kind(call) == "fix"]
+    assert not any("certification names" in problems for problems in fixes)
+    assert not [flag for flag in result.flags if flag.text == "PMP"]
 
 
 @pytest.mark.parametrize("on", [False, True], ids=["off", "on"])
