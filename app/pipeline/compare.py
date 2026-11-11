@@ -25,7 +25,8 @@ async def compare(
     save: bool = True,
     spelling: str = "us",
 ) -> list[TailorResult]:
-    """Fallback is off here: each result must show what that model alone produced."""
+    """Fallback and the time limit are off here: each result must show what that model alone produces, rewrite
+    pass included, however long it takes."""
     gate = asyncio.Semaphore(concurrency)
 
     async def one(model_id: str) -> TailorResult:
@@ -33,7 +34,7 @@ async def compare(
             return await run_tailor(
                 router, db, profile=profile, profile_id=profile_id, jd=jd, hints=hints, model_id=model_id,
                 allow_fallback=False, cover_letter=cover_letter, company_name=company_name,
-                hiring_manager=hiring_manager, save=save, spelling=spelling,
+                hiring_manager=hiring_manager, save=save, spelling=spelling, time_limit=0,
             )
 
     return list(await asyncio.gather(*(one(m) for m in model_ids)))

@@ -9,6 +9,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import logging
+import math
 import re
 import secrets
 import unicodedata
@@ -475,7 +476,10 @@ def validate_settings(registry: Registry, values: dict) -> dict:
                     registry.get(model_id)
                 out[key] = list(dict.fromkeys(value))
             elif key == "daily_cost_cap_usd":
-                out[key] = max(0.0, float(value))
+                cap = float(value)
+                if not math.isfinite(cap):
+                    raise ValueError("must be a number of dollars")
+                out[key] = max(0.0, cap)
             elif key == "allowed_regions":
                 bad = set(value) - set(KNOWN_REGIONS)
                 if bad:
@@ -484,7 +488,10 @@ def validate_settings(registry: Registry, values: dict) -> dict:
             elif key == "retention_days":
                 out[key] = max(0, min(3650, int(value)))
             elif key == "resume_time_limit_s":
-                out[key] = max(0, min(600, int(value)))
+                seconds = float(value)
+                if not math.isfinite(seconds) or seconds < 0:
+                    raise ValueError("must be 0 (no limit) or a number of seconds")
+                out[key] = min(600, math.ceil(seconds))  # 0.5 s is a 1 s limit, never 'no limit'
             elif key == "metrics_mode":
                 if value not in METRICS_MODES:
                     raise ValueError(f"metrics_mode must be one of {', '.join(METRICS_MODES)}")
@@ -495,7 +502,7 @@ def validate_settings(registry: Registry, values: dict) -> dict:
                 out[key] = value
             else:
                 raise ValueError(f"unknown setting '{key}'")
-        except (KeyError, ValueError, TypeError) as exc:
+        except (KeyError, ValueError, TypeError, OverflowError) as exc:
             raise HTTPException(422, f"Invalid value for '{key}': {exc}") from exc
     return out
 

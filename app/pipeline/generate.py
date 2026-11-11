@@ -21,6 +21,17 @@ FOLLOW_UP_SHARE = 0.5  # a follow-up (a fix, not a whole draft) takes at least a
 _FOLLOW_UP_SECONDS: dict[tuple[str, str], float] = {}
 
 
+def record_sent(out: Outcome, router: Router, model_id: str, system: str, user: str) -> None:
+    """A call stopped at the time limit had already sent its whole prompt, which the provider bills: count it
+    (about 4 characters a token, as the demo models do) in the run's cost, Spent today and the daily cost cap."""
+    sent = Usage(input_tokens=(len(system) + len(user)) // 4)
+    try:
+        cost = router.registry.get(model_id).cost(sent)
+    except KeyError:
+        cost = 0.0
+    out.add_usage(sent, cost)
+
+
 def follow_up_seconds(model_id: str, schema_name: str, first_call_seconds: float) -> float:
     """About how long a follow-up will take: at least MIN_FOLLOW_UP_SECONDS, half the first call, and as long as
     the last one for this model took."""
@@ -60,6 +71,7 @@ class Outcome(Generic[T]):
     cost_usd: float = 0.0
     errors: list[str] = field(default_factory=list)
     follow_up: str = ""  # "skipped" or "stopped" when the deadline left no time for the follow-up, else ""
+    first_call_seconds: float = 0.0  # how long the first answer took (a whole new draft takes about as long)
 
     def add_usage(self, usage: Usage, price_cost: float) -> None:
         self.input_tokens += usage.input_tokens
@@ -115,6 +127,7 @@ async def generate_validated(
                          attempt, ran)
                 key = (model_id, ask.schema_name)
                 _FOLLOW_UP_SECONDS[key] = max(_FOLLOW_UP_SECONDS.get(key, 0.0), ran)  # it needed at least this
+                record_sent(out, router, model_id, system, ask.user)  # the provider got the whole prompt
                 out.follow_up = "stopped"
                 break
             except CostCapError:
@@ -138,7 +151,7 @@ async def generate_validated(
             if kept is not None:  # a follow-up that finished: how long the next one may take
                 _FOLLOW_UP_SECONDS[(model_id, ask.schema_name)] = took
             elif attempt == 1:
-                first_call = took
+                first_call = out.first_call_seconds = took
             out.add_usage(result.usage, spec.cost(result.usage))
             try:
                 value = ask.parse(result.data)
@@ -158,6 +171,9 @@ async def generate_validated(
                     if time_left < needed:
                         log.info("%s %s follow-up skipped: %.1fs left of the time limit, it needs about %.1fs",
                                  model_id, follow_up.schema_name, time_left, needed)
+                        key = (model_id, follow_up.schema_name)
+                        if _FOLLOW_UP_SECONDS.get(key, 0.0) > time_left:  # one slow rewrite (a provider hiccup)
+                            _FOLLOW_UP_SECONDS[key] *= 0.8  # must not block every later one: a later run tries again
                         out.follow_up, follow_up = "skipped", None
                 if follow_up is not None:
                     kept, ask = (value, result.served_model), follow_up

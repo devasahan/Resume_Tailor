@@ -42,7 +42,7 @@ from .fit import (
     trim_to_fit,
     try_styles,
 )
-from .generate import Ask, GenerationFailed, Outcome, generate_validated
+from .generate import Ask, GenerationFailed, Outcome, generate_validated, record_sent
 
 log = logging.getLogger(__name__)
 
@@ -248,15 +248,17 @@ async def run_tailor(
     user_id: int | None = None,
     spelling: str = "us",
     steps: Steps | None = None,
+    time_limit: float | None = None,
 ) -> TailorResult:
     """`spelling`: "us" (American) or "eu" (British) for every word the model writes, the Tailor page's US style / EU
     style buttons. `steps` (optional) gets a mark at the end of each step, for the job's timing line in the server
-    log."""
+    log. `time_limit` (seconds, 0 = none) overrides the Settings time limit (the bake-off compares models without
+    one)."""
     started, steps = time.perf_counter(), steps or Steps()
     settings = router.settings()
     paper = settings["paper_size"]
     metrics_mode = settings.get("metrics_mode", "estimate")
-    limit = float(settings.get("resume_time_limit_s", 30) or 0)  # 0: no limit
+    limit = float(settings.get("resume_time_limit_s", 30) or 0) if time_limit is None else time_limit  # 0: none
     deadline = started + limit - CHECKS_RESERVE_SECONDS if limit > 0 else None
     today = date.today()  # one date for the facts, the bullet budget and the stay lengths in the prompt
     facts = candidate_facts(profile, today)
@@ -494,17 +496,19 @@ async def run_tailor(
         fit = await asyncio.to_thread(try_styles, resume, paper)
         steps.mark("layout")
         time_left = None if deadline is None else deadline - time.perf_counter()
-        if fit is None and time_left is not None and time_left < MIN_SHORTER_SECONDS:
+        # a shorter draft is a whole new draft: it takes about as long as the first one did
+        if fit is None and time_left is not None and time_left < max(MIN_SHORTER_SECONDS, outcome.first_call_seconds):
             notes.append("There was no time left (Settings > Time limit) to ask the model for shorter bullets, so the "
                          "text was trimmed to fit two pages.")
         elif fit is None:
             second = Outcome()
             smaller = smaller_budget(budget)
+            shorter_system = tailor_system(metrics_mode, spelling)
+            shorter_user = tailor_user(jd, profile.companies, hints, facts, shorten=True, bullets=smaller, today=today,
+                                       certifications=profile.certifications)
             try:
                 shorter = generate_validated(
-                    router, [outcome.final_model_id], system=tailor_system(metrics_mode, spelling),
-                    user=tailor_user(jd, profile.companies, hints, facts, shorten=True, bullets=smaller, today=today,
-                                     certifications=profile.certifications),
+                    router, [outcome.final_model_id], system=shorter_system, user=shorter_user,
                     schema=schema, schema_name="tailor_output", parse=parse,
                     context={**context, "shorten": True, "bullets": smaller}, outcome=second,
                     refine=None,  # the shorten call is already the extra call; never let it ask a third time
@@ -520,6 +524,7 @@ async def run_tailor(
                 _absorb(outcome, exc.outcome)
                 notes.append("Asking the model for shorter bullets failed, so the text was trimmed instead.")
             except TimeoutError:
+                record_sent(second, router, outcome.final_model_id, shorter_system, shorter_user)  # billed anyway
                 _absorb(outcome, second)
                 notes.append("Asking the model for shorter bullets ran past the time limit (Settings), so the text was "
                              "trimmed instead.")

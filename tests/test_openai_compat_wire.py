@@ -20,7 +20,7 @@ SCHEMA = {"type": "object", "properties": {"a": {"type": "integer"}}, "required"
 @pytest.fixture
 def server():
     seen: list[dict] = []
-    behaviour = {"reject_schema": False, "reject_effort": False, "status": 200, "total": 0}
+    behaviour = {"reject_schema": False, "reject_effort": False, "status": 200, "total": 0, "reasoning": 0}
     app = FastAPI()
 
     @app.post("/v1/chat/completions")
@@ -37,7 +37,9 @@ def server():
             "model": "served-model-v2",
             "choices": [{"message": {"role": "assistant", "content": "```json\n" + json.dumps({"a": 7}) + "\n```"}, "finish_reason": "stop"}],
             "usage": {"prompt_tokens": 20, "completion_tokens": 9, **({"total_tokens": behaviour["total"]}
-                                                                    if behaviour["total"] else {})},
+                                                                    if behaviour["total"] else {}),
+                      **({"completion_tokens_details": {"reasoning_tokens": behaviour["reasoning"]}}
+                         if behaviour["reasoning"] else {})},
         })
 
     with socket.socket() as s:
@@ -136,3 +138,18 @@ def test_thinking_tokens_are_counted_as_output_and_shown_apart(server):
     server["behaviour"]["total"] = 20 + 9 + 50  # Gemini: thinking only in the total
     usage = call(client_for(server, json_mode="json_schema", reasoning_effort="low")).usage
     assert (usage.input_tokens, usage.output_tokens, usage.thinking_tokens) == (20, 59, 50)
+
+
+
+def test_thinking_tokens_the_provider_counts_itself_are_shown(server):
+    server["behaviour"].update(total=20 + 9, reasoning=5)  # OpenAI style: thinking inside completion_tokens
+    usage = call(client_for(server, json_mode="json_schema", reasoning_effort="low")).usage
+    assert (usage.output_tokens, usage.thinking_tokens) == (9, 5)
+
+
+def test_both_gemini_flash_entries_share_their_prices():
+    from app.llm.registry import Registry
+
+    registry = Registry.load()
+    flash, fast = registry.get("gemini-3.8-flash"), registry.get("gemini-3.8-flash-fast")
+    assert (fast.price_in, fast.price_out) == (flash.price_in, flash.price_out)

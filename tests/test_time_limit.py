@@ -38,15 +38,16 @@ class SlowRewrite(LLMClient):
         return result
 
 
-def tailor_with(router, db, registry, profile, *, limit, delay, first=0.0, reserve=0.0, minimum=0.1, monkeypatch):
+def tailor_with(router, db, registry, profile, *, limit, delay, first=0.0, reserve=0.0, minimum=0.1, monkeypatch,
+                model="demo-concise"):
     monkeypatch.setattr(tailor, "CHECKS_RESERVE_SECONDS", reserve)
     monkeypatch.setattr(generate, "MIN_FOLLOW_UP_SECONDS", minimum)
     db.set_settings({"resume_time_limit_s": limit})
-    client = SlowRewrite(FakeClient(registry.get("demo-concise")), delay, first)
-    router.overrides["demo-concise"] = client
+    client = SlowRewrite(FakeClient(registry.get(model)), delay, first)
+    router.overrides[model] = client
     started = time.perf_counter()
     result = asyncio.run(run_tailor(router, db, profile=profile, profile_id=None, jd=SAMPLE_JD,
-                                    model_id="demo-concise", save=False))
+                                    model_id=model, save=False))
     return result, client, time.perf_counter() - started
 
 
@@ -124,6 +125,52 @@ def test_the_limit_is_a_setting(client):
     assert client.get("/api/settings").json()["settings"]["resume_time_limit_s"] == 30
     assert client.put("/api/settings", json={"resume_time_limit_s": 45}).status_code == 200
     assert client.get("/api/settings").json()["settings"]["resume_time_limit_s"] == 45
-    assert client.put("/api/settings", json={"resume_time_limit_s": -5}).json()["settings"]["resume_time_limit_s"] == 0
-    assert client.put("/api/settings", json={"resume_time_limit_s": "soon"}).status_code == 422
+    assert client.put("/api/settings", json={"resume_time_limit_s": 0.5}).json()["settings"]["resume_time_limit_s"] == 1
+    for bad in ("-5", '"soon"', "Infinity", "NaN", "1e999"):  # never 'no limit' by mistake, never a server error
+        sent = client.put("/api/settings", content=f'{{"resume_time_limit_s": {bad}}}',
+                          headers={"content-type": "application/json"})
+        assert sent.status_code == 422, bad
+    assert client.put("/api/settings", content='{"daily_cost_cap_usd": Infinity}',
+                      headers={"content-type": "application/json"}).status_code == 422
+    assert client.get("/api/settings").json()["settings"]["resume_time_limit_s"] == 1
     assert 'id="resume_time_limit_s"' in client.get("/settings").text
+
+
+
+def test_a_stopped_rewrite_is_still_paid_for(router, db, registry, profile, monkeypatch):
+    """The provider got the whole prompt before the call was stopped: the run's tokens count it (the run's cost,
+    Spent today and the daily cap all add up runs)."""
+    skipped, _client, _took = tailor_with(router, db, registry, profile, limit=1, delay=5, minimum=60,
+                                          monkeypatch=monkeypatch)
+    stopped, client, _took = tailor_with(router, db, registry, profile, limit=1, delay=5, monkeypatch=monkeypatch)
+    assert client.calls == ["tailor_output", "tailor_revision"]
+    assert stopped.input_tokens > skipped.input_tokens + 1000  # about the rewrite prompt's size
+
+
+def test_one_slow_rewrite_does_not_block_every_later_one(router, db, registry, profile, monkeypatch):
+    generate._FOLLOW_UP_SECONDS[("demo-concise", "tailor_revision")] = 50.0  # a provider hiccup once
+    tailor_with(router, db, registry, profile, limit=30, delay=0, monkeypatch=monkeypatch)
+    assert generate._FOLLOW_UP_SECONDS[("demo-concise", "tailor_revision")] == 40.0  # shrinks each time it blocks
+
+
+def test_no_shorter_draft_without_a_drafts_time_left(router, db, registry, profile, monkeypatch):
+    """A shorter draft is a whole new draft: after a 1 s first draft with about 0.6 s left, none is started, and the
+    text is trimmed to two pages at once."""
+    monkeypatch.setattr(tailor, "MIN_SHORTER_SECONDS", 0.1)
+    result, client, took = tailor_with(router, db, registry, profile, limit=1.6, delay=0, first=1.0, minimum=60,
+                                       monkeypatch=monkeypatch, model="demo-detailed")
+    assert client.calls == ["tailor_output"] and result.fits and took < 4
+    assert any("no time left" in n for n in result.notes)
+
+
+def test_the_bake_off_compares_models_without_a_time_limit(router, db, registry, profile, monkeypatch):
+    from app.pipeline.compare import compare
+
+    monkeypatch.setattr(generate, "MIN_FOLLOW_UP_SECONDS", 0.1)
+    db.set_settings({"resume_time_limit_s": 1})
+    client = SlowRewrite(FakeClient(registry.get("demo-concise")), 1.5)
+    router.overrides["demo-concise"] = client
+    [result] = asyncio.run(compare(router, db, profile=profile, profile_id=None, jd=SAMPLE_JD,
+                                   model_ids=["demo-concise"], save=False))
+    assert client.calls == ["tailor_output", "tailor_revision"] and result.retries == 1
+    assert not any("time limit" in n for n in result.notes)  # each model's own rewrite, however long it takes

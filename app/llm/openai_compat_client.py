@@ -191,9 +191,12 @@ class OpenAICompatClient(LLMClient):
         # Thinking tokens are billed as output. Some providers (Gemini) leave them out of completion_tokens but
         # include them in total_tokens, so the larger of the two readings is the billed output.
         output = max(completion, total - prompt)
+        # how much of it was thinking: the provider's own count (OpenAI-style), else what only the total holds (Gemini)
+        details = usage.get("completion_tokens_details") or {}
+        thinking = int(details.get("reasoning_tokens") or 0) or (max(0, total - prompt - completion) if total else 0)
         return LLMResult(
             data=data,
-            usage=Usage(prompt, output, max(0, total - prompt - completion) if total else 0),
+            usage=Usage(prompt, output, thinking),
             served_model=str(payload.get("model") or self.spec.model),
             raw_text=text,
         )
