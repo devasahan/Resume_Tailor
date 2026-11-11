@@ -36,8 +36,8 @@ The demo models write generic template text. They exist to show the flow (fit to
 
 ### Then add real models
 1. Copy `.env.example` to `.env` (the start script does this for you) and open `.env` in any text editor.
-2. Paste the API key for the provider you have, for example `ANTHROPIC_API_KEY=...`. Use **paid** keys: free tiers may let the provider train on your data.
-3. Stop and start the app again. In **Settings**, press **Run check** to confirm each key and model name works (one tiny call per model, a fraction of a cent).
+2. Paste the API key for the provider you have, for example `ANTHROPIC_API_KEY=...`. Or log in as the admin and paste it on **Settings > API keys**: it is saved in `.env` for you. Use **paid** keys: free tiers may let the provider train on your data.
+3. A new or changed key works at once, with no restart. In **Settings**, press **Run check** to confirm each key and model name works (one tiny call per model, a fraction of a cent).
 4. In **Settings**, choose the **Resume model** and **Cover letter model** the Tailor page uses (Automatic picks the first available, Gemini 3.8 Flash first when `GEMINI_API_KEY` is set). Costs are shown per run. To compare models side by side, use the bake-off below.
 
 Nothing leaves your computer except the calls to the model providers you pick. See [Privacy and security](#privacy-and-security).
@@ -57,7 +57,7 @@ Nothing leaves your computer except the calls to the model providers you pick. S
 
 ## Models
 
-`models.yaml` is the registry. A model is usable when its API-key variable is set (see `.env.example`) and its data region is allowed in Settings.
+`models.yaml` is the registry. A model is usable when its API-key variable is set (see `.env.example`, or paste the key on Settings > API keys) and its data region is allowed in Settings.
 
 | Provider type | Used for | How |
 |---|---|---|
@@ -119,7 +119,7 @@ It prints a cost estimate and asks before spending anything, then writes `result
 ## Privacy and security
 - Your resume text and job description go **only to the model you pick**, over HTTPS, with your own API key. Check each provider's retention terms; use paid keys (free tiers may let the provider train on your data).
 - Stored locally in SQLite (`data/`, file mode 600): your uploaded base resumes (the facts read from them, not the files), and each run's generated resume, cover letter and the job description it was made for (kept so a cover letter can be written later). Runs are deleted after the retention period; uploaded resumes stay until you delete them; Settings > Delete all stored data removes everything at once.
-- API keys come from environment variables or your local `.env` only and are never returned by the API or stored in the database. `.env` is excluded from git.
+- API keys come from environment variables or your local `.env` only and are never returned by the API or stored in the database. `.env` is excluded from git. The admin can paste a key on **Settings > API keys**: it is written to `.env` (a new `.env` is readable by its owner only), and the page shows only the provider's marker and the key's last 4 characters, such as `sk-proj-...1234`. A key changed in `.env` by hand is also used at once.
 - Every page needs a login. Passwords are stored as scrypt hashes; the session cookie is HttpOnly and SameSite, and is sent only over HTTPS when the site uses HTTPS (set `COOKIE_SECURE=1` on a server). Requests from other websites that change data are refused. By default the app listens on `127.0.0.1` (your computer only).
 - **Hosting it online**: see **[DEPLOY.md](DEPLOY.md)** for PythonAnywhere, step by step. On any server, put a `.env` there with `ADMIN_EMAIL`, `ADMIN_PASSWORD`, `COOKIE_SECURE=1`, `FORCE_HTTPS=1` and your API keys, and run `uvicorn app.asgi:app` (or `app.wsgi:application` on a WSGI host). PythonAnywhere free accounts can only reach allow-listed websites (Gemini works; not every provider does).
 - Uploads are limited to 5 MB, 10 PDF pages and a bounded DOCX unpack size; the browser UI inserts all text with `textContent`, and pages are served with a content security policy.
@@ -133,7 +133,7 @@ It prints a cost estimate and asks before spending anything, then writes `result
 | "Port 8000 is already in use" | Another copy is running. Close it, or set another port: Windows `set PORT=8001`, macOS/Linux `PORT=8001 ./start.sh` |
 | Browser did not open | Open <http://127.0.0.1:8000> yourself (or set `OPEN_BROWSER=0` to stop it trying) |
 | PDF preview is blank | Use **Download resume PDF** (some browsers block inline PDFs) |
-| A model says "no API key" | Put the key in `.env`, then stop and start the app again |
+| A model says "no API key" | Paste the key on **Settings > API keys** and press **Save** (or put it in `.env`). It works at once |
 | A model fails on the first call | Run **Settings > Run check**: the error names the problem (key, model name, unsupported feature). Fix the entry in `models.yaml` |
 | "hit the token limit" | Raise `max_output_tokens` for that model in `models.yaml` or lower its reasoning effort (reasoning tokens count too) |
 | Upload says "No readable text" | The PDF is a scan (an image). Export a text PDF or DOCX from your word processor |

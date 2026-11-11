@@ -48,8 +48,7 @@ def test_pages_render(client):
 def test_settings_shows_models_that_are_not_set_up_yet(client):
     page = client.get("/settings").text
     assert "label: 'Not set up yet'" in page and "disabled: true" in page  # greyed out, with the reason
-    assert "Add the key to .env, then reload the website." in page
-    assert "Reload the website after you change .env: keys are read when it starts." in page
+    assert "Paste a key under API keys above." in page and '<tbody id="key-rows">' in page
     gpt = next(m for m in client.get("/api/models").json()["models"] if m["id"] == "gpt-6.1-sol")
     assert gpt["reason"] == "no API key: set OPENAI_API_KEY" or gpt["available"]  # the text the drop-down shows
 

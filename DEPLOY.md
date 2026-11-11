@@ -45,6 +45,9 @@ ADMIN_PASSWORD=your admin password (at least 10 characters)
 GEMINI_API_KEY=your Gemini key
 OPENAI_API_KEY=your OpenAI API key (optional, for GPT; not a ChatGPT subscription)
 ```
+The keys can also be pasted later on the website instead: log in as the admin, open **Settings** > **API keys**,
+paste the key and press **Save**. It is saved in this same `.env` file and works at once.
+
 `COOKIE_SECURE=1` and `FORCE_HTTPS=1` are already set. On a free account the script also adds
 `HTTPS_PROXY=` and `HTTP_PROXY=` lines: the website reaches Gemini through PythonAnywhere's proxy. Save with **Ctrl+O**, **Enter**, then close with
 **Ctrl+X**. (Or edit the file in the **Files** tab: `Resume_Tailor` > `.env`.)
@@ -105,7 +108,8 @@ cd ~/Resume_Tailor && git pull && ~/.virtualenvs/resume_tailor/bin/pip install -
 - **A**: `~/.virtualenvs/resume_tailor/bin/pa website reload --domain USERNAME.pythonanywhere.com`
 - **B**: the **Reload** button on the Web tab.
 
-Changing `.env` also needs this restart. A new `ADMIN_PASSWORD` replaces the old one and logs the admin out.
+Changing `.env` also needs this restart, except for API keys: a key saved on **Settings** > **API keys**, or
+changed in `.env`, works at once. A new `ADMIN_PASSWORD` replaces the old one and logs the admin out.
 
 ## When something is wrong
 | Problem | What to do |

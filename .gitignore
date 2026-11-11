@@ -3,6 +3,7 @@ __pycache__/
 *.pyc
 .pytest_cache/
 .env
+.env.saving*
 data/*
 !data/.gitkeep
 *.egg-info/

@@ -109,6 +109,27 @@ class CheckRequest(BaseModel):
     models: list[str]
 
 
+class KeyRequest(BaseModel):
+    value: str = Field(max_length=600)
+
+
+# An API key as one .env line: letters, digits and . _ - + / = : only (no spaces, quotes, '#' or line breaks)
+KEY_VALUE = re.compile(r"[A-Za-z0-9._\-+/=:]{8,512}")
+
+
+def key_names(registry: Registry) -> list[str]:
+    """The key variables the models need, in models.yaml order."""
+    return list(dict.fromkeys(spec.key_env for spec in registry.all() if spec.key_env))
+
+
+def keys_view(registry: Registry) -> list[dict]:
+    """For the Settings page: each key variable, the models it opens, and whether it is set. Never the key itself,
+    only its hint (the provider's marker and its last 4 characters)."""
+    return [{"name": name, "models": [spec.label for spec in registry.all() if spec.key_env == name],
+             "set": bool(config.key_hint(name)), "hint": config.key_hint(name),
+             "in_env_file": name in config.FROM_DOTENV} for name in key_names(registry)]
+
+
 class LoginRequest(BaseModel):
     email: str = Field(max_length=320)
     password: str = Field(max_length=1000)
@@ -481,6 +502,8 @@ def create_app(db: Database | None = None, registry: Registry | None = None, rou
         if request.method in UNSAFE_METHODS and cross_site(request):
             return JSONResponse({"detail": "Cross-site request refused."}, status_code=403)
         path = request.url.path
+        if not path.startswith("/static/") and config.refresh_dotenv():
+            router.forget_clients()  # .env changed (a key saved by another worker, or edited by hand)
         if path.startswith("/static/"):
             request.state.user = None
             response = await call_next(request)
@@ -837,6 +860,46 @@ def create_app(db: Database | None = None, registry: Registry | None = None, rou
             except LLMError as exc:
                 results.append({"id": model_id, "ok": False, "error": str(exc)[:300]})
         return {"results": results}
+
+    # ------------------------------------------------------------------ API keys (admin): kept only in .env
+    def known_key(name: str) -> str:
+        if name not in key_names(registry):
+            raise HTTPException(404, "Unknown key name.")
+        return name
+
+    @app.get("/api/keys", dependencies=[Depends(admin_user)])
+    def api_keys():
+        return {"keys": keys_view(registry)}
+
+    @app.put("/api/keys/{name}", dependencies=[Depends(admin_user)])
+    def api_set_key(name: str, body: KeyRequest):
+        """Save a pasted API key in .env and use it at once: no restart. The key is never sent back."""
+        name, value = known_key(name), body.value.strip()
+        if not KEY_VALUE.fullmatch(value):
+            raise HTTPException(422, "That does not look like an API key. Paste only the key itself: no spaces, "
+                                     "quotes or line breaks.")
+        try:
+            config.set_env_value(name, value)
+        except OSError as error:
+            raise HTTPException(500, f"The key could not be saved in .env ({type(error).__name__}).") from None
+        router.forget_clients()
+        return {"keys": keys_view(registry)}
+
+    @app.delete("/api/keys/{name}", dependencies=[Depends(admin_user)])
+    def api_delete_key(name: str):
+        """Take a key out of .env; its models stop at once. A key set outside .env is left alone."""
+        name = known_key(name)
+        if name not in config.FROM_DOTENV:
+            if config.key_hint(name):
+                raise HTTPException(409, "This key is set as a system environment variable, not in .env: remove it "
+                                         "where it was set.")
+            return {"keys": keys_view(registry)}
+        try:
+            config.set_env_value(name, "")
+        except OSError as error:
+            raise HTTPException(500, f"The key could not be removed from .env ({type(error).__name__}).") from None
+        router.forget_clients()
+        return {"keys": keys_view(registry)}
 
     # ------------------------------------------------------------------ profile (older endpoints, admin only)
     @app.post("/api/profile/parse")

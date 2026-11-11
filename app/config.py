@@ -2,6 +2,9 @@
 from __future__ import annotations
 
 import os
+import re
+import tempfile
+import threading
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -10,6 +13,22 @@ LOCAL_ZONE = "America/Chicago"  # Arlington, Texas: the owner's days (History, S
 
 
 FROM_DOTENV: set[str] = set()  # variable names whose value came from .env
+_INHERITED: dict[str, str] = {}  # a system variable's own value, from before .env replaced it
+_ENV_STAMP: tuple[int, int, int] | None = None  # (file id, modified time, size) of .env when it was last read
+_ENV_LOCK = threading.Lock()  # one reader or writer of .env at a time: requests run in several threads
+
+
+def env_file() -> Path:
+    """The .env file the app reads and the Settings page writes keys to (ENV_FILE points elsewhere, in tests)."""
+    return Path(os.environ.get("ENV_FILE") or ROOT / ".env")
+
+
+def _stamp(path: Path) -> tuple[int, int, int] | None:
+    try:
+        stat = path.stat()
+    except OSError:
+        return None
+    return stat.st_ino, stat.st_mtime_ns, stat.st_size  # a save replaces the file, so its id always changes
 
 
 def load_dotenv(path: Path | None = None) -> None:
@@ -19,7 +38,10 @@ def load_dotenv(path: Path | None = None) -> None:
     ANTHROPIC_API_KEY set in Windows settings): the README tells people to edit .env, so that is
     what has to take effect. Empty values in .env are ignored.
     """
-    path = path or ROOT / ".env"
+    global _ENV_STAMP
+    path = path or env_file()
+    if path == env_file():
+        _ENV_STAMP = _stamp(path)
     if not path.exists():
         return
     for raw in path.read_text(encoding="utf-8-sig").splitlines():  # utf-8-sig: Notepad may add a BOM
@@ -29,16 +51,98 @@ def load_dotenv(path: Path | None = None) -> None:
         key, _, value = line.partition("=")
         key, value = key.strip(), value.strip().strip('"').strip("'").strip()
         if key and value:
+            if key not in FROM_DOTENV and key in os.environ:
+                _INHERITED.setdefault(key, os.environ[key])
             os.environ[key] = value
             FROM_DOTENV.add(key)
 
 
+def _unset_from_dotenv(name: str) -> None:
+    """A variable .env no longer sets: back to the system's own value, or gone."""
+    FROM_DOTENV.discard(name)
+    if name in _INHERITED:
+        os.environ[name] = _INHERITED[name]
+    else:
+        os.environ.pop(name, None)
+
+
+def refresh_dotenv() -> bool:
+    """Read .env again when it changed since it was last read: a key saved on the Settings page by another worker
+    process, or the file edited by hand. A variable that left .env leaves the environment too. True if it changed.
+    One stat() per call, so it is cheap enough for every request."""
+    path = env_file()
+    if _stamp(path) == _ENV_STAMP:
+        return False
+    with _ENV_LOCK:
+        if _stamp(path) == _ENV_STAMP:  # read (or saved) by another thread meanwhile
+            return False
+        before = set(FROM_DOTENV)
+        FROM_DOTENV.clear()
+        load_dotenv(path)
+        for name in before - FROM_DOTENV:
+            _unset_from_dotenv(name)
+    return True
+
+
+def set_env_value(name: str, value: str) -> None:
+    """Write NAME=value into .env, in place of its line or as a new last line ('' removes the line), keeping every
+    other line as it was, then use it at once. The file is replaced in one step, so it is never half written."""
+    global _ENV_STAMP
+    path = env_file()
+    with _ENV_LOCK:
+        lines = path.read_text(encoding="utf-8-sig").splitlines() if path.exists() else []
+        out: list[str] = []
+        written = False
+        for line in lines:
+            stripped = line.strip()
+            if not stripped.startswith("#") and "=" in stripped and stripped.partition("=")[0].strip() == name:
+                if value and not written:
+                    out.append(f"{name}={value}")
+                    written = True
+                continue  # the old value (and any repeat of the name) goes
+            out.append(line)
+        if value and not written:
+            out.append(f"{name}={value}")
+        mode = path.stat().st_mode & 0o777 if path.exists() else 0o600  # a new .env: readable by its owner only
+        # A new file of its own (two app processes saving at once never write into the same one), created readable
+        # by its owner only, so the key is never open to others, not even for a moment.
+        handle, name_of_copy = tempfile.mkstemp(prefix=path.name + ".saving-", dir=path.parent)
+        temporary = Path(name_of_copy)
+        try:
+            with os.fdopen(handle, "w", encoding="utf-8") as file:
+                file.write("\n".join(out) + "\n")
+                file.flush()
+                os.fsync(file.fileno())  # on disk before it takes the old file's place
+            os.chmod(temporary, mode)
+            os.replace(temporary, path)
+        except BaseException:
+            temporary.unlink(missing_ok=True)  # never leave a copy of the keys behind
+            raise
+        _ENV_STAMP = _stamp(path)
+        if value:
+            if name not in FROM_DOTENV and name in os.environ:
+                _INHERITED.setdefault(name, os.environ[name])
+            os.environ[name] = value
+            FROM_DOTENV.add(name)
+        else:
+            _unset_from_dotenv(name)
+
+
+_HINT_WORD = re.compile(r"[a-z0-9]{1,6}")  # 'sk', 'ant', 'api03', 'proj': a provider's marker, never the secret
+
+
 def key_hint(name: str) -> str:
-    """Safe description of a secret: its prefix, last 4 characters and where it came from."""
+    """Safe description of a secret: its provider's marker ('sk-ant-api03', 'sk-proj', 'AIza'), its last 4
+    characters and where it came from. Never a piece of the random part."""
     value = os.environ.get(name, "")
     if not value:
         return ""
-    prefix = "-".join(value.split("-")[:3]) if value.count("-") >= 2 else value[:4]
+    words = []
+    for word in value.split("-")[:3] if value.count("-") >= 2 else []:
+        if not _HINT_WORD.fullmatch(word):
+            break
+        words.append(word)
+    prefix = ("-".join(words) or value[:4]).rstrip("-")
     source = ".env" if name in FROM_DOTENV else "system environment variable"
     return f"{prefix}-...{value[-4:]} (from {source})"
 

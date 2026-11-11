@@ -18,6 +18,11 @@ class Router:
         self._clients: dict[str, LLMClient] = {}
         self.overrides: dict[str, LLMClient] = {}  # tests inject fakes here, keyed by model id
 
+    def forget_clients(self) -> None:
+        """An API key changed: the next call builds its client again, with the key as it is now (the Anthropic SDK
+        keeps the key it was made with). A call already running finishes with the client it has."""
+        self._clients.clear()
+
     # ------------------------------------------------------------------ selection
     def settings(self) -> dict:
         return self.db.get_settings()

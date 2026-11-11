@@ -6,8 +6,14 @@
   <p class="sub">Changes apply immediately to new runs. Runs already in progress finish on the model they started with.</p>
 </div>
 <div class="panel"><h2>Models</h2>
-  <p class="small muted">A model is usable when its API key variable is set and its data region is allowed below. Reload the website after you change .env: keys are read when it starts. Prices and model names marked "unverified" came from third-party sources: run the check below.</p>
+  <p class="small muted">A model is usable when its API key is set (paste it under API keys below) and its data region is allowed below. Prices and model names marked "unverified" came from third-party sources: run the check below.</p>
   <div class="table-wrap"><table class="wide"><thead><tr><th>Model</th><th>Provider</th><th>Model string</th><th>$ per 1M in / out</th><th>Region</th><th>Status</th></tr></thead><tbody id="model-rows"></tbody></table></div>
+</div>
+
+<div class="panel"><h2>API keys</h2>
+  <p class="small muted">Paste a provider's key and press Save: its models work at once, with no restart. Keys are kept only in the .env file on the server, never in the database, and are never shown again in full. Use paid keys: on free tiers the provider may use your data to improve its models.</p>
+  <div class="table-wrap"><table class="wide"><thead><tr><th>Key</th><th>Opens</th><th>Now</th><th>New key</th><th></th></tr></thead><tbody id="key-rows"></tbody></table></div>
+  <div id="key-note"></div>
 </div>
 
 <div class="panel"><h2>Defaults</h2>
@@ -54,12 +60,12 @@ let models = [], regions = [], cfg = null;
 const field = id => $('#' + id);
 
 // Real models that cannot be used yet, shown greyed out with the reason, so a missing one is never a mystery
-const shortReason = reason => reason.replace(/^no API key: set (\S+)$/, 'needs $1 in .env')
+const shortReason = reason => reason.replace(/^no API key: set (\S+)$/, 'needs $1, see API keys')
   .replace(/^region (\S+) is not allowed.*$/, 'region $1 not allowed');
 const notSetUp = () => models.filter(m => !m.available && !m.demo);
 function notSetUpLine() {
   const off = notSetUp();
-  return off.length ? el('div', { class: 'small muted note', text: `Not set up yet: ${off.map(m => m.label).join(', ')}. Add the key to .env, then reload the website.` }) : null;
+  return off.length ? el('div', { class: 'small muted note', text: `Not set up yet: ${off.map(m => m.label).join(', ')}. Paste a key under API keys above.` }) : null;
 }
 
 function modelOptions(select, current, blankLabel, extra = []) {
@@ -126,5 +132,55 @@ field('wipe').addEventListener('click', async () => {
   catch (err) { field('wipe-status').textContent = err.message; }
 });
 init().catch(err => field('model-rows').replaceChildren(el('tr', {}, el('td', { colspan: 6 }, notice('bad', err.message)))));
+
+// API keys: pasted here, kept only in .env on the server, never sent back (only a hint: 'sk-proj-...1234')
+// Shown as dots in a plain text box where the browser can: then it never offers to fill in the login password here,
+// or to save a key as the site's password. Elsewhere it is a password box.
+const DOTS = !!(window.CSS && CSS.supports('-webkit-text-security', 'disc'));
+function showKeys(keys) {
+  field('key-rows').replaceChildren(...keys.map(k => {
+    const input = el('input', { type: DOTS ? 'text' : 'password', class: DOTS ? 'secret' : null, autocomplete: 'off',
+      autocapitalize: 'off', spellcheck: 'false', maxlength: 512, 'data-lpignore': 'true', 'data-1p-ignore': 'true',
+      'data-bwignore': 'true', placeholder: k.set ? 'Paste a new key to replace it' : 'Paste the key here',
+      'aria-label': `New ${k.name}` });
+    const save = el('button', { type: 'button', class: 'small primary', text: 'Save' });
+    const remove = k.in_env_file ? el('button', { type: 'button', class: 'small danger', text: 'Remove' }) : null;
+    save.addEventListener('click', () => saveKey(k.name, input, save));
+    input.addEventListener('keydown', e => { if (e.key === 'Enter') { e.preventDefault(); saveKey(k.name, input, save); } });
+    if (remove) remove.addEventListener('click', () => removeKey(k.name, remove));
+    return el('tr', {},
+      el('td', { class: 'nowrap', text: k.name }), el('td', { text: k.models.join(', ') }),
+      el('td', {}, k.set ? chip('set', 'ok') : chip('not set', 'warn'), k.hint ? el('div', { class: 'small muted', text: k.hint }) : null),
+      el('td', {}, input), el('td', { class: 'nowrap' }, save, remove ? ' ' : null, remove));
+  }));
+}
+
+async function keysChanged(data, message) {
+  showKeys(data.keys);
+  field('key-note').replaceChildren(notice('ok', message));
+  await init();  // the model lists: the provider's models are ready (or off) at once
+}
+
+async function saveKey(name, input, button) {
+  const value = input.value.trim();
+  if (button.disabled) return;  // already saving (Enter pressed twice)
+  if (!value) { input.focus(); return; }
+  button.disabled = true;
+  try {
+    const data = await api(`/api/keys/${encodeURIComponent(name)}`, { method: 'PUT', body: { value } });
+    input.value = '';
+    await keysChanged(data, `${name} saved. Its models are ready: tick them under Check models and press Run check.`);
+  } catch (err) { field('key-note').replaceChildren(notice('bad', err.message)); }
+  finally { button.disabled = false; }
+}
+
+async function removeKey(name, button) {
+  if (!confirm(`Remove ${name} from .env? Its models stop working until you paste a key again.`)) return;
+  button.disabled = true;
+  try { await keysChanged(await api(`/api/keys/${encodeURIComponent(name)}`, { method: 'DELETE' }), `${name} removed.`); }
+  catch (err) { field('key-note').replaceChildren(notice('bad', err.message)); button.disabled = false; }
+}
+
+api('/api/keys').then(data => showKeys(data.keys)).catch(err => field('key-note').replaceChildren(notice('bad', err.message)));
 </script>
 {% endblock %}
