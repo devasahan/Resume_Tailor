@@ -37,6 +37,8 @@
       <option value="hints_only">No figures (nothing to verify)</option>
     </select></div>
   </div>
+  <label>Certifications section <span class="opt" id="certifications-help">(on: for each job, the AI picks the best 4 of your certifications from the Profile page and prints them after Education; off: no Certifications section is printed, and your saved list stays on the Profile page for later)</span></label>
+  <div class="models"><label><input type="checkbox" id="certifications_section" role="switch" aria-describedby="certifications-help">Print a Certifications section</label></div>
   <label>Allowed data regions <span class="opt">(models hosted elsewhere stay off until you tick them)</span></label>
   <div class="models" id="regions"></div>
   <p class="small muted" id="spent"></p>
@@ -107,6 +109,7 @@ async function init() {
   field('fallbacks').replaceChildren(...models.filter(x => x.available).map(x => el('label', {}, el('input', { type: 'checkbox', value: x.id, checked: st.fallback_models.includes(x.id) }), x.label)),
     ...[notSetUpLine(), sameKeyNote(st, s.resolved.resume)].filter(Boolean));
   field('daily_cost_cap_usd').value = st.daily_cost_cap_usd; field('retention_days').value = st.retention_days; field('resume_time_limit_s').value = st.resume_time_limit_s ?? 30; field('paper_size').value = st.paper_size; field('metrics_mode').value = st.metrics_mode;
+  field('certifications_section').checked = st.certifications_section === true;  // off unless saved as on
   field('regions').replaceChildren(...regions.map(r => el('label', {}, el('input', { type: 'checkbox', value: r, checked: st.allowed_regions.includes(r) }), r)));
   field('spent').textContent = `Spent today (since midnight Texas time): ${money(s.cost_today)}.`;
   field('check-list').replaceChildren(...models.filter(x => x.available && !x.demo).map(x => el('label', {}, el('input', { type: 'checkbox', value: x.id }), x.label)), ...[notSetUpLine()].filter(Boolean));
@@ -120,6 +123,7 @@ field('save').addEventListener('click', async () => {
     fallback_models: $$('#fallbacks input:checked').map(i => i.value),
     daily_cost_cap_usd: Number(field('daily_cost_cap_usd').value || 0), retention_days: Number(field('retention_days').value || 0), resume_time_limit_s: Number(field('resume_time_limit_s').value || 0),
     paper_size: field('paper_size').value, metrics_mode: field('metrics_mode').value, allowed_regions: $$('#regions input:checked').map(i => i.value),
+    certifications_section: field('certifications_section').checked,
   };
   try { await api('/api/settings', { method: 'PUT', body }); field('save-status').textContent = 'Saved.'; await init(); }
   catch (err) { field('save-status').textContent = err.message; }

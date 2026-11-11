@@ -81,8 +81,9 @@ def test_the_one_fix_round_puts_the_figures_first(router, db, registry, profile,
 def test_every_demo_job_opens_with_its_size_and_result(router, db, profile, jd):
     result = asyncio.run(run_tailor(router, db, profile=profile, profile_id=None, jd=jd, model_id="demo-concise"))
     assert result.status == "ok" and result.retries == 0
-    # its size and its result, the result with its base: 'by 17.8% (from 101 to 83 a month)'
-    assert all(len(validate._numbers_in(exp.bullets[0])) == 4 for exp in result.resume.experience)
+    # its size and its result, the result with its base ('by 17.8% (from 101 to 83 a month)', 'by 21%, from 62 to 49
+    # hours') or as the real numbers alone ('fell from 87 to 76 a week')
+    assert [len(validate._numbers_in(exp.bullets[0])) for exp in result.resume.experience] == [4, 4, 3]
     assert validate.unbased_percentage_problems(result.resume) == validate.base_mismatch_problems(result.resume) == []
     assert validate.metric_density_problems(result.resume) == []  # still at most 2 figure bullets per job
 

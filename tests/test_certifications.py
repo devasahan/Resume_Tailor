@@ -3,6 +3,8 @@
 A pick that is one of the person's own (read from their resume, or ticked "I have it" on the Tailor page) is
 printed under CERTIFICATIONS, after EDUCATION. Every other pick is only a suggestion on the Tailor page.
 Certification names never appear in the headline, summary, skills or bullets, so unticking really takes one off.
+All of this needs Settings > Certifications section on (it is off by default), so these tests switch it on;
+test_certification_switch.py covers the switch itself.
 """
 import asyncio
 import io
@@ -66,6 +68,20 @@ def certified(profile) -> Profile:
     copy = profile.model_copy(deep=True)
     copy.certifications = [AWS.model_copy(), CSM.model_copy()]
     return copy
+
+
+@pytest.fixture
+def db(db):
+    """The shared database with the Certifications section switched on (Settings; it is off by default)."""
+    db.set_settings({"certifications_section": True})
+    return db
+
+
+@pytest.fixture
+def client(client):
+    """The shared web app with the Certifications section switched on, like `db` above."""
+    client.app.state.db.set_settings({"certifications_section": True})
+    return client
 
 
 def pick(name, index=-1, issuer=""):
@@ -372,7 +388,7 @@ def test_a_tick_that_needs_room_removes_the_fewest_bullets(certified):
 
 # ------------------------------------------------------------------ prompts
 def test_the_prompts_list_the_persons_certifications_and_the_rule():
-    assert PROMPT_VERSION == "v32"
+    assert PROMPT_VERSION == "v33"
     system = tailor_system()
     assert "CERTIFICATIONS: `certifications` lists the 4 certifications that best support this application" in system
     assert "never name one in the headline, the summary, the skills or the bullets" in system

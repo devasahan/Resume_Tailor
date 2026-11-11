@@ -19,7 +19,7 @@ from ..pipeline.facts import (
 )
 from ..schemas import CareerStep, Certification, Company, JDAnalysis, Resume
 
-PROMPT_VERSION = "v32"
+PROMPT_VERSION = "v33"
 RETRY_MARKER = "Your previous answer was rejected"
 
 _DIR = Path(__file__).parent
@@ -93,6 +93,18 @@ def describe_certifications(certifications: Sequence[Certification], today: date
     return "\n".join(lines) or "(none)"
 
 
+def certifications_block(
+    certifications: Sequence[Certification], today: date | None = None, section: bool = True
+) -> str:
+    """The <candidate_certifications> block of a user prompt, with the blank line before it (the prompt files put
+    {{certifications}} right under the block above it). "" while the Certifications section is off (Settings): the
+    model is then shown no certifications at all."""
+    if not section:
+        return ""
+    listed = describe_certifications(certifications, today)
+    return f"\n<candidate_certifications>\n{listed}\n</candidate_certifications>\n"
+
+
 METRICS_MODES = ("estimate", "hints_only")
 SPELLING_STYLES = ("us", "eu")  # the Tailor page's US style / EU style (British spelling) buttons
 SIGN_OFF = {"us": '"Sincerely,"', "eu": '"Kind regards,"'}
@@ -104,17 +116,21 @@ def _spelling_rule(spelling: str) -> str:
     return _read(f"spelling_{spelling}.md").strip()
 
 
-def tailor_system(metrics_mode: str = "estimate", spelling: str = "us") -> str:
+def tailor_system(metrics_mode: str = "estimate", spelling: str = "us", certifications_section: bool = True) -> str:
+    """`certifications_section` False (Settings): the CERTIFICATIONS rule is one line, return none and name none."""
     if metrics_mode not in METRICS_MODES:
         raise ValueError(f"metrics_mode must be one of {METRICS_MODES}")
+    rule = "certifications_on.md" if certifications_section else "certifications_off.md"
     return _fill(_read("system.md"), metrics_rule=_read(f"metrics_{metrics_mode}.md").strip(),
-                 spelling_rule=_spelling_rule(spelling))
+                 spelling_rule=_spelling_rule(spelling), certifications_rule=_read(rule).strip())
 
 
 def tailor_user(
     jd: str, companies: list[Company], hints: str, facts: str = "", shorten: bool = False,
     bullets: list[int] | None = None, today: date | None = None, certifications: Sequence[Certification] = (),
+    certifications_section: bool = True,
 ) -> str:
+    """`certifications_section` False (Settings): no <candidate_certifications> block at all."""
     return _fill(
         _read("tailor.md"),
         jd=jd.strip(),
@@ -122,7 +138,7 @@ def tailor_user(
         companies=describe_companies(companies, bullets, today),
         facts=facts.strip() or "Total professional experience: unknown (do not state a number of years).",
         hints=hints.strip() or "(none given)",
-        certifications=describe_certifications(certifications, today),
+        certifications=certifications_block(certifications, today, certifications_section),
         extra=SHORTEN_NOTE if shorten else "",
     )
 
@@ -130,10 +146,11 @@ def tailor_user(
 def revise_user(
     jd: str, companies: list[Company], hints: str, facts: str = "", *, bullets: list[int] | None = None,
     today: date | None = None, analysis: JDAnalysis, plan: list[CareerStep], draft: str, problems: str,
-    certifications: Sequence[Certification] = (),
+    certifications: Sequence[Certification] = (), certifications_section: bool = True,
 ) -> str:
     """The fix round: the same opening as tailor_user (so the provider can reuse its cache of it), then the final
-    analysis and plan, the numbered draft and what to fix. The answer is a TailorRevision: only what changes."""
+    analysis and plan, the numbered draft and what to fix. The answer is a TailorRevision: only what changes.
+    `certifications_section` False (Settings): no <candidate_certifications> block, as in tailor_user."""
     steps = [f"company_index {s.company_index}: {s.product or 'product not known'} | {s.scope} | {', '.join(s.focus)}"
              for s in plan]
     return _fill(
@@ -143,7 +160,7 @@ def revise_user(
         companies=describe_companies(companies, bullets, today),
         facts=facts.strip() or "Total professional experience: unknown (do not state a number of years).",
         hints=hints.strip() or "(none given)",
-        certifications=describe_certifications(certifications, today),
+        certifications=certifications_block(certifications, today, certifications_section),
         must_haves=", ".join(analysis.must_have_skills) or "(none)",
         keywords=", ".join(analysis.keywords) or "(none)",
         plan="\n".join(steps) or "(none)",

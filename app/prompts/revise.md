@@ -13,11 +13,7 @@
 <candidate_hints>
 {{hints}}
 </candidate_hints>
-
-<candidate_certifications>
 {{certifications}}
-</candidate_certifications>
-
 <jd_analysis>
 Must-have skills: {{must_haves}}
 Keywords: {{keywords}}

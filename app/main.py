@@ -501,6 +501,10 @@ def validate_settings(registry: Registry, values: dict) -> dict:
                 if value not in ("Letter", "A4"):
                     raise ValueError("paper_size must be Letter or A4")
                 out[key] = value
+            elif key == "certifications_section":
+                if not isinstance(value, bool):  # JSON true or false only: never "false" or 0 read as a choice
+                    raise ValueError("certifications_section must be true or false")
+                out[key] = value
             else:
                 raise ValueError(f"unknown setting '{key}'")
         except (KeyError, ValueError, TypeError, OverflowError) as exc:
@@ -1002,8 +1006,9 @@ def create_app(db: Database | None = None, registry: Registry | None = None, rou
 
     @app.put("/api/resumes/{profile_id}/certifications")
     def api_resume_certifications(profile_id: int, body: CertificationList, user: auth.User = Depends(current_user)):
-        """The certifications the person has passed, pasted on the Profile page (they replace the saved list). For
-        each job the AI then picks the best ones that fit, up to 4, and they are printed without asking."""
+        """The certifications the person has passed, pasted on the Profile page (they replace the saved list). While
+        the Certifications section is on (Settings), for each job the AI then picks the best ones that fit, up to 4,
+        and they are printed without asking. While it is off, the list is kept as it is for later."""
         certifications = read_certification_list(body.text)
         if body.text.strip() and not certifications:  # never wipe the saved list by mistake
             raise HTTPException(422, "No certification could be read. Put one per line, for example: Certified "

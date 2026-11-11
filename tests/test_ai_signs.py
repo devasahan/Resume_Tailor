@@ -461,8 +461,8 @@ class Bare(LLMClient):
         if kwargs["schema_name"] == "tailor_output" and RETRY_MARKER not in kwargs["user"]:
             import re
 
-            for job in result.data["sections"]["experience"][: self.count]:
-                job["bullets"][0] = re.sub(r" \(from \d+ to \d+ [a-z ]+\)", "", job["bullets"][0])
+            for job in result.data["sections"]["experience"][: self.count]:  # its base in brackets, or in words
+                job["bullets"][0] = re.sub(r",? \(?from \d+ to \d+ [a-z ]+\)?,?", "", job["bullets"][0])
         return result
 
 
@@ -502,7 +502,7 @@ def test_a_cover_letter_percentage_without_its_base_is_noted(profile):
 
 def test_the_prompts_ask_for_each_percentages_base():
     estimate, words = tailor_system("estimate"), tailor_system("hints_only")
-    assert "by 22% (from 41 to 32 seconds)" in estimate and "($41,000 a year)" in estimate
+    assert "by 41.2%, from 85 to 50" in estimate and "by 17.8%, or $41,000 a year" in estimate
     assert "The base must agree with the percentage" in estimate and "never use numbers ending in 0 or 5" in estimate
     assert "never add a base yourself" in words and "by 22%" not in words
     assert "keep its base with it" in cover_system()

@@ -99,6 +99,7 @@ function certificationsBox(r) {
   const summary = el('summary', { text: `Certifications you have passed (${certs.length})` });
   return el('details', { class: 'cert-list', 'data-resume': r.id }, summary,
     el('p', { class: 'small muted', text: 'Paste the certifications this person has passed, one per line: name | issuer | date earned - date it expires (rows copied from a table work too). For each job, the best ones that fit, up to 4, are put on the resume automatically, after Education, with their dates. An expired one is never printed. List only exams that were really passed: employers check them.' }),
+    el('p', { class: 'small muted', text: 'This list is printed only when the Certifications section is switched on in Settings.' }),
     box, expiredNote, el('div', { class: 'row' }, save, status));
 }
 

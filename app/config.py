@@ -197,6 +197,9 @@ DEFAULT_SETTINGS: dict = {
     # A resume is ready within about this many seconds: the extra rewrite pass and the shorter-draft call run only when
     # they can finish in time (they are stopped at the limit). 0 = no limit: always run them (best quality, slower).
     "resume_time_limit_s": 30,
+    # On: for each job the AI picks the best 4 of the person's own certifications, printed after Education. Off: no
+    # Certifications section and no picks; the lists saved on the Profile page stay as they are, for later.
+    "certifications_section": False,
 }
 
 # Used only when a task has no model chosen in Settings. Real models first, demo last.

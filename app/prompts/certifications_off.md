@@ -1,0 +1,1 @@
+CERTIFICATIONS: return `certifications` as an empty list: no certification is picked or suggested for this resume. Never name a certification or license anywhere in the resume: not in the headline, the summary, the skills or the bullets.

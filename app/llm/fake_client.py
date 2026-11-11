@@ -75,19 +75,22 @@ def job_facts(jd: str) -> dict:
             "salary": pay.group(0).strip(" .,") if pay else ""}
 
 
-# Each job's first bullet with estimated figures: the job's biggest win, with its size and its result.
+# Each job's first bullet with estimated figures: the job's biggest win, with its size and its result. The result is
+# written in a different shape each time, as the prompt asks: its base in brackets (once), its base in words, or the
+# real numbers alone.
 LEADS = [
     ("Rebuilt the {k1} pipeline behind the main customer workflow for {size}, cutting failed nightly runs by {result} (from {was} to {now} a month) with staged rollouts and clear ownership.",
      "Rebuild the {k1} pipeline behind the main customer workflow for {size}, cutting failed nightly runs by {result} (from {was} to {now} a month) with staged rollouts and clear ownership."),
-    ("Launched {k1} self-service reporting for {size}, so the time from a request to an answer dropped by {result} (from {was} to {now} hours) once shared dashboards replaced spreadsheet hand-offs.",
-     "Launch {k1} self-service reporting for {size}, so the time from a request to an answer drops by {result} (from {was} to {now} hours) as shared dashboards replace spreadsheet hand-offs."),
-    ("Moved {k1} order processing for {size} onto a versioned, tested setup, and support tickets about missing orders fell by {result} (from {was} to {now} a week) within two quarters.",
-     "Move {k1} order processing for {size} onto a versioned, tested setup, so support tickets about missing orders keep falling, by {result} (from {was} to {now} a week) so far this year."),
+    ("Launched {k1} self-service reporting for {size}, so the time from a request to an answer dropped by {result}, from {was} to {now} hours, once shared dashboards replaced spreadsheet hand-offs.",
+     "Launch {k1} self-service reporting for {size}, so the time from a request to an answer drops by {result}, from {was} to {now} hours, as shared dashboards replace spreadsheet hand-offs."),
+    ("Moved {k1} order processing for {size} onto a versioned, tested setup, and support tickets about missing orders fell from {was} to {now} a week within two quarters.",
+     "Move {k1} order processing for {size} onto a versioned, tested setup, so support tickets about missing orders keep falling, from {was} to {now} a week so far this year."),
 ]
 LEAD_SIZES = ["38 internal teams", "12.4K active users", "613 stores", "47 partner companies", "83K customers",
               "23 regional offices", "4.6K merchants", "2.3K clinics", "36 product teams"]
 LEAD_RESULTS = ["17.8%", "21%", "12.6%", "8.3%", "19%", "26.1%", "14%", "31.7%", "9.4%"]
-# Each result's base, before and after: it agrees with the percentage (101 to 83 is 17.8%), as the prompt asks
+# Each result's base, before and after: it agrees with the percentage (101 to 83 is 17.8%), as the prompt asks; a
+# result written as the real numbers alone uses only these
 LEAD_BASES = [(101, 83), (62, 49), (87, 76), (96, 88), (63, 51), (46, 34), (43, 37), (41, 28), (64, 58)]
 LEVELS = ["Junior", "", "Senior", "Lead", "Principal"]
 SCOPES = ["implemented", "built", "designed", "owned", "led"]
@@ -123,8 +126,8 @@ DETAILED = [
      "Migrate legacy {k1} jobs to a versioned, documented setup, running both side by side with the owning teams until every output matches, so each cut-over causes no downtime or data loss."),
     ("Streamlined recurring {k3} reporting by replacing manual spreadsheet hand-offs with a shared automated pipeline and clear ownership, so managers saw current numbers every morning instead of stale weekly exports.",
      "Streamline recurring {k3} reporting by replacing manual spreadsheet hand-offs with a shared automated pipeline and clear ownership, so managers see current numbers every morning instead of stale weekly exports."),
-    ("Cut release lead time by 23.4% (from 47 to 36 days) by redesigning {k1} workflows across several teams, aligning technical decisions with business goals, documenting trade-offs for stakeholders, and keeping every release predictable and well tested.",
-     "Cut release lead time by 23.4% (from 47 to 36 days) by redesigning {k1} workflows across several teams, aligning technical decisions with business goals, documenting trade-offs for stakeholders, and keeping every release predictable and well tested."),
+    ("Cut release lead time from 47 to 36 days, a 23.4% drop, by redesigning {k1} workflows across several teams, aligning technical decisions with business goals, documenting trade-offs for stakeholders, and keeping every release predictable and well tested.",
+     "Cut release lead time from 47 to 36 days, a 23.4% drop, by redesigning {k1} workflows across several teams, aligning technical decisions with business goals, documenting trade-offs for stakeholders, and keeping every release predictable and well tested."),
     ("Owned the day-to-day execution of {k2} initiatives from intake to hand-off, coordinating with product, operations and customer-facing teams, tracking risks openly, and communicating status in plain language to leadership.",
      "Own the day-to-day execution of {k2} initiatives from intake to hand-off, coordinating with product, operations and customer-facing teams, tracking risks openly, and communicating status in plain language to leadership."),
     ("Partnered with stakeholders to translate ambiguous requirements into clear {k3} deliverables, validating assumptions early, agreeing on acceptance criteria, and reducing late changes during delivery.",
@@ -348,7 +351,9 @@ class FakeClient(LLMClient):
                 "keywords": keywords,
                 "key_responsibilities": ["Deliver reliable work", "Collaborate across teams", "Communicate progress clearly"],
             },
-            "certifications": demo_certifications(jd, ctx.get("profile", {}).get("certifications", []) or []),
+            # none while the Certifications section is off (Settings), as a real model is told
+            "certifications": (demo_certifications(jd, ctx.get("profile", {}).get("certifications", []) or [])
+                               if ctx.get("certifications_section", True) else []),
             "career_plan": [  # recent jobs show more of the JD, with more scope
                 {"company_index": i, "product": "", "focus": k[: max(2, 6 - 2 * i)],  # it knows no companies
                  "scope": SCOPES[max(0, len(SCOPES) - 2 - i)]}

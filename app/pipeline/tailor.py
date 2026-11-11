@@ -140,7 +140,8 @@ def run_checks(result: TailorResult, jd_text: str) -> None:
     if unbased:
         result.ats_warnings.append(
             "Percentages without their base: " + "; ".join(unbased[:6]) + ". A recruiter asks 'of what?': add the "
-            "amount or the values before and after, for example 'by 17.8% ($41,000 a year)'."
+            "amount or the values before and after in words, for example 'by 17.8%, or $41,000 a year', or give the "
+            "real numbers alone ('cut queue time from 41 to 32 seconds')."
         )
     mismatched = validate.base_mismatch_problems(result.resume, result.cover_letter)
     if mismatched:
@@ -262,6 +263,8 @@ async def run_tailor(
     settings = router.settings()
     paper = settings["paper_size"]
     metrics_mode = settings.get("metrics_mode", "estimate")
+    # Settings > Certifications section. Off: no section, no picks, and the model is shown no certifications
+    certifications_on = bool(settings.get("certifications_section", False))
     limit = float(settings.get("resume_time_limit_s", 30) or 0) if time_limit is None else time_limit  # 0: none
     deadline = started + limit - CHECKS_RESERVE_SECONDS if limit > 0 else None
     today = date.today()  # one date for the facts, the bullet budget and the stay lengths in the prompt
@@ -280,22 +283,27 @@ async def run_tailor(
         revision_schema = strict_json_schema(TailorRevision)
         steps.mark("models")
 
+        # the page plan leaves room for the person's certifications only while they can be printed
+        planned = profile if certifications_on else profile.model_copy(update={"certifications": []})
+
         def plan_bullets() -> list[int]:
             steps.mark("thread wait")  # from the request for a worker thread until this line runs in it
-            return bullet_budget(profile, paper, today)
+            return bullet_budget(planned, paper, today)
 
         budget = await asyncio.to_thread(plan_bullets)  # bullets per employer that fit
         steps.mark("bullet plan")
         context = {"profile": profile.model_dump(), "jd": jd, "hints": hints, "bullets": budget, "metrics": metrics_mode,
-                   "spelling": spelling}
+                   "spelling": spelling, "certifications_section": certifications_on}
 
         def build(out: TailorOutput):
-            """(output, resume, notes). The analysis keeps keywords only, the headline the role's short name, and
-            titles that step down are corrected, on every draft, for free. Last, every word follows the spelling
-            style (after the title fixes, which match the posting's own spelling)."""
+            """(output, resume, notes). The analysis keeps keywords only, the headline the role's short name,
+            titles that step down are corrected, and figures and their bases are written in varied shapes (a base in
+            brackets at most once), on every draft, for free. Last, every word follows the spelling style (after the
+            title fixes, which match the posting's own spelling)."""
             validate.clean_analysis(out.jd_analysis, certification_names(out))
             resume = validate.build_resume(profile, out)
-            resume.certifications, _rows = validate.resolve_certifications(profile, out.certifications, today)
+            if certifications_on:  # off: nothing is printed, whatever the model picked
+                resume.certifications, _rows = validate.resolve_certifications(profile, out.certifications, today)
             validate.assert_certifications_held(resume)
             # a certification is printed only in its own section, and only when the person has it
             validate.remove_certification_skills(resume, certification_names(out))
@@ -303,6 +311,7 @@ async def run_tailor(
             validate.general_role_fixes(resume, out.jd_analysis)  # 'Voice AI Engineer' -> 'AI Engineer'
             notes = validate.fix_title_regressions(resume)
             notes += validate.role_level_fixes(resume, out.jd_analysis)
+            validate.vary_figures(resume, f"{hints}\n{facts}")  # the candidate's own figures are never dropped
             validate.spell_resume(resume, spelling, out.jd_analysis, (company_name, hiring_manager))
             return out, resume, notes
 
@@ -343,18 +352,19 @@ async def run_tailor(
                     "These jobs open without a measured result: " + ", ".join(openers[:8]) + ". A recruiter reads "
                     "only the first bullet of each job in a six-second scan: rewrite it as that job's biggest win for "
                     "this JD, with its size and its result as figures (for example 'for 83K concurrent players, "
-                    "cutting queue-to-lobby time by 22% (from 41 to 32 seconds)'). If a later bullet of the same job already has a figure, "
-                    "move that result into the first bullet and say the later one in words, so the job keeps at most "
-                    f"{validate.MAX_FIGURE_BULLETS_PER_JOB} bullets with figures."
+                    "cutting queue-to-lobby time from 41 to 32 seconds'). If a later bullet of the same job already "
+                    "has a figure, move that result into the first bullet and say the later one in words, so the job "
+                    f"keeps at most {validate.MAX_FIGURE_BULLETS_PER_JOB} bullets with figures."
                 )
             unbased = validate.unbased_percentage_problems(value[1]) if metrics_mode == "estimate" else []
             mismatched = validate.base_mismatch_problems(value[1]) if metrics_mode == "estimate" else []
             if len(unbased) >= validate.MIN_UNBASED_FOR_RETRY or mismatched:
                 feedback.append(
                     "A percentage means little without its base (20% of 5,000 or of 500,000?). "
-                    + (f"These have none: {'; '.join(unbased[:8])}. Put the base in brackets right after each, the "
-                       "amount with its period or the values before and after: 'by 17.8% ($41,000 a year)', 'by 22% "
-                       "(from 41 to 32 seconds)'. " if unbased else "")
+                    + (f"These have none: {'; '.join(unbased[:8])}. Give each its base right beside it, in words: the "
+                       "amount with its period or the values before and after ('by 17.8%, or $41,000 a year', 'from "
+                       "41 to 32 seconds, a 22% drop'), or give the real numbers alone ('cut queue time from 41 to 32 "
+                       "seconds'). Write no two figures the same way, and no base in brackets. " if unbased else "")
                     + (f"These bases do not agree with their percentage: {'; '.join(mismatched[:8])}. Make the "
                        "values match the percentage (from 41 to 32 is 22%). " if mismatched else "")
                     + "Keep a figure the candidate gave exactly as it is."
@@ -447,7 +457,9 @@ async def run_tailor(
                 feedback.append(
                     "These certification names appear in the headline, summary or bullets: "
                     + ", ".join(f"'{name}'" for name in dict.fromkeys(term for _where, term in named))
-                    + ". Certifications are shown only in their own section (the CERTIFICATIONS rule), so take every "
+                    + (". Certifications are shown only in their own section" if certifications_on
+                       else ". Certifications are never named in this resume")
+                    + " (the CERTIFICATIONS rule), so take every "
                     "one out of the text. Keep the skill itself and the work it describes (for example 'AWS', not "
                     "'AWS Certified Solutions Architect'), and keep each sentence's length."
                 )
@@ -475,15 +487,15 @@ async def run_tailor(
                 user=revise_user(jd, profile.companies, hints, facts, bullets=budget, today=today,
                                  analysis=without_certifications(output), plan=output.career_plan,
                                  draft=draft_text(resume), problems=" ".join(feedback),
-                                 certifications=profile.certifications),
+                                 certifications=profile.certifications, certifications_section=certifications_on),
                 schema=revision_schema, schema_name="tailor_revision",
                 parse=revised,
                 context={**context, "draft": resume.model_dump(exclude={"profile"})},  # read only by the demo models
             )
 
-        system_prompt = tailor_system(metrics_mode, spelling)
+        system_prompt = tailor_system(metrics_mode, spelling, certifications_section=certifications_on)
         user_prompt = tailor_user(jd, profile.companies, hints, facts, bullets=budget, today=today,
-                                  certifications=profile.certifications)
+                                  certifications=profile.certifications, certifications_section=certifications_on)
         steps.mark("prompts")
         await generate_validated(
             router, chain, system=system_prompt, user=user_prompt,
@@ -514,9 +526,9 @@ async def run_tailor(
         elif fit is None:
             second = Outcome()
             smaller = smaller_budget(budget)
-            shorter_system = tailor_system(metrics_mode, spelling)
+            shorter_system = tailor_system(metrics_mode, spelling, certifications_section=certifications_on)
             shorter_user = tailor_user(jd, profile.companies, hints, facts, shorten=True, bullets=smaller, today=today,
-                                       certifications=profile.certifications)
+                                       certifications=profile.certifications, certifications_section=certifications_on)
             try:
                 shorter = generate_validated(
                     router, [outcome.final_model_id], system=shorter_system, user=shorter_user,
@@ -563,7 +575,8 @@ async def run_tailor(
         result.resume = resume
         result.analysis = output.jd_analysis
         result.career_plan = output.career_plan
-        result.certifications = validate.resolve_certifications(profile, output.certifications, today)[1]
+        result.certifications = (validate.resolve_certifications(profile, output.certifications, today)[1]
+                                 if certifications_on else [])  # off: no rows to tick on the Tailor page
         result.style, result.pages, result.fits = style, pages, fits
         result.served_model = outcome.served_model
         result.status = "ok"
@@ -623,6 +636,7 @@ async def _cover_letter(
             greeting=greeting, paragraphs=paragraphs, closing=closing,
             company_name=company_name, hiring_manager=hiring_manager,
         )
+        validate.vary_letter_figures(letter, f"{hints}\n{result.facts}")  # a base in brackets at most once
         validate.spell_letter(letter, style, keep, terms, exact, roles)  # the run's style, its sign-off, CV or resume
         return letter
 
