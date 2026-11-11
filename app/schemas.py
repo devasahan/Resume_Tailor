@@ -132,7 +132,7 @@ class CertificationPick(BaseModel):
     def _number(cls, value):  # null, "" or "none" from a model: not one of the candidate's
         try:
             return int(value)
-        except (TypeError, ValueError):
+        except (TypeError, ValueError, OverflowError):
             return -1
 
 
@@ -153,8 +153,17 @@ class TailorOutput(BaseModel):
         """A malformed pick is dropped, not the whole draft: the picks are the smallest part of the answer."""
         if not isinstance(value, list):
             return []
-        return [item for item in value if isinstance(item, CertificationPick)
-                or (isinstance(item, dict) and str(item.get("name") or "").strip())]
+        picks = []
+        for item in value:
+            if isinstance(item, str):  # a bare name
+                item = {"name": item}
+            try:
+                pick = item if isinstance(item, CertificationPick) else CertificationPick.model_validate(item)
+            except (ValueError, TypeError):  # pydantic's ValidationError is a ValueError
+                continue
+            if pick.name.strip() or pick.candidate_index >= 0:
+                picks.append(pick)
+        return picks
 
 
 class TitleChange(BaseModel):
@@ -286,4 +295,7 @@ class TailorResult(BaseModel):
     spelling: Literal["", "us", "eu"] = ""  # the Tailor page's US/EU style button ("" for older runs: US)
     career_plan: list[CareerStep] = Field(default_factory=list)  # how the model spread the JD across the jobs
     certifications: list[CertificationChoice] = Field(default_factory=list)  # the model's picks; [] in older runs
+    # The jobs' bullets as they were before a tick on the Tailor page removed some to keep two pages ([] when none
+    # did): each later tick starts from them again, so unticking brings those bullets back.
+    untrimmed: list[ResumeExperience] = Field(default_factory=list)
     created_at: str = ""

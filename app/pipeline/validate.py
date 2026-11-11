@@ -592,11 +592,12 @@ def clean_terms(items: list[str]) -> list[str]:
     return terms
 
 
-def clean_analysis(analysis: JDAnalysis, picks: list[CertificationPick] | tuple = ()) -> JDAnalysis:
-    """The analysis with keyword lists only (changed in place, and returned). A certification is never a must-have
-    or nice-to-have skill (the prompt says so, and this makes sure): the fix round would otherwise push its name into
-    a bullet, claiming it. The keywords keep it, so the keyword score stays honest and a printed one counts."""
-    names = [pick.name for pick in picks]
+def clean_analysis(analysis: JDAnalysis, names: list[str] | tuple = ()) -> JDAnalysis:
+    """The analysis with keyword lists only (changed in place, and returned). A certification (one of `names`, the
+    model's picks and the person's own, or plainly a credential) is never a must-have or nice-to-have skill (the
+    prompt says so, and this makes sure): the fix round would otherwise push its name into a bullet, claiming it.
+    The keywords keep it, so the keyword score stays honest and a printed one counts."""
+    names = list(names)
     analysis.must_have_skills = [t for t in clean_terms(analysis.must_have_skills) if not names_certification(t, names)]
     analysis.nice_to_have_skills = [t for t in clean_terms(analysis.nice_to_have_skills)
                                     if not names_certification(t, names)]
@@ -612,18 +613,60 @@ CERT_NAME_LIMIT = 120
 _BRACKETED = re.compile(r"\(([A-Za-z0-9][A-Za-z0-9+&./ -]{0,19})\)")
 # An abbreviation or exam code ('PMP', 'CKAD', 'SAA-C03', 'AZ-900'): capitals and digits, with 2+ capitals
 _CERT_ABBREVIATION = re.compile(r"(?=(?:[^A-Z]*[A-Z]){2})[A-Z0-9][A-Z0-9+&./-]{1,14}")
-_CREDENTIAL_TERM = re.compile(r"^certified\b|\b(?:certification|certified|licen[cs]e)s?$", re.IGNORECASE)
-_CREDENTIAL_WORD = re.compile(r"\bcertifi(?:ed|cations?)\b", re.IGNORECASE)
+# Short names that are tools, platforms or issuers, never one certification ('Solutions Architect (AWS)')
+_COMMON_ACRONYMS = frozenset({
+    "AWS", "GCP", "IBM", "SAP", "SQL", "API", "AI", "ML", "NLP", "ETL", "UI", "UX", "IT", "QA", "BI", "ERP", "CRM",
+    "HTML", "CSS", "JSON", "XML", "REST", "HTTP", "DNS", "VPN", "LLM", "RAG", "SDK", "OOP", "TDD", "BDD", "SRE", "IOT",
+    "IAM", "EC2", "EKS", "ECS", "AKS", "GKE", "CI", "CD", "OCI", "IEEE", "ISC", "ISC2", "PMI", "CNCF", "EDB", "NVIDIA",
+})
+# Words that make a name read as a credential. A certification named like a tool ('GitHub Copilot', 'GitHub
+# Actions') or a skill ('Python') is printed when picked, but never makes a skill or a sentence count as one.
+_CREDENTIAL_NAME = re.compile(
+    r"\b(?:certified|certifications?|certificate|licen[cs](?:e|ed|es)|credential|associate|professional|expert|"
+    r"practitioner|specialist|fundamentals|foundations?|comptia|isc2|isaca|giac|pmi)\b", re.IGNORECASE)
+# Before 'certification' or 'certified', these name work on a product or a standard, not a person's credential
+_STANDARD_WORDS = frozenset({
+    "faa", "fcc", "fda", "iso", "soc", "hipaa", "pci", "fedramp", "gdpr", "sox", "ce", "ul", "nist", "cmmc", "itar",
+    "cmmi", "easa", "iec", "type", "product", "safety", "compliance", "regulatory", "airworthiness", "process",
+    "device", "environmental", "energy", "organic", "vendor", "partner", "quality",
+})
+_CERT_TAIL = re.compile(r"(?:^|[\s-])([A-Za-z][\w+.]*)[\s-]+(?:certified|certifications?|licen[cs]es?)$", re.IGNORECASE)
+_CERT_GROUP = re.compile(r"certif|licen[cs]|credential", re.IGNORECASE)  # a skills group of certifications
+# A claim in a sentence: 'AWS Certified Solutions Architect', 'AWS-certified', 'PMP certification', 'Certified ...'
+_CERT_CLAIM = re.compile(r"\b(?:[A-Z][\w+.]*[- ])+(?:[Cc]ertified|[Cc]ertifications?)\b(?:\s+[A-Z][\w+.-]*)*"
+                         r"|\bCertified(?:\s+[A-Z][\w+.-]*)+")
 
 
 def _letters(text: str) -> str:
     return re.sub(r"[^a-z0-9]", "", text.lower())
 
 
+def _without_brackets(name: str) -> str:
+    return re.sub(r"\s*\([^)]*\)\s*", " ", name).strip()
+
+
+def _in_order(letters: str, capitals: str) -> bool:
+    """Every letter of the abbreviation is one of the name's capitals, in order ('PCA' in 'Google Cloud Professional
+    Cloud Architect')."""
+    rest = iter(capitals)
+    return bool(letters) and all(any(c == letter for c in rest) for letter in letters)
+
+
 def _abbreviation(name: str) -> str:
-    """The abbreviation or exam code in a name's brackets ('PMP' in 'Project Management Professional (PMP)'), or ''.
-    A course site, a language or a level in brackets is not one: '(Coursera)', '(Python)', '(Associate)'."""
-    return next((inner for inner in _BRACKETED.findall(name) if _CERT_ABBREVIATION.fullmatch(inner.strip())), "")
+    """The abbreviation or exam code in a name's brackets that stands for the name, or ''. Its letters are the name's
+    capitals in order ('PMP' in 'Project Management Professional (PMP)', 'CSM' in 'Certified ScrumMaster (CSM)'), or
+    it is an exam code after a name of two or more words ('SAA-C03'). Not '(Coursera)', '(Python)', '(Associate)',
+    '(AWS)' after 'Solutions Architect Associate', or '(CKA)' after the one word 'Kubernetes'."""
+    bare = _without_brackets(name)
+    capitals = "".join(ch for ch in bare if ch.isupper())
+    for inner in (part.strip() for part in _BRACKETED.findall(name)):
+        if not _CERT_ABBREVIATION.fullmatch(inner) or inner.upper() in _COMMON_ACRONYMS:
+            continue
+        if any(ch.isdigit() for ch in inner) and len(bare.split()) >= 2:
+            return inner
+        if _in_order("".join(ch for ch in inner.upper() if ch.isalpha()), capitals):
+            return inner
+    return ""
 
 
 def _spellings(name: str) -> set[str]:
@@ -631,28 +674,79 @@ def _spellings(name: str) -> set[str]:
     Solutions Architect Associate'), plus the name without its abbreviation ('Certified ScrumMaster (CSM)' ~
     'Certified ScrumMaster')."""
     spellings = {_letters(name)}
-    if _abbreviation(name):
-        spellings.add(_letters(re.sub(r"\s*\([^)]*\)", " ", name)))
+    if _abbreviation(name) and len(_without_brackets(name).split()) >= 2:
+        spellings.add(_letters(_without_brackets(name)))
     spellings.discard("")
     return spellings
 
 
 def same_certification(a: str, b: str) -> bool:
-    """One certification in two spellings. An abbreviation matches only a name that is that abbreviation alone
-    ('PMP' ~ 'Project Management Professional (PMP)'), so two names that share a bracket never match."""
+    """One certification in two spellings. Two different abbreviations or exam codes are two certifications ('...
+    (SAA-C03)' and '... (SAP-C02)'). An abbreviation matches only a name that is that abbreviation alone ('PMP' ~
+    'Project Management Professional (PMP)'), so two names that share a bracket never match."""
+    a_short, b_short = _abbreviation(a), _abbreviation(b)
+    if a_short and b_short and _letters(a_short) != _letters(b_short):
+        return False
     if _spellings(a) & _spellings(b):
         return True
     a_alone = a.strip() if _CERT_ABBREVIATION.fullmatch(a.strip()) else ""
     b_alone = b.strip() if _CERT_ABBREVIATION.fullmatch(b.strip()) else ""
-    return bool(a_alone and _letters(a_alone) == _letters(_abbreviation(b))
-                or b_alone and _letters(b_alone) == _letters(_abbreviation(a)))
+    return bool(a_alone and _letters(a_alone) == _letters(b_short) or b_alone and _letters(b_alone) == _letters(a_short))
+
+
+def certification_terms(names: list[str]) -> list[str]:
+    """What marks a certification in a job-description term, a skill or a sentence, for each name that reads as a
+    credential: the name without its bracket, its abbreviation ('CISSP') and its capitals ('CKAD' for 'Certified
+    Kubernetes Application Developer'); or a name that is an abbreviation alone ('PMP'). A name that is also a tool
+    or a skill ('GitHub Copilot', 'GitHub Actions', 'Python', 'AWS') marks nothing."""
+    terms: list[str] = []
+
+    def add(term: str) -> None:
+        term = term.strip()
+        if len(term) >= 2 and term.lower() not in {t.lower() for t in terms}:
+            terms.append(term)
+
+    for name in (n.strip() for n in names):
+        if _CERT_ABBREVIATION.fullmatch(name):
+            if name.upper() not in _COMMON_ACRONYMS:
+                add(name)
+            continue
+        if not _CREDENTIAL_NAME.search(name):
+            continue
+        bare = _without_brackets(name)
+        if len(bare.split()) >= 2:
+            add(bare)
+        add(_abbreviation(name))
+        capitals = "".join(ch for ch in bare if ch.isupper())
+        if 3 <= len(capitals) <= 6 and capitals not in _COMMON_ACRONYMS:
+            add(capitals)
+    return terms
+
+
+def is_credential_phrase(term: str) -> bool:
+    """A term, skill or phrase that names a person's credential: 'Certified ScrumMaster', 'AWS Certified Solutions
+    Architect', 'PMP certification', 'AWS-certified', 'RN license'. Work on a product or to a standard is not one:
+    'SOC 2 certification', 'FAA type certification', 'HIPAA-certified', 'certificate management', 'software
+    licensing'."""
+    text = term.strip()
+    if re.match(r"(?i)certified\b", text):
+        return True
+    words = re.findall(r"[A-Za-z0-9+]+", text)
+    for index, word in enumerate(words[1:], 1):
+        if word == "Certified":
+            before = words[index - 1]
+            return before.lower() not in _STANDARD_WORDS and not before.isdigit()
+    tail = _CERT_TAIL.search(text)
+    return bool(tail and tail.group(1)[:1].isupper() and tail.group(1).lower() not in _STANDARD_WORDS)
 
 
 def names_certification(term: str, names: list[str] | tuple = ()) -> bool:
-    """True for a job-description term that is a certification or license: one of these names ('CISSP' for
-    'Certified Information Systems Security Professional (CISSP)'), or plainly a credential ('PMP certification',
-    'Certified ScrumMaster', 'RN license'). 'AWS', 'certificate management' and 'software licensing' are skills."""
-    return any(same_certification(term, name) for name in names) or bool(_CREDENTIAL_TERM.search(term.strip()))
+    """True for a job-description term or a skill that is a certification or license: one of these names in any
+    spelling ('CISSP' for 'Certified Information Systems Security Professional (CISSP)'), or plainly a credential
+    ('PMP certification', 'Certified ScrumMaster', 'RN license'). 'AWS', 'GitHub Actions', 'certificate management',
+    'software licensing' and 'SOC 2 certification' are skills or work."""
+    key = _letters(term)
+    return any(key == _letters(t) for t in certification_terms(list(names))) or is_credential_phrase(term)
 
 
 def resolve_certifications(
@@ -707,29 +801,20 @@ def assert_certifications_held(resume: Resume) -> None:
             raise ValueError(f"'{cert.name}' is not one of the person's certifications, so it cannot be printed.")
 
 
-def certification_terms(names: list[str]) -> list[str]:
-    """What a certification is called in a sentence: its full name without the bracket, and the abbreviation in the
-    bracket ('Certified Information Systems Security Professional (CISSP)' -> both)."""
-    terms: list[str] = []
-    for name in names:
-        for term in (re.sub(r"\s*\([^)]*\)", "", name).strip(), _abbreviation(name)):
-            term = term.strip()
-            if len(term) >= 2 and term.lower() not in {t.lower() for t in terms}:
-                terms.append(term)
-    return terms
-
-
 def remove_certification_skills(resume: Resume, names: list[str]) -> list[str]:
     """Take certifications out of the skills list (changed in place): they are printed only in their own section,
-    and only when the person has them. Returns what was removed. A group left empty goes too."""
+    and only when the person has them. A group of certifications goes whole; a group left empty goes too. Returns
+    what was removed."""
+    terms = {_letters(term) for term in certification_terms(names)}
     removed: list[str] = []
     for group in resume.skills:
+        if _CERT_GROUP.search(group.category):
+            removed += group.skills
+            group.skills = []
+            continue
         kept = []
         for item in group.skills:
-            if names_certification(item, names) or _CREDENTIAL_WORD.search(item):
-                removed.append(item)
-            else:
-                kept.append(item)
+            (removed if _letters(item) in terms or is_credential_phrase(item) else kept).append(item)
         group.skills = kept
     if removed and any(group.skills for group in resume.skills):
         resume.skills = [group for group in resume.skills if group.skills]
@@ -738,15 +823,18 @@ def remove_certification_skills(resume: Resume, names: list[str]) -> list[str]:
 
 def certification_mentions(resume: Resume, names: list[str]) -> list[tuple[str, str]]:
     """(where, name) for each certification named in the headline, summary or a bullet ('summary',
-    'experience:<company_index>'). Certifications belong only in their own section: a name in the text would claim
-    one the person may not have, and unticking it on the Tailor page could not take it off the resume."""
+    'experience:<company_index>'): one of these names, or any credential claim ('AWS Certified Solutions Architect',
+    'AWS-certified', 'PMP certification'). Certifications belong only in their own section: a name in the text would
+    claim one the person may not have, and unticking it on the Tailor page could not take it off the resume."""
     terms = certification_terms(names)
     places = [("headline", resume.headline), ("summary", resume.summary)]
     places += [(f"experience:{exp.company_index}", bullet) for exp in resume.experience for bullet in exp.bullets]
     found: list[tuple[str, str]] = []
     for where, text in places:
-        for term in terms:
-            if mentions(text, term) and (where, term) not in found:
+        named = [term for term in terms if mentions(text, term)]
+        named += [m.group(0).strip() for m in _CERT_CLAIM.finditer(text) if is_credential_phrase(m.group(0))]
+        for term in named:
+            if (where, term) not in found:
                 found.append((where, term))
     return found
 

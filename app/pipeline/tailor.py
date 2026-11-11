@@ -281,7 +281,7 @@ async def run_tailor(
             """(output, resume, notes). The analysis keeps keywords only, the headline the role's short name, and
             titles that step down are corrected, on every draft, for free. Last, every word follows the spelling
             style (after the title fixes, which match the posting's own spelling)."""
-            validate.clean_analysis(out.jd_analysis, out.certifications)
+            validate.clean_analysis(out.jd_analysis, certification_names(out))
             resume = validate.build_resume(profile, out)
             resume.certifications, _rows = validate.resolve_certifications(profile, out.certifications)
             validate.assert_certifications_held(resume)
@@ -299,6 +299,12 @@ async def run_tailor(
 
         def certification_names(out: TailorOutput) -> list[str]:
             return [pick.name for pick in out.certifications] + [cert.name for cert in profile.certifications]
+
+        def without_certifications(out: TailorOutput) -> JDAnalysis:
+            """The analysis the fix round shows, without certification keywords: it is told to use the keywords."""
+            names = certification_names(out)
+            return out.jd_analysis.model_copy(update={
+                "keywords": [k for k in out.jd_analysis.keywords if not validate.names_certification(k, names)]})
 
         allowed_figures = f"{hints}\n{facts}"
 
@@ -454,8 +460,9 @@ async def run_tailor(
 
             return Ask(
                 user=revise_user(jd, profile.companies, hints, facts, bullets=budget, today=today,
-                                 analysis=output.jd_analysis, plan=output.career_plan, draft=draft_text(resume),
-                                 problems=" ".join(feedback), certifications=profile.certifications),
+                                 analysis=without_certifications(output), plan=output.career_plan,
+                                 draft=draft_text(resume), problems=" ".join(feedback),
+                                 certifications=profile.certifications),
                 schema=revision_schema, schema_name="tailor_revision",
                 parse=revised,
                 context={**context, "draft": resume.model_dump(exclude={"profile"})},  # read only by the demo models

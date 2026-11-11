@@ -39,6 +39,7 @@ from app.schemas import (
     FitStyle,
     Profile,
     Resume,
+    SkillGroup,
     TailorOutput,
     TailorResult,
 )
@@ -78,7 +79,65 @@ def test_certification_headings_are_whole_lines():
         assert _is_header(heading) == "certifications", heading
     assert _is_header("Certificate in Data Analytics, UC Irvine") is None  # an entry, not a heading
     assert _is_header("Education & Certifications") == "education_and_certifications"
-    assert _is_header("Training") == "other" and _is_header("Training new hires") is None
+    for joined in ("Certifications & Training", "Certifications / Licenses", "Certifications (Selected)"):
+        assert _is_header(joined) == "certifications_and_more", joined
+    assert _is_header("Training") is None  # only after the certifications does it start a section
+
+
+UK_CV = """Alex Morgan
+London | alex@example.com
+
+PROFESSIONAL EXPERIENCE
+Senior Data Engineer, Acme Ltd, London    Jan 2020 - Present
+Responsibilities:
+- Own the data platform
+Achievements:
+- Cut costs
+Data Engineer, Globex plc, Manchester    Jun 2016 - Dec 2019
+Training:
+- Spark
+Graduate Analyst, Initech, Leeds    Sep 2014 - May 2016
+
+EDUCATION
+University of Leeds
+BSc in Mathematics, 2014
+Coursework:
+Statistics
+"""
+
+
+def test_sub_headings_inside_a_job_never_end_experience():
+    """'Achievements:' under a job or 'Coursework:' under a degree is no section heading (a resume without any
+    certification kept all its employers before certifications were read, and still does)."""
+    profile = parse_resume_text(UK_CV)
+    assert len(profile.companies) == 3 and profile.education[0].degree == "BSc" and profile.certifications == []
+
+
+def test_the_section_after_the_certifications_is_not_read_as_certifications():
+    after = parse_resume_text(UK_CV + "\nCERTIFICATIONS\nAWS Certified Solutions Architect – Associate, Amazon Web "
+                              "Services, 2021\nVOLUNTEER EXPERIENCE\nHabitat for Humanity | Volunteer, 2015 - 2018\n")
+    assert [c.name for c in after.certifications] == ["AWS Certified Solutions Architect – Associate"]
+    mixed = parse_resume_text(UK_CV.replace("EDUCATION", "CERTIFICATIONS & TRAINING\nAWS Certified Solutions "
+                                            "Architect – Associate | Jan 2023 - Jan 2026\nAgile coaching workshop, "
+                                            "2019\n\nEDUCATION"))
+    assert [c.name for c in mixed.certifications] == ["AWS Certified Solutions Architect – Associate"]
+    assert len(mixed.companies) == 3
+    skills = parse_resume_text(UK_CV.replace("EDUCATION", "SKILLS\nCertificates: TLS, PKI, X.509\n\nEDUCATION"))
+    assert skills.certifications == []  # TLS certificates are a skill, not a credential
+
+
+def test_linkedin_bullets_and_dates_first_are_read():
+    found = [(c.name, c.issuer, c.year) for c in _parse_certifications([
+        "AWS Certified Solutions Architect – Associate", "Amazon Web Services (AWS)",
+        "Issued Jan 2023 · Expires Jan 2026", "Credential ID ABC123",  # LinkedIn: the issuer has its own line
+        "2021 | AWS Certified Developer – Associate | Amazon Web Services",
+        "Certified ScrumMaster (Scrum Alliance, Mar 2020)",
+        "● Google Cloud Professional Data Engineer, Google Cloud, 2022", "\uf0b7 PMP"])]
+    assert found == [
+        ("AWS Certified Solutions Architect – Associate", "Amazon Web Services (AWS)", "Jan 2023"),
+        ("AWS Certified Developer – Associate", "Amazon Web Services", "2021"),
+        ("Certified ScrumMaster", "Scrum Alliance", "Mar 2020"),
+        ("Google Cloud Professional Data Engineer", "Google Cloud", "2022"), ("PMP", "", "")]
 
 
 def test_each_line_format_becomes_name_issuer_and_year():
@@ -128,6 +187,21 @@ def test_one_certification_in_other_spellings_is_one():
     assert validate.same_certification("Project Management Professional (PMP)", "PMP")
     assert validate.same_certification("Certified ScrumMaster (CSM)", "Certified ScrumMaster")
     assert not validate.same_certification("AWS Certified Developer Associate", "AWS Certified Solutions Architect Associate")
+    # a bracket counts only when it stands for the name
+    assert validate.same_certification("Google Cloud Professional Cloud Architect (PCA)", "PCA")
+    assert not validate.same_certification("Solutions Architect Associate (AWS)", "AWS")  # a platform, not this one
+    assert not validate.same_certification("Kubernetes (CKA)", "Kubernetes")  # one word is a skill
+    assert not validate.same_certification("AWS Certified Solutions Architect (SAA-C03)",
+                                           "AWS Certified Solutions Architect (SAP-C02)")  # two exam codes, two levels
+
+
+def test_a_certification_named_like_a_tool_never_takes_the_tool_away():
+    """'GitHub Copilot' and 'GitHub Actions' are certifications and tools; 'Python' or 'AWS' typed as a certification
+    is a skill. Such names are printed when picked, but never remove a skill or mark a sentence."""
+    own = ["GitHub Copilot", "GitHub Actions", "Python", "AWS", "Kubernetes (CKA)"]
+    assert validate.certification_terms(own) == []
+    for skill in ("GitHub Copilot", "GitHub Actions", "Python", "AWS", "Kubernetes"):
+        assert not validate.names_certification(skill, own), skill
 
 
 def test_only_the_persons_own_picks_are_printed(certified):
@@ -163,12 +237,15 @@ def test_a_certification_is_never_a_must_have_skill():
                                  "software licensing", "Certified ScrumMaster", "RN license"]
     analysis.nice_to_have_skills = ["AWS certifications", "Spark"]
     analysis.keywords = ["Python", "CISSP", "AWS"]
-    picks = [pick("Certified Information Systems Security Professional (CISSP)")]
-    validate.clean_analysis(analysis, picks)
-    assert analysis.must_have_skills == ["Python", "AWS", "certificate management", "software licensing"]
+    analysis.must_have_skills += ["AWS Certified Solutions Architect", "FAA certification", "SOC 2 certification",
+                                  "GitHub Actions"]
+    names = ["Certified Information Systems Security Professional (CISSP)", "GitHub Actions"]
+    validate.clean_analysis(analysis, names)
+    assert analysis.must_have_skills == ["Python", "AWS", "certificate management", "software licensing",
+                                         "FAA certification", "SOC 2 certification", "GitHub Actions"]
     assert analysis.nice_to_have_skills == ["Spark"] and analysis.keywords == ["Python", "CISSP", "AWS"]
     before = analysis.model_dump()
-    assert validate.clean_analysis(analysis, picks).model_dump() == before  # cleaning again changes nothing
+    assert validate.clean_analysis(analysis, names).model_dump() == before  # cleaning again changes nothing
 
 
 def test_certifications_leave_the_skills_and_are_found_in_the_text(certified):
@@ -182,6 +259,35 @@ def test_certifications_leave_the_skills_and_are_found_in_the_text(certified):
     names = ["Certified Information Systems Security Professional (CISSP)", "Project Management Professional (PMP)"]
     assert validate.certification_mentions(resume, names) == [
         ("summary", "CISSP"), ("experience:1", "Project Management Professional")]
+    # any credential claim is found, not only the picks; work to a standard is not a claim
+    resume.summary = "Senior Cloud Engineer and AWS Certified Solutions Architect who builds AWS-certified pipelines."
+    resume.experience[0].bullets[0] = "Led the SOC 2 certification and HIPAA-certified hosting for the billing API."
+    resume.experience[2].bullets[0] = "Rolled out GitHub Actions and GitHub Copilot to every team."
+    assert validate.certification_mentions(resume, names + ["GitHub Actions", "GitHub Copilot"]) == [
+        ("summary", "AWS Certified Solutions Architect"), ("summary", "AWS-certified"),
+        ("experience:1", "Project Management Professional")]  # still there from above
+
+
+def test_a_group_of_certifications_leaves_the_skills(certified):
+    resume = validate.build_resume(certified, make_output())
+    resume.skills = [SkillGroup(category="Core", skills=["Python", "GitHub Actions", "FAA certification"]),
+                     SkillGroup(category="Certifications", skills=["CISSP", "OSCP", "CompTIA Security+"])]
+    assert validate.remove_certification_skills(resume, ["GitHub Actions"]) == ["CISSP", "OSCP", "CompTIA Security+"]
+    assert [(g.category, g.skills) for g in resume.skills] == [("Core", ["Python", "GitHub Actions", "FAA certification"])]
+
+
+def test_one_bad_pick_never_costs_the_whole_draft():
+    base = make_output().model_dump()
+    base["certifications"] = [
+        "Certified ScrumMaster (CSM)",  # a bare name
+        {"name": "CISSP", "issuer": ["ISC2"]},  # a list where text belongs: this one goes
+        {"name": "", "candidate_index": 0},  # no name, but one of the person's own
+        {"name": "PMP", "candidate_index": float("inf")},  # a number that is not one
+        {"name": True},  # not a name: this one goes
+    ]
+    picks = TailorOutput.model_validate(base).certifications
+    assert [(p.name, p.candidate_index) for p in picks] == [
+        ("Certified ScrumMaster (CSM)", -1), ("", 0), ("PMP", -1)]
 
 
 def test_a_printed_certification_the_posting_names_counts_as_found(certified):
@@ -266,7 +372,7 @@ def test_a_tick_that_needs_room_removes_the_fewest_bullets(certified):
 
 # ------------------------------------------------------------------ prompts
 def test_the_prompts_list_the_persons_certifications_and_the_rule():
-    assert PROMPT_VERSION == "v30"
+    assert PROMPT_VERSION == "v31"
     system = tailor_system()
     assert "CERTIFICATIONS: `certifications` lists the 4 certifications that best support this application" in system
     assert "never name one in the headline, the summary, the skills or the bullets" in system
@@ -373,7 +479,37 @@ def test_a_tick_keeps_a_cover_letter_written_meanwhile_and_says_when_bullets_wen
     monkeypatch.setattr(main, "refit", letter_lands_meanwhile)
     ticked = ticks(client, run["run_id"], [True, True, True, False]).json()
     assert ticked["cover_letter"] is not None
-    assert ticked["message"] == "To keep two pages, 1 bullet from Northwind Labs was removed."
+    assert ticked["message"] == ("To keep two pages, 1 bullet from Northwind Labs was removed. Untick a "
+                                 "certification to bring them back.") and ticked["message_kind"] == "warn"
+
+
+def test_unticking_brings_back_the_bullets_a_tick_removed(client, monkeypatch):
+    from app import main
+
+    resume_id = upload(client)["id"]
+    run = tailor(client, profile_id=resume_id).json()
+    whole = [len(e["bullets"]) for e in run["resume"]["experience"]]
+    given = []
+    real_refit = main.refit
+
+    async def tight_refit(resume, paper):  # as if 4 certifications needed one bullet less on two pages
+        given.append([len(e.bullets) for e in resume.experience])
+        fitted = await real_refit(resume, paper)
+        if len(resume.certifications) < 4:
+            return fitted
+        trimmed = fitted[0].model_copy(deep=True)
+        trimmed.experience[-1].bullets.pop()
+        name = trimmed.profile.companies[trimmed.experience[-1].company_index].name
+        return (trimmed, *fitted[1:5], {name: 1})
+
+    monkeypatch.setattr(main, "refit", tight_refit)
+    ticked = ticks(client, run["run_id"], [True, True, True, True]).json()
+    assert ticked["message_kind"] == "warn"
+    assert sum(len(e["bullets"]) for e in ticked["resume"]["experience"]) == sum(whole) - 1
+    back = ticks(client, run["run_id"], [True, True, False, False]).json()
+    assert given[-1] == whole  # the next tick starts again from the whole text
+    assert [len(e["bullets"]) for e in back["resume"]["experience"]] == whole
+    assert back["message"] == "The bullets removed earlier are back." and back["message_kind"] == "ok"
 
 
 def test_an_admin_edit_keeps_the_printed_certifications(client):
@@ -435,6 +571,17 @@ def test_a_pasted_table_keeps_the_names_once():
         ("AWS Certified Developer – Associate", "Amazon Web Services", "2024"), ("PMP", "PMI", "2021"), ("CKAD", "", "")]
     assert not validate.same_certification("Certified Secure Software Lifecycle Professional (ISC2)",
                                            "Certified Information Systems Security Professional (ISC2)")
+    # a bulleted list copied from Word, a table with its own header, names with a comma
+    assert [(c.name, c.issuer) for c in read_certification_list(
+        "•\tAWS Certified Developer – Associate, Amazon Web Services, 2022\n•\tCertified Kubernetes Administrator (CKA)")] == [
+        ("AWS Certified Developer – Associate", "Amazon Web Services"), ("Certified Kubernetes Administrator (CKA)", "")]
+    assert [(c.name, c.issuer, c.year) for c in read_certification_list(
+        "Certification\tIssuer\tYear\nCKAD\tThe Linux Foundation\t2024\nPMP\tPMI\t2021")] == [
+        ("CKAD", "The Linux Foundation", "2024"), ("PMP", "PMI", "2021")]
+    oracle = ("Oracle Certified Professional, Java SE 11 Developer | Oracle | 2020\n"
+              "Oracle Certified Professional, Java SE 17 Developer | Oracle | 2023")  # as the box shows them
+    assert [c.name for c in read_certification_list(oracle)] == [
+        "Oracle Certified Professional, Java SE 11 Developer", "Oracle Certified Professional, Java SE 17 Developer"]
 
 
 def test_pasted_certifications_are_printed_without_asking(client):
@@ -459,6 +606,36 @@ def test_only_the_owner_can_change_a_resumes_certifications(client, user_client)
     other_site = client.put(f"/api/resumes/{resume_id}/certifications", json={"text": "CKAD"},
                             headers={"Origin": "https://evil.example", "Sec-Fetch-Site": "cross-site"})
     assert other_site.status_code == 403
+    unreadable = client.put(f"/api/resumes/{resume_id}/certifications", json={"text": "1.\n2.\n---"})
+    assert unreadable.status_code == 422  # never wipes the saved list by mistake
     too_many = "\n".join(f"Certification number {i}" for i in range(101))
     assert client.put(f"/api/resumes/{resume_id}/certifications", json={"text": too_many}).status_code == 422
     assert stored_certifications(client, resume_id) == []
+
+
+def test_a_save_from_an_old_page_never_undoes_a_newer_tick(client):
+    resume_id = upload(client)["id"]
+    shown = [{"name": AWS.name, "issuer": AWS.issuer, "year": AWS.year},
+             {"name": CSM.name, "issuer": CSM.issuer, "year": CSM.year}]  # what the Profile page showed
+    run = tailor(client, profile_id=resume_id).json()
+    assert ticks(client, run["run_id"], [True, True, True, False]).status_code == 200  # meanwhile, in a Tailor tab
+    stale = client.put(f"/api/resumes/{resume_id}/certifications",
+                       json={"text": f"{AWS.name}\n{CSM.name}", "loaded": shown})
+    assert stale.status_code == 409 and "Reload this page" in stale.json()["detail"]
+    assert len(stored_certifications(client, resume_id)) == 3  # the tick is still there
+
+
+def test_no_name_in_the_checks_module_is_defined_twice():
+    """A second helper with the same name silently replaces the first (it broke the keyword and dash rules once)."""
+    import ast
+    import collections
+    from pathlib import Path
+
+    tree = ast.parse(Path(validate.__file__).read_text(encoding="utf-8"))
+    names = collections.Counter()
+    for node in tree.body:
+        if isinstance(node, ast.Assign):
+            names.update(t.id for t in node.targets if isinstance(t, ast.Name))
+        elif isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+            names[node.name] += 1
+    assert [name for name, count in names.items() if count > 1] == []

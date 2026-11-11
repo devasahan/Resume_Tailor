@@ -105,6 +105,12 @@ class EditRequest(BaseModel):
 
 class CertificationList(BaseModel):
     text: str = Field(max_length=20000)  # one certification per line, as pasted on the Profile page
+    # The list the page showed when it was opened: if it changed since (a tick on the Tailor page), nothing is saved
+    loaded: list[Certification] | None = Field(default=None, max_length=500)
+
+
+class StaleList(Exception):
+    """The saved list changed after the page was opened."""
 
 
 class CertificationTicks(BaseModel):
@@ -985,14 +991,24 @@ def create_app(db: Database | None = None, registry: Registry | None = None, rou
         """The certifications the person has passed, pasted on the Profile page (they replace the saved list). For
         each job the AI then picks the best ones that fit, up to 4, and they are printed without asking."""
         certifications = read_certification_list(body.text)
+        if body.text.strip() and not certifications:  # never wipe the saved list by mistake
+            raise HTTPException(422, "No certification could be read. Put one per line, for example: Certified "
+                                     "Kubernetes Application Developer (CKAD), The Linux Foundation, 2024")
         if len(certifications) > MAX_OWN_CERTIFICATIONS:
             raise HTTPException(422, f"That is {len(certifications)} certifications. Keep the ones you have passed "
                                      f"(at most {MAX_OWN_CERTIFICATIONS}).")
 
         def replace(profile: Profile) -> None:
+            if body.loaded is not None and profile.certifications != body.loaded:
+                raise StaleList
             profile.certifications = certifications
 
-        if db.change_profile(profile_id, user_id=user.id, change=replace) is None:
+        try:
+            changed = db.change_profile(profile_id, user_id=user.id, change=replace)
+        except StaleList:
+            raise HTTPException(409, "This list was changed in another tab (a tick on the Tailor page). Reload this "
+                                     "page and save again.") from None
+        if changed is None:
             raise HTTPException(404, "Resume not found.")
         entry = db.profile_entry(profile_id, user_id=user.id)
         assert entry is not None
@@ -1112,6 +1128,7 @@ def create_app(db: Database | None = None, registry: Registry | None = None, rou
             )
             # the printed certifications are not part of the text: they stay as ticked (and count in the fit below)
             merged.certifications = [cert.model_copy() for cert in result.resume.certifications]
+            result.untrimmed = []  # the edited text is the whole text now
             if result.cover_letter and body.cover_paragraphs is not None:
                 greeting, paragraphs, closing = validate.clean_cover_letter(
                     body.cover_greeting or result.cover_letter.greeting,
@@ -1158,12 +1175,16 @@ def create_app(db: Database | None = None, registry: Registry | None = None, rou
                               change=lambda profile: validate.change_certifications(profile, added, dropped))
         rows = [row.model_copy(update={"have": have}) for row, have in zip(result.certifications, body.have)]
         resume = result.resume.model_copy(deep=True)
+        if result.untrimmed:  # start again from the bullets an earlier tick removed
+            resume.experience = [exp.model_copy(deep=True) for exp in result.untrimmed]
         validate.change_certifications(resume.profile, added, dropped)
         resume.certifications = validate.printed_certifications(rows)
         validate.assert_certifications_held(resume)
+        whole = [exp.model_copy(deep=True) for exp in resume.experience]
         resume, style, pages, fits, notes, removed = await refit(resume, result.style.paper)
         fresh = db.get_run(run_id) or result  # a cover letter may have been written while this was in flight
         fresh.resume, fresh.certifications = resume, rows
+        fresh.untrimmed = whole if removed else []
         fresh.style, fresh.pages, fresh.fits = style, pages, fits
         fresh.notes = [n for n in fresh.notes if not n.startswith(("Font reduced", "Still"))] + notes
         run_checks(fresh, fresh.jd or analysis_terms(fresh.analysis))
@@ -1173,7 +1194,10 @@ def create_app(db: Database | None = None, registry: Registry | None = None, rou
             total = sum(removed.values())
             parts = [f"{count} bullet{'' if count == 1 else 's'} from {name}" for name, count in removed.items()]
             view["message"] = (f"To keep two pages, {' and '.join(parts)} {'was' if total == 1 else 'were'} "
-                               "removed.")
+                               "removed. Untick a certification to bring them back.")
+            view["message_kind"] = "warn"
+        elif result.untrimmed:
+            view["message"], view["message_kind"] = "The bullets removed earlier are back.", "ok"
         return view
 
     @app.post("/api/runs/{run_id}/cover-letter")

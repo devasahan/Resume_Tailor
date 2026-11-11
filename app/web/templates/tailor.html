@@ -184,7 +184,7 @@ async function tickCertification(runId) {
     if (current && current.run.run_id === runId) {  // a newer resume on the page wins
       current.run = run;
       showResult(current.run, 'resume');
-      if (run.message) $('#cert-note').replaceChildren(notice('warn', run.message));
+      if (run.message) $('#cert-note').replaceChildren(notice(run.message_kind || 'warn', run.message));
     }
   } catch (err) {
     busy(false);
@@ -233,6 +233,7 @@ async function tailorNow(jd) {
     throw new Error(run.error || 'Tailoring failed.');
   }
   current = { run, jd, profileId, spelling };
+  $('#cert-note').replaceChildren();  // a note about the previous resume's ticks
   showResult(run);
   return run;
 }
