@@ -6,7 +6,7 @@
   <p class="sub">Changes apply immediately to new runs. Runs already in progress finish on the model they started with.</p>
 </div>
 <div class="panel"><h2>Models</h2>
-  <p class="small muted">A model is usable when its API key variable is set and its data region is allowed below. Prices and model names marked "unverified" came from third-party sources: run the check below.</p>
+  <p class="small muted">A model is usable when its API key variable is set and its data region is allowed below. Reload the website after you change .env: keys are read when it starts. Prices and model names marked "unverified" came from third-party sources: run the check below.</p>
   <div class="table-wrap"><table class="wide"><thead><tr><th>Model</th><th>Provider</th><th>Model string</th><th>$ per 1M in / out</th><th>Region</th><th>Status</th></tr></thead><tbody id="model-rows"></tbody></table></div>
 </div>
 
@@ -53,10 +53,22 @@
 let models = [], regions = [], cfg = null;
 const field = id => $('#' + id);
 
+// Real models that cannot be used yet, shown greyed out with the reason, so a missing one is never a mystery
+const shortReason = reason => reason.replace(/^no API key: set (\S+)$/, 'needs $1 in .env')
+  .replace(/^region (\S+) is not allowed.*$/, 'region $1 not allowed');
+const notSetUp = () => models.filter(m => !m.available && !m.demo);
+function notSetUpLine() {
+  const off = notSetUp();
+  return off.length ? el('div', { class: 'small muted note', text: `Not set up yet: ${off.map(m => m.label).join(', ')}. Add the key to .env, then reload the website.` }) : null;
+}
+
 function modelOptions(select, current, blankLabel, extra = []) {
+  const off = notSetUp();
   select.replaceChildren(el('option', { value: '', text: blankLabel }),
     ...extra.map(o => el('option', { value: o.value, selected: o.value === current, text: o.text })),
-    ...models.filter(m => m.available).map(m => el('option', { value: m.id, selected: m.id === current, text: m.label })));
+    ...models.filter(m => m.available).map(m => el('option', { value: m.id, selected: m.id === current, text: m.label })),
+    off.length ? el('optgroup', { label: 'Not set up yet' },
+      off.map(m => el('option', { value: m.id, disabled: true, text: `${m.label} (${shortReason(m.reason)})` }))) : null);
 }
 const labelOf = id => (models.find(m => m.id === id) || {}).label || id;
 
@@ -74,12 +86,12 @@ async function init() {
   modelOptions(field('parser_model'), st.parser_model,
     `Automatic (${s.automatic.parser ? labelOf(s.automatic.parser) : 'built-in rules'})`,
     [{ value: 'rules', text: 'Rules only (free, nothing is sent)' }]);
-  field('fallbacks').replaceChildren(...models.filter(x => x.available).map(x => el('label', {}, el('input', { type: 'checkbox', value: x.id, checked: st.fallback_models.includes(x.id) }), x.label)));
+  field('fallbacks').replaceChildren(...models.filter(x => x.available).map(x => el('label', {}, el('input', { type: 'checkbox', value: x.id, checked: st.fallback_models.includes(x.id) }), x.label)), notSetUpLine());
   field('daily_cost_cap_usd').value = st.daily_cost_cap_usd; field('retention_days').value = st.retention_days; field('paper_size').value = st.paper_size; field('metrics_mode').value = st.metrics_mode;
   field('regions').replaceChildren(...regions.map(r => el('label', {}, el('input', { type: 'checkbox', value: r, checked: st.allowed_regions.includes(r) }), r)));
   field('spent').textContent = `Spent today (since midnight Texas time): ${money(s.cost_today)}.`;
-  field('check-list').replaceChildren(...models.filter(x => x.available && !x.demo).map(x => el('label', {}, el('input', { type: 'checkbox', value: x.id }), x.label)));
-  if (!models.some(x => x.available && !x.demo)) field('check-list').replaceChildren(el('span', { class: 'muted small', text: 'No real models are available yet (no API keys set).' }));
+  field('check-list').replaceChildren(...models.filter(x => x.available && !x.demo).map(x => el('label', {}, el('input', { type: 'checkbox', value: x.id }), x.label)), notSetUpLine());
+  if (!models.some(x => x.available && !x.demo)) field('check-list').replaceChildren(el('span', { class: 'muted small', text: 'No real models are available yet (no API keys set).' }), notSetUpLine());
 }
 
 field('save').addEventListener('click', async () => {
