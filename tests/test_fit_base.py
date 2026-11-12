@@ -78,10 +78,12 @@ WIDTHS = [  # fpdf2's get_string_width of each sample in Carlito Regular, Bold a
 
 
 def test_text_is_measured_as_fpdf2_measured_carlito():
-    """The same numbers to the last bit: characters Carlito lacks get its .notdef width, and fpdf2's page count alias
-    "{nb}" is measured as "000" between the text around it."""
+    """The same numbers: characters Carlito lacks get its .notdef width, and fpdf2's page count alias "{nb}" is measured
+    as "000" between the text around it. Python 3.12 adds up floats more exactly than 3.11 (in fpdf2 too), so the last
+    bit of a text holding "{nb}" depends on the Python version: those were recorded on 3.13."""
     for text, widths in zip(SAMPLES, WIDTHS):
-        assert [old_layout.text_width(text, style, 9.75) for style in (REGULAR, BOLD, ITALIC)] == widths, text
+        measured = [old_layout.text_width(text, style, 9.75) for style in (REGULAR, BOLD, ITALIC)]
+        assert measured == (widths if "{nb}" not in text else pytest.approx(widths, rel=1e-12)), text
 
 
 # ------------------------------------------------------------------ the old layout
