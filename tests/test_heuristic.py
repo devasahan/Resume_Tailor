@@ -1,8 +1,12 @@
+import time
+
 from app.parsing.heuristic import (
+    _is_header,
     _parse_certifications,
     _parse_education,
     _reads_as_title,
     parse_resume_text,
+    read_certification_list,
 )
 
 from .conftest import SAMPLE_RESUME_TEXT
@@ -249,3 +253,155 @@ def test_skills_rows_and_the_dotted_contact_line_read_as_before():
                                           "linkedin.com/in/taylorquinn", "Austin, TX")
     assert [c.name for c in profile.companies] == ["Northwind Labs"] and profile.certifications == []
     assert parse_resume_text("\n".join(line.replace(" · ", " | ") for line in lines)) == profile
+
+
+# ------------------------------------------------------------------ the restyle's review: what the rules read back
+def test_the_apps_job_line_is_read_by_position_whatever_the_title():
+    """The app writes 'Title · Company · Place · Mode', the title first: a title the rules do not know ('Scrum
+    Master', 'SDE II') is never the company, and the line is split only at ' · ' ('Engineer – Data Platform' stays
+    whole). A person's own 'Company · Title' line keeps its company when the title is one the rules know or the
+    company has a mark ('Inc.'); with an unknown title it now reads as the app's line."""
+    assert experience(
+        "Scrum Master · Northwind Labs · Austin, TX · Remote   Mar 2022 – Present", "• Ran the sprints.",
+        "SDE II · Bluefin Commerce · Dallas, TX · Onsite   Jun 2019 – Feb 2022", "• Built the order services.",
+        "Software Engineer, Payments · Fabrikam Inc. · Hybrid   2016 – 2019", "• Wrote the payment flows.",
+        "Engineer – Data Platform · Contoso Systems   Jan 2014 – May 2016", "• Cleaned the sales data.",
+    ) == [("Northwind Labs", "Mar 2022", "Present", "Remote", "Austin, TX"),
+          ("Bluefin Commerce", "Jun 2019", "Feb 2022", "Onsite", "Dallas, TX"),
+          ("Fabrikam Inc.", "2016", "2019", "Hybrid", ""), ("Contoso Systems", "Jan 2014", "May 2016", "", "")]
+    # employers that read like a title or like a place ('Rivera, Quinn' as 'Austin, Texas')
+    assert experience(
+        "Barista · The Lakeside Economist · London, UK   Mar 2022 – Present", "• Made the coffee.",
+        "Sales Associate · Bluefin Coach · New York, NY   2018 – 2020", "• Sold the bags.",
+        "Associate · Rivera, Quinn · New York, NY · Onsite   2016 – 2018", "• Drafted the contracts.",
+        "Associate · Rivera, Quinn · Onsite   2014 – 2016", "• Drafted the briefs.",
+    ) == [("The Lakeside Economist", "Mar 2022", "Present", "", "London, UK"),
+          ("Bluefin Coach", "2018", "2020", "", "New York, NY"),
+          ("Rivera, Quinn", "2016", "2018", "Onsite", "New York, NY"), ("Rivera, Quinn", "2014", "2016", "Onsite", "")]
+    # a line too long for the page breaks before the company or before the place
+    assert experience(
+        "Principal Agile Delivery and Release Train Scrum Master   Mar 2022 – Present",
+        "Northwind Labs · Austin, TX · Remote", "• Ran the release train.",
+        "Lead Barista and Coffee Program Mentor · Rivera, Quinn   2016 – 2019", "New York, NY · Hybrid",
+        "• Trained the baristas.",
+        "Nurse Practitioner, Pediatric Intensive Care and Emergency Medicine   2014 – 2016", "Contoso Systems",
+        "• Ran the night shift.",
+    ) == [("Northwind Labs", "Mar 2022", "Present", "Remote", "Austin, TX"),
+          ("Rivera, Quinn", "2016", "2019", "Hybrid", "New York, NY"), ("Contoso Systems", "2014", "2016", "", "")]
+    # a person's own lines: the company first, or a title and company short enough for one line
+    assert experience(
+        "Northwind Labs · Senior Data Engineer · Austin, TX   2019 – 2021", "• Built it.",
+        "Fabrikam Inc. · Barista   2017 – 2019", "• Made coffee.",
+        "Bluefin Commerce · Dallas, TX   2015 – 2017", "Scrum Master", "• Ran it.",
+        "Contoso Systems   2013 – 2015", "Scrum Master · Remote", "• Ran it.",
+        "Senior Data Engineer · Austin, TX   2011 – 2013", "Northwind Labs", "• Built it.",
+    ) == [("Northwind Labs", "2019", "2021", "", "Austin, TX"), ("Fabrikam Inc.", "2017", "2019", "", ""),
+          ("Bluefin Commerce", "2015", "2017", "", "Dallas, TX"), ("Contoso Systems", "2013", "2015", "", ""),
+          ("Northwind Labs", "2011", "2013", "", "Austin, TX")]
+
+
+def test_a_town_and_state_after_the_school_is_no_degree():
+    """'MA' and 'MS' are degrees too: the school's town and state ('Springfield, MA') must not take the degree's
+    place, on the school's line or from the degree line under it."""
+    assert education("State University – Springfield, MA   2014 – 2018", "Bachelor of Arts in Economics") == [
+        ("State University", "Bachelor of Arts", "Economics", "2014", "2018")]
+    assert education("Lakeside Community College | Oxford, MS | 2012 – 2014", "Associate of Science, Nursing") == [
+        ("Lakeside Community College", "Associate of Science", "Nursing", "2012", "2014")]
+    assert education("State University · Springfield, MA · M.A. in History   2016 – 2018") == [
+        ("State University", "M.A.", "History", "2016", "2018")]
+    assert education("State University | MA, History | 2016 – 2018") == [
+        ("State University", "MA", "History", "2016", "2018")]
+
+
+def test_a_side_label_run_into_the_first_line_still_starts_its_section():
+    """Templates with the section labels in a left column: the text puts a label on the line of the entry beside it
+    ('EXPERIENCE Senior Data Engineer'). A job title in capitals or after an acronym is still no heading, and neither
+    is a dated ' · ' line, the app's job line, whatever its title says."""
+    profile = parse_resume_text("""Taylor Quinn
+taylor.quinn@example.com | (555) 010-4477
+SKILLS Python, SQL, Airflow
+EXPERIENCE Senior Data Engineer
+Northwind Labs | Austin, TX | Jan 2020 – Present
+• Built the pipelines.
+Data Engineer
+Bluefin Commerce | Dallas, TX | Jun 2016 – Dec 2019
+• Moved the reports.
+""")
+    assert [(c.name, c.start, c.end, c.location) for c in profile.companies] == [
+        ("Northwind Labs", "Jan 2020", "Present", "Austin, TX"),
+        ("Bluefin Commerce", "Jun 2016", "Dec 2019", "Dallas, TX")]
+    lines = ["WORK EXPERIENCE Data Engineer", "EDUCATION   Data Analyst", "QA Tester", "HR Manager",
+             "EXPERIENCE DESIGNER", "SDE II · Northwind Labs   2019 – 2021", "Education Aide · Contoso   2019 – 2021"]
+    assert [_is_header(line) for line in lines] == ["experience", "education", None, None, None, None, None]
+
+
+def test_long_runs_of_tabs_or_spaces_are_read_quickly():
+    """A run of tabs or spaces is one gap: a crafted line of thousands of them took minutes, as some patterns take
+    time growing with the square of a run of white space."""
+    started = time.perf_counter()
+    for gap in ("\t" * 8000, " " * 8000, " " * 8000, " \t" * 4000):
+        profile = parse_resume_text(f"Taylor Quinn\nCERTIFICATIONS\nCertified Kubernetes Administrator{gap}Mar 2023")
+        assert [(c.name, c.year) for c in profile.certifications] == [
+            ("Certified Kubernetes Administrator", "Mar 2023")]
+    assert time.perf_counter() - started < 1.5
+
+
+def test_a_sentence_naming_a_work_mode_is_a_bullet_not_the_mode():
+    """A Word file gives its bullets without their mark: a sentence under 'Title | Company' that mentions remote or
+    hybrid work is no work mode. A line of a place and a mode, with a note, still is."""
+    assert experience(
+        "Senior Data Engineer | Northwind Labs\tJan 2020 – Present", "Built a hybrid cloud platform on AWS.",
+        "Data Engineer | Bluefin Commerce\tJun 2016 – Dec 2019", "Gave remote and on-site support to 300 staff.",
+        "Support Analyst · Contoso Systems\t2014 – 2016", "Provided on-site support for 40 clinics.",
+    ) == [("Northwind Labs", "Jan 2020", "Present", "", ""), ("Bluefin Commerce", "Jun 2016", "Dec 2019", "", ""),
+          ("Contoso Systems", "2014", "2016", "", "")]
+    assert experience("Senior Data Engineer | Northwind Labs\t2019 – 2021", "Austin, TX | Hybrid (3 days onsite)",
+                      "Built the platform.") == [("Northwind Labs", "2019", "2021", "Hybrid", "Austin, TX")]
+
+
+def test_the_dash_or_word_before_a_certifications_dates_goes_with_them():
+    """'CompTIA Security+ - Feb 2021': the dash (or 'Issued') before the dates is no part of the name or the issuer,
+    in an upload and in the list pasted on the Profile page."""
+    rows = ["CompTIA Security+ - Feb 2021", "Certified ScrumMaster, Lakeside Agile Guild - Jan 2022",
+            "AWS Certified Developer – Associate - Jan 2022 - Jan 2025", "CKAD – Mar 2024 – Mar 2027",
+            "AWS Certified Cloud Practitioner – Issued Mar 2022", "Six Sigma Green Belt: March 2019"]
+    expected = [("CompTIA Security+", "", "Feb 2021", ""),
+                ("Certified ScrumMaster", "Lakeside Agile Guild", "Jan 2022", ""),
+                ("AWS Certified Developer – Associate", "", "Jan 2022", "Jan 2025"),
+                ("CKAD", "", "Mar 2024", "Mar 2027"), ("AWS Certified Cloud Practitioner", "", "Mar 2022", ""),
+                ("Six Sigma Green Belt", "", "March 2019", "")]
+    assert certifications(*rows) == expected
+    assert [(c.name, c.issuer, c.year, c.expires) for c in read_certification_list("\n".join(rows))] == expected
+    # a dash inside a name stays, and a bare year right after the name is part of it
+    assert certifications("PMP - Northwind Project Institute - 2019", "MCSA: Windows Server 2016") == [
+        ("PMP - Northwind Project Institute", "", "2019", ""), ("MCSA: Windows Server 2016", "", "", "")]
+
+
+def test_a_headline_and_a_town_parted_by_a_tab_give_the_town():
+    """A Word header 'Senior Data Engineer<TAB>Austin, TX': the gap parts two items, so the town is the location, not
+    the whole line. A town with two spaces after its comma keeps them."""
+    for gap in ("\t", "    "):
+        profile = parse_resume_text(f"Riley Brooks\nSenior Data Engineer{gap}Austin, TX\n"
+                                    "riley.brooks@example.com | (555) 010-9988\nEXPERIENCE\n"
+                                    "Data Engineer | Northwind Labs   2020 – 2022\n")
+        assert profile.contact.location == "Austin, TX", gap
+    assert parse_resume_text("Riley Brooks\nAustin,  TX | riley.brooks@example.com\n").contact.location == "Austin,  TX"
+
+
+def test_a_company_over_its_titles_keeps_its_own_dates():
+    """Some layouts put each company on a line of its own over its title ('Northwind Labs' over 'Senior Data
+    Engineer   Jan 2020 – Present'). A job without bullets must not take the next job's company. A layout with the
+    company under its title never takes a line above it for the company."""
+    jobs = [("Northwind Labs", "Senior Data Engineer   Jan 2020 – Present"),
+            ("Bluefin Commerce — Dallas, TX", "Data Engineer   2017 – 2019"),
+            ("Contoso Systems", "Junior Analyst   2015 – 2017")]
+    expected = [("Northwind Labs", "Jan 2020", "Present", "", ""),
+                ("Bluefin Commerce", "2017", "2019", "", "Dallas, TX"), ("Contoso Systems", "2015", "2017", "", "")]
+    assert experience(*[line for job in jobs for line in job]) == expected
+    assert experience(*[line for job in jobs for line in (*job, "• Built it.")]) == expected
+    assert experience(*[line for job in jobs for line in (*job, "Built it in Python.")]) == expected  # Word bullets
+    assert experience("Senior Data Engineer   2019 – 2021", "Northwind Labs", "Python, SQL, Airflow",
+                      "Data Engineer   2017 – 2019", "Bluefin Commerce", "Junior Analyst   2015 – 2017",
+                      "Contoso Systems") == [("Northwind Labs", "2019", "2021", "", ""),
+                                             ("Bluefin Commerce", "2017", "2019", "", ""),
+                                             ("Contoso Systems", "2015", "2017", "", "")]
