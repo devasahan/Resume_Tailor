@@ -1,20 +1,22 @@
 import io
+import logging
 import random
 import re
 
 import pytest
 from docx import Document
+from docx.oxml.ns import qn
 from pypdf import PdfReader
 
 from app.pipeline import validate
-from app.pipeline.fit import LADDER, MAX_PAGES, trim_to_fit, try_styles
+from app.pipeline.fit import LADDER, MAX_PAGES, styles, trim_to_fit, try_styles
 from app.render import pdf as pdf_module
 from app.render.docx import cover_docx, resume_docx
 from app.render.pdf import (
-    REGULAR, Run, Sheet, contact_line, fmt_dates, render_cover_pdf, render_resume_pdf, text_width,
+    CONTACT_SIZE, REGULAR, Run, Sheet, contact_line, fmt_dates, render_cover_pdf, render_resume_pdf, text_width,
 )
 from app.schemas import (
-    Contact, CoverLetter, ExperienceOut, FitStyle, SkillGroup, TailoredSections, TailorOutput,
+    Certification, Contact, CoverLetter, ExperienceOut, FitStyle, SkillGroup, TailoredSections, TailorOutput,
 )
 
 from .test_validate import make_output
@@ -329,3 +331,77 @@ def test_contact_line_uses_the_usual_resume_order_whatever_the_input_order():
         "Austin, TX · (555) 010-2030 · jordan@example.com · linkedin.com/in/jrivera · github.com/jrivera")
     assert contact_line(Contact(email="jordan@example.com", location="Austin, TX", phone="  ")) == (
         "Austin, TX · jordan@example.com")  # missing parts are left out
+
+
+# ------------------------------------------------------------------ characters the font lacks
+def test_ligatures_and_invisible_marks_print_as_plain_letters(profile, caplog):
+    """Text copied out of a PDF often holds ligature characters (ﬁ ﬂ ﬀ ﬃ), and pasted text invisible marks (a soft
+    hyphen, a zero-width joiner). Inter has none of them: they print as their plain letters, or not at all, with no gap
+    where they were measured, and fpdf2 has no glyph to leave out."""
+    pdfminer = pytest.importorskip("pdfminer.high_level")
+    odd = profile.model_copy(deep=True)
+    odd.name = "Jor‍dan Rivera"
+    odd.companies[0].name = "Bluefin Oﬃce Supplies"
+    resume = validate.build_resume(odd, make_output())
+    resume.summary = "Data engineer who builds pro­gramming tools for the ﬁnance team."
+    resume.experience[0].bullets[0] = "Built the workﬂow that cut eﬀort and hand-oﬀs for the ﬁnance team."
+    resume.certifications = [Certification(name="AWS Certiﬁed Solutions Architect", issuer="Amazon Web Services",
+                                           year="Mar 2023")]
+    with caplog.at_level(logging.WARNING):
+        pdf = render_resume_pdf(resume, FitStyle())[0]
+    assert not [record for record in caplog.records if "missing" in record.getMessage()]
+    plain = text_of(pdf)
+    assert "AWS Certified Solutions Architect · Amazon Web Services" in plain  # no gap after the name
+    for text in (plain, pdfminer.extract_text(io.BytesIO(pdf))):
+        flat = " ".join(text.split())
+        assert "Jordan Rivera" in flat and "Bluefin Office Supplies" in flat
+        assert "builds programming tools for the finance team." in flat
+        assert "Built the workflow that cut effort and hand-offs for the finance team." in flat
+    assert text_width("Certiﬁed", REGULAR, 10) == text_width("Certified", REGULAR, 10)  # measured as drawn
+
+
+# ------------------------------------------------------------------ skills rows that wrap
+def test_a_wrapped_skills_row_is_read_before_the_next_row(profile):
+    """A label wider than the design's column widens it, and a long row wraps inside the values' column. Filler spaces
+    from the margin start each of its lines where the row starts, so readers that group text by position keep a
+    wrapped line with its row (pdfminer read it after the next row)."""
+    pdfminer = pytest.importorskip("pdfminer.high_level")
+    pdfplumber = pytest.importorskip("pdfplumber")
+    resume = validate.build_resume(profile, make_output())
+    data = ["Airflow", "Spark", "Snowflake", "dbt", "Kafka", "Flink", "Postgres", "BigQuery", "Looker",
+            "Great Expectations", "Delta Lake", "Iceberg", "Trino", "Redis", "MongoDB", "Elasticsearch", "Redshift"]
+    resume.skills = [SkillGroup(category="Machine Learning", skills=["PyTorch", "scikit-learn", "XGBoost", "MLflow"]),
+                     SkillGroup(category="Data", skills=data),
+                     SkillGroup(category="Frameworks", skills=["FastAPI", "Django", "Flask", "React"])]
+    for step in (0, 1, len(LADDER) - 1):
+        pdf = render_resume_pdf(resume, styles("Letter")[step])[0]
+        with pdfplumber.open(io.BytesIO(pdf)) as document:
+            plumbed = document.pages[0].extract_text()
+        for text in (pdfminer.extract_text(io.BytesIO(pdf)), text_of(pdf), plumbed):
+            flat = " ".join(text.split())
+            assert "Data: " + ", ".join(data) + " Frameworks: FastAPI, Django" in flat, step
+
+
+# ------------------------------------------------------------------ the Word copy
+def test_word_text_is_never_larger_than_it_was_measured(resume):
+    """Word keeps sizes in half points. They are rounded down, so text broken into lines at its exact size on the PDF
+    (the contact line here, a job line) still fits its line in Word."""
+    resume.profile.contact = Contact(location="New York, NY", phone="+1 (555) 010-2030", email="lschmidt@example-mail.com",
+                                     linkedin="linkedin.com/in/l-schmidt", website="github.com/lschmidt")
+    for style in styles("Letter"):
+        doc = Document(io.BytesIO(resume_docx(resume, style)))
+        width = doc.sections[0].page_width.pt - doc.sections[0].left_margin.pt - doc.sections[0].right_margin.pt
+        contact = next(p for p in doc.paragraphs if "lschmidt@example-mail.com" in p.text)
+        for run in (run for run in contact.runs if run.text):
+            assert run.font.size.pt <= CONTACT_SIZE * style.font_pt
+            assert text_width(run.text, REGULAR, run.font.size.pt) <= width
+        assert doc.styles["Normal"].font.size.pt <= style.font_pt
+
+
+def test_word_bullets_keep_the_gap_between_them(resume):
+    """The built-in List Bullet style's contextual spacing would drop the space after a bullet when the next one
+    follows; the Word copy turns it off, so its bullets are as far apart as the PDF's."""
+    doc = Document(io.BytesIO(resume_docx(resume, FitStyle())))
+    assert doc.styles["List Bullet"].element.find(f".//{qn('w:contextualSpacing')}") is None
+    bullets = [p for p in doc.paragraphs if p.style.name == "List Bullet"]
+    assert any(p.paragraph_format.space_after.pt > 0 for p in bullets)

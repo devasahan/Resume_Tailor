@@ -4,6 +4,7 @@ tables or text boxes. Word paginates the resume itself; keep-with-next and keep-
 the PDF does. SemiBold and Bold text is bold here, Medium text regular: Word knows bold or not."""
 from __future__ import annotations
 
+import math
 from datetime import UTC, datetime
 from io import BytesIO
 
@@ -77,8 +78,10 @@ _AFTER_SPACING = ("w:w", "w:kern", "w:position", "w:sz", "w:szCs", "w:highlight"
 
 
 def _size(points: float) -> Pt:
-    """A font size as Word keeps it, in half points."""
-    return Pt(round(points * 2) / 2)
+    """A font size as Word keeps it, in whole half points, rounded down (as python-docx stored sizes before): Word's
+    text is then never wider than the text measured at `points`, so a contact line or a job line broken to fit on the
+    PDF stays on its lines in Word too."""
+    return Pt(math.floor(points * 2 + 1e-9) / 2)
 
 
 def _rgb(color: str) -> RGBColor:
@@ -272,6 +275,9 @@ def resume_docx(resume: Resume, style: FitStyle, document: str = "Resume") -> by
                  lang="en-GB" if document == "CV" else "en-US")
     width = _text_width(style, style.margin_in)
     doc.styles["Normal"].paragraph_format.widow_control = True
+    bullets = doc.styles["List Bullet"].element.pPr  # its contextual spacing would drop the gap between two bullets
+    for flag in [] if bullets is None else bullets.findall(qn("w:contextualSpacing")):
+        bullets.remove(flag)
 
     _header(doc, p.name, resume.headline, p.contact, body, width)
 

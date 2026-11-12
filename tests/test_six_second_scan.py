@@ -135,7 +135,7 @@ def test_the_title_line_is_larger_but_stays_on_one_line(profile):
     resume = validate.build_resume(profile, make_output())
     paragraphs = Document(io.BytesIO(resume_docx(resume, FitStyle()))).paragraphs
     headline = next(p for p in paragraphs if p.text == resume.headline)
-    size = round(TITLE_SIZE * FitStyle().font_pt * 2) / 2  # Word keeps half points
+    size = int(TITLE_SIZE * FitStyle().font_pt * 2) / 2  # Word keeps half points, rounded down
     assert not headline.runs[0].bold and headline.runs[0].font.size.pt == size  # Medium: not bold in Word
 
 

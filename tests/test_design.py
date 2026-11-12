@@ -376,4 +376,4 @@ def test_a_run_saved_before_the_restyle_shows_in_the_new_look_with_every_bullet(
     saved = db.get_run(run["run_id"])
     assert saved.style == FitStyle(font_pt=10.0, margin_in=0.55) and saved.pages == 2  # nothing written back
     docx = Document(io.BytesIO(client.get(f"/api/runs/{run['run_id']}/resume.docx").content))
-    assert docx.styles["Normal"].font.size.pt == round(current_style(saved.style).font_pt * 2) / 2  # the new look
+    assert docx.styles["Normal"].font.size.pt == int(current_style(saved.style).font_pt * 2) / 2  # the new look

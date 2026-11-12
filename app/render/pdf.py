@@ -22,6 +22,7 @@ import hashlib
 import re
 import threading
 import time
+import unicodedata
 from collections import OrderedDict
 from dataclasses import dataclass
 from functools import cache
@@ -176,15 +177,48 @@ def advance_widths(weight: str) -> tuple[dict[int, int], int]:
     return widths, round(scale * metrics[".notdef"][0])
 
 
+@cache
+def _covered() -> frozenset[int]:
+    """The characters every weight has (Inter's four weights share one character map)."""
+    return frozenset.intersection(*(frozenset(advance_widths(weight)[0]) for weight in WEIGHTS))
+
+
+class _Drawable(dict):
+    """A str.translate table for the text a PDF draws, filled in as characters are met. Inter lacks a few characters
+    that the font before it had: the ligatures in text copied out of a PDF (ﬁ ﬂ ﬀ ﬃ ﬄ) and invisible marks such as a
+    soft hyphen or a zero-width joiner. fpdf2 leaves a character the font lacks out of the page, while measuring counts
+    it, so 'Certiﬁed' would print as 'Certied' with a gap after it. Such a character becomes its compatibility form
+    when the fonts have all of that (ﬁ -> fi, a full-width Ａ -> A); an invisible one is left out; any other stays as it
+    is, and fpdf2 leaves it out as before (as it did Chinese and emoji with the old font too)."""
+
+    def __missing__(self, code: int) -> int | str | None:
+        covered, char = _covered(), chr(code)
+        form = unicodedata.normalize("NFKC", char)
+        if code in covered:
+            value: int | str | None = code
+        elif all(ord(part) in covered for part in form):
+            value = form
+        elif unicodedata.category(char) == "Cf":
+            value = None
+        else:
+            value = code
+        self[code] = value
+        return value
+
+
+DRAWABLE = _Drawable()
+
+
 def char_spacing(tracking: float, size: float) -> float:
     """Letter spacing in points, as the PDF holds it (fpdf2 writes it with two decimals)."""
     return round(tracking * size, 2)
 
 
 def text_width(text: str, weight: str, size: float, tracking: float = 0.0) -> float:
-    """The width of `text` in points, the same as fpdf2's get_string_width. Letter spacing follows every character,
-    the last one too, as in the PDF (and in CSS)."""
+    """The width of `text` in points as the PDF draws it (see _Drawable), the same as fpdf2's get_string_width of that.
+    Letter spacing follows every character, the last one too, as in the PDF (and in CSS)."""
     widths, missing = advance_widths(weight)
+    text = text.translate(DRAWABLE)
     return sum(widths.get(ord(ch), missing) for ch in text) * size * 0.001 + char_spacing(tracking, size) * len(text)
 
 
@@ -398,7 +432,7 @@ class Sheet:
             self.pdf.set_text_color(color)
             self.pdf.set_char_spacing(char_spacing(tracking, size))
             self.pdf.set_xy(x, y)
-            self.pdf.cell(w=width, h=height, text=text, new_x=XPos.RIGHT, new_y=YPos.TOP)
+            self.pdf.cell(w=width, h=height, text=text.translate(DRAWABLE), new_x=XPos.RIGHT, new_y=YPos.TOP)
             x += width
         self.pdf.set_char_spacing(0)  # written into the page only when it was set
 
@@ -464,14 +498,16 @@ class Sheet:
 
     def label_row(self, label: str, values: str, values_x: float) -> None:
         """A skills row: the label ('Languages:') from the left margin, the values in their own column from
-        `values_x`, wrapping inside it. Real spaces fill the gap, so a reader that groups text by position keeps the
-        label and its values on one line. The row stays on one page."""
+        `values_x`, wrapping inside it. Real spaces fill the gap on every line of the row: a reader that groups text by
+        position (pdfminer, and ATS built like it) then keeps the label and its values on one line, and keeps a wrapped
+        line with its row (a line starting at the values' column was read after the next row). The row stays on one
+        page."""
         height = self.size * self.line
         lines = self.wrap([Run(values)], self.width - values_x, self.size) or [[]]
         self.keep(len(lines) * height)
         label_w = text_width(label, SEMIBOLD, self.size)
         space_w = text_width(" ", REGULAR, self.size)
-        count = int((values_x - label_w) // space_w)
+        count, indent = int((values_x - label_w) // space_w), int(values_x // space_w)
         for index, line in enumerate(lines):
             self._ensure(height)
             if index == 0:
@@ -479,6 +515,8 @@ class Sheet:
                 if count > 0:
                     pieces.append(Piece(" " * count, REGULAR, count * space_w))
                 self._draw(pieces, self.margin, self.y, self.size, height)
+            elif indent > 0:
+                self._draw([Piece(" " * indent, REGULAR, indent * space_w)], self.margin, self.y, self.size, height)
             self._draw(line, self.margin + values_x, self.y, self.size, height)
             self.y += height
 
@@ -586,8 +624,9 @@ def split_job_line(company: Company, title: str, size: float, width: float) -> t
 
     The first part is the title and as many whole ' · ' parts after it as fit in `width` (the room left of the dates,
     at font size `size`); the rest goes under it, from the left margin and without its leading '· ', so a long line
-    breaks before the company. A title too long on its own wraps by words where it is drawn. The second part is []
-    when one line holds everything. The PDF and the Word file both use it."""
+    breaks between two parts (before the company, the place or the work mode), never inside one. A title too long on
+    its own wraps by words where it is drawn. The second part is [] when one line holds everything. The PDF and the
+    Word file both use it."""
     parts = job_parts(company)
     used, kept = text_width(title, SEMIBOLD, size), 0
     for part in parts:
