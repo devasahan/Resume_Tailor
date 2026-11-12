@@ -5,6 +5,7 @@ import pytest
 from app.llm.base import LLMClient, LLMResult, ProviderError, Usage
 from app.llm.fake_client import FakeClient
 from app.pipeline.compare import compare
+from app.pipeline.fit import LADDER
 from app.pipeline.tailor import run_tailor
 from app.schemas import TailorResult
 
@@ -19,7 +20,8 @@ def tailor(router, db, profile, jd, model="demo-concise", **kw):
 
 def test_demo_run_is_ok_within_two_pages_and_keeps_fixed_facts(router, db, profile, jd):
     result = tailor(router, db, profile, jd)
-    assert result.status == "ok" and result.fits and result.pages == 2 and result.style.font_pt == 10.5
+    assert result.status == "ok" and result.fits and result.pages == 2
+    assert (result.style.font_pt, result.style.margin_in) == LADDER[0]  # two well-filled pages at the design's sizes
     assert [len(e.bullets) for e in result.resume.experience] == [8, 6, 5]  # the recent roles get the most detail
     assert [s.product for s in result.career_plan] == ["", "", ""]  # the demo knows no companies: generic context
     assert result.resume.profile == profile  # name, contact, companies, dates, education untouched

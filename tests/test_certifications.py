@@ -359,8 +359,8 @@ def test_a_demo_run_prints_only_the_persons_own(router, db, certified):
     text = text_of(render_resume_pdf(result.resume, result.style)[0])
     assert text.index("EDUCATION") < text.index("CERTIFICATIONS") < text.index("Scrum Alliance")
     assert "Databricks" not in text and "Azure Solutions Architect" not in text
-    words = [p.text for p in Document(io.BytesIO(resume_docx(result.resume, result.style))).paragraphs]
-    assert words[words.index("CERTIFICATIONS") + 1] == f"{AWS.name} | Amazon Web Services\t2023"
+    words = [p.text.strip() for p in Document(io.BytesIO(resume_docx(result.resume, result.style))).paragraphs]
+    assert words[words.index("CERTIFICATIONS") + 1] == f"{AWS.name} · Amazon Web Services\t2023"
 
 
 def test_no_certification_no_section(router, db, profile):
@@ -716,10 +716,10 @@ def test_the_resume_shows_both_dates(certified):
     resume = validate.build_resume(certified, make_output())
     resume.certifications = list(certified.certifications)
     text = " ".join(text_of(render_resume_pdf(resume, FitStyle())[0]).split())
-    assert "Amazon Web Services Mar 2023 - Mar 2026" in text and "Scrum Alliance Feb 2020" in text
+    assert "Amazon Web Services Mar 2023 – Mar 2026" in text and "Scrum Alliance Feb 2020" in text
     assert "PMP Expires Jun 2027" in text
     words = [p.text for p in Document(io.BytesIO(resume_docx(resume, FitStyle()))).paragraphs]
-    assert "AWS Certified Developer – Associate | Amazon Web Services\tMar 2023 - Mar 2026" in words
+    assert "AWS Certified Developer – Associate · Amazon Web Services\tMar 2023 – Mar 2026" in words
 
 
 def test_the_profile_page_names_the_expired_ones(client):

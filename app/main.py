@@ -36,6 +36,7 @@ from .parsing.heuristic import MAX_OWN_CERTIFICATIONS, read_certification_list
 from .parsing.resume_parser import MAX_BYTES, extract_text, parse_resume, profile_warnings, read_resume
 from .pipeline import validate
 from .pipeline.facts import is_expired
+from .pipeline.fit import current_style, saved_resume_pdf
 from .pipeline.generate import GenerationFailed
 from .pipeline.job_facts import check_job_facts
 from .prompts import METRICS_MODES
@@ -1267,14 +1268,15 @@ def create_app(db: Database | None = None, registry: Registry | None = None, rou
     def api_resume_pdf(run_id: int, download: int = 0, user: auth.User = Depends(current_user)):
         """The resume PDF, for the preview (inline) and the download. A file this process still keeps for the same
         text, style and title is served as it is (the run's own file, right after the run); otherwise the resume is
-        laid out now, and that file is kept for the download that usually follows the preview."""
+        laid out now (a run saved before the restyle in the current design, within its page count: see
+        saved_resume_pdf), and that file is kept for the download that usually follows the preview."""
         result = load_run(run_id, user)
         if result.resume is None:
             raise HTTPException(404, "No resume in this run.")
         document = document_word(result)
         pdf = recent_resume_pdf(result.resume, result.style, document)
         if pdf is None:
-            pdf, _pages = render_resume_pdf(result.resume, result.style, document)
+            pdf = saved_resume_pdf(result.resume, result.style, result.pages, document)
             remember_resume_pdf(result.resume, result.style, document, pdf)
         name = download_name(result, "pdf")
         if download:
@@ -1288,7 +1290,8 @@ def create_app(db: Database | None = None, registry: Registry | None = None, rou
             raise HTTPException(404, "No resume in this run.")
         name = download_name(result, "docx")
         log_download(user, run_id, result, "resume", "docx", name)
-        return file_response(resume_docx(result.resume, result.style, document_word(result)), DOCX, "attachment", name)
+        docx = resume_docx(result.resume, current_style(result.style), document_word(result))  # sizes of the new look
+        return file_response(docx, DOCX, "attachment", name)
 
     @app.get("/api/runs/{run_id}/cover.pdf")
     def api_cover_pdf(run_id: int, download: int = 0, user: auth.User = Depends(current_user)):

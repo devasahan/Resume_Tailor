@@ -7,11 +7,11 @@ from docx import Document
 from pypdf import PdfReader
 
 from app.pipeline import validate
-from app.pipeline.fit import MAX_PAGES, trim_to_fit, try_styles
+from app.pipeline.fit import LADDER, MAX_PAGES, trim_to_fit, try_styles
 from app.render import pdf as pdf_module
 from app.render.docx import cover_docx, resume_docx
 from app.render.pdf import (
-    BULLET_X, TEXT_X, Run, Sheet, contact_line, fmt_dates, render_cover_pdf, render_resume_pdf,
+    REGULAR, Run, Sheet, contact_line, fmt_dates, render_cover_pdf, render_resume_pdf, text_width,
 )
 from app.schemas import (
     Contact, CoverLetter, ExperienceOut, FitStyle, SkillGroup, TailoredSections, TailorOutput,
@@ -36,7 +36,7 @@ def test_one_page_with_text_in_reading_order(resume):
     order = ["Jordan Rivera", "SUMMARY", "SKILLS", "EXPERIENCE", "Northwind Labs", "Contoso Systems", "Fabrikam", "EDUCATION", "University of Texas at Austin"]
     positions = [text.index(item) for item in order]
     assert positions == sorted(positions)
-    assert "Mar 2022 - Present" in text and "Remote" in text and "B.S., Computer Science" in text
+    assert "Mar 2022 – Present" in text and "Remote" in text and "B.S., Computer Science" in text
 
 
 def test_dates_stay_on_the_job_line_for_layout_readers(resume):
@@ -47,11 +47,11 @@ def test_dates_stay_on_the_job_line_for_layout_readers(resume):
         exp.bullets = [sentence, sentence]
     pdf, _ = render_resume_pdf(resume, FitStyle())
     lines = [" ".join(line.split()) for line in pdfminer.extract_text(io.BytesIO(pdf)).splitlines()]
-    for name, dates in (("Northwind Labs", "Mar 2022 - Present"), ("Contoso Systems", "Jun 2019 - Feb 2022"),
-                        ("Fabrikam", "Jul 2016 - May 2019"), ("University of Texas at Austin", "2016")):
+    for name, dates in (("Northwind Labs", "Mar 2022 – Present"), ("Contoso Systems", "Jun 2019 – Feb 2022"),
+                        ("Fabrikam", "Jul 2016 – May 2019"), ("University of Texas at Austin", "2016")):
         line = next(line for line in lines if name in line)
         assert line.endswith(dates), line
-    assert text_of(pdf).count("Mar 2022 - Present") == 1  # the plain reader sees the dates once too
+    assert text_of(pdf).count("Mar 2022 – Present") == 1  # the plain reader sees the dates once too
 
 
 def test_metadata_and_embedded_font(resume):
@@ -65,8 +65,10 @@ def test_metadata_and_embedded_font(resume):
         font = ref.get_object()
         descendant = font["/DescendantFonts"][0].get_object()
         descriptor = descendant["/FontDescriptor"].get_object()
-        embedded.append(("Carlito" in str(font["/BaseFont"]), "/FontFile2" in descriptor))
-    assert embedded and all(is_carlito and has_file for is_carlito, has_file in embedded)
+        file = descriptor.get("/FontFile2")
+        truetype = file is not None and file.get_object().get_data()[:4] == b"\x00\x01\x00\x00"  # glyf outlines
+        embedded.append(("Inter" in str(font["/BaseFont"]), truetype))
+    assert embedded and all(is_inter and truetype for is_inter, truetype in embedded)
 
 
 def test_docx_metadata_names_the_candidate_not_the_library(resume):
@@ -130,13 +132,13 @@ def test_moderate_overflow_is_fixed_by_shrinking_only(profile):
     resume = long_resume(profile, bullets=14)
     _, pages = render_resume_pdf(resume, FitStyle())
     found = try_styles(resume)
-    assert pages == 3 and found is not None and found[1] == 2 and found[0].font_pt == 10.0
+    assert pages == 3 and found is not None and found[1] == 2 and (found[0].font_pt, found[0].margin_in) == LADDER[2]
     assert any("Font reduced" in n and "two pages" in n for n in found[3])
 
 
 def test_a_full_second_page_keeps_the_largest_font(profile):
-    found = try_styles(long_resume(profile, bullets=10))  # page 2 about half full at 10.5 pt
-    assert found[1] == 2 and found[0].font_pt == 10.5 and found[3] == []
+    found = try_styles(long_resume(profile, bullets=10))  # page 2 well filled at the design's own sizes
+    assert found[1] == 2 and (found[0].font_pt, found[0].margin_in) == LADDER[0] and found[3] == []
 
 
 def test_a_nearly_empty_second_page_becomes_one_page_at_a_smaller_font(profile):
@@ -146,15 +148,16 @@ def test_a_nearly_empty_second_page_becomes_one_page_at_a_smaller_font(profile):
     assert found[1] == 1 and found[0].font_pt < 10.5 and any("one page" in n for n in found[3])
     nothing_fits_on_one = long_resume(profile, bullets=7)  # no step reaches one page: the largest font, two pages
     found = try_styles(nothing_fits_on_one)
-    assert found[1] == 2 and found[0].font_pt == 10.5
+    assert found[1] == 2 and (found[0].font_pt, found[0].margin_in) == LADDER[0]
 
 
 def _lines_by_page(resume, style):
-    drawn = []
+    drawn, indents = [], {}
     original = pdf_module.Sheet._draw
 
     def spy(self, line, x, y, size, height):
         drawn.append((self.pdf.page, y, round(x - self.margin, 2), "".join(p.text for p in line)))
+        indents.update(text=round(self.text_x, 2), marker=round(self.bullet_x, 2))  # a bullet's text and its marker
         return original(self, line, x, y, size, height)
 
     pdf_module.Sheet._draw = spy
@@ -162,7 +165,7 @@ def _lines_by_page(resume, style):
         pages = render_resume_pdf(resume, style)[1]
     finally:
         pdf_module.Sheet._draw = original
-    return pages, drawn
+    return pages, drawn, indents
 
 
 @pytest.mark.parametrize("seed", range(12))
@@ -171,7 +174,8 @@ def test_page_breaks_never_split_a_bullet_or_leave_a_job_title_alone(profile, se
     resume = long_resume(profile, bullets=rng.randint(8, 12))
     for exp in resume.experience:  # bullets of different lengths move the break around
         exp.bullets = [b + " Extra detail." * rng.randint(0, 4) for b in exp.bullets]
-    pages, drawn = _lines_by_page(resume, FitStyle(font_pt=rng.choice([10.5, 10.0, 9.5])))
+    font_pt, margin_in = rng.choice(LADDER)
+    pages, drawn, indents = _lines_by_page(resume, FitStyle(font_pt=font_pt, margin_in=margin_in))
     assert pages >= 2
     for page in range(1, pages):
         bottom_y = max(y for p, y, _x, _t in drawn if p == page)
@@ -181,16 +185,14 @@ def test_page_breaks_never_split_a_bullet_or_leave_a_job_title_alone(profile, se
         top_y = min(y for p, y, _x, _t in drawn if p == page + 1)
         top = [(x, t) for p, y, x, t in drawn if p == page + 1 and y == top_y]
         xs = {x for x, _t in top}
-        assert not (TEXT_X in xs and BULLET_X not in xs), top  # the next page never starts mid-bullet
+        assert not (indents["text"] in xs and indents["marker"] not in xs), top  # never starts mid-bullet
 
 
-@pytest.mark.parametrize("stacked", [False, True])
-def test_docx_keeps_job_titles_with_their_bullets(profile, stacked):
-    doc = Document(io.BytesIO(resume_docx(long_resume(profile, bullets=2), FitStyle(stacked=stacked))))
+def test_docx_keeps_job_titles_with_their_bullets(profile):
+    doc = Document(io.BytesIO(resume_docx(long_resume(profile, bullets=2), FitStyle())))
     paragraphs = doc.paragraphs
-    names = tuple(company.name for company in profile.companies)
-    rows = [p for p in paragraphs if p.text.startswith(names) or p.text == "Data Engineer"]
-    assert len(rows) == (6 if stacked else 3)  # stacked: the company line, then the title line
+    rows = [p for p in paragraphs if p.text.startswith("Data Engineer · ")]  # the title first, then the company
+    assert len(rows) == 3
     assert all(p.paragraph_format.keep_with_next for p in rows)  # a job's header stays with its first bullet
     assert all(p.paragraph_format.keep_together for p in paragraphs if p.style.name == "List Bullet")
     assert not any(p.text.startswith("Tech") for p in paragraphs) and not doc.tables
@@ -281,7 +283,7 @@ def test_cover_letter_starts_at_the_greeting_under_the_resume_header(resume):
 
 def test_a_long_cover_letter_stays_on_one_page(resume):
     long = CoverLetter(greeting="Dear Hiring Manager,", closing="Sincerely,", company_name="Acme Corp",
-                       paragraphs=[" ".join(["Delivered reliable data pipelines for the analytics team."] * 13)] * 4)
+                       paragraphs=[" ".join(["Delivered reliable data pipelines for the analytics team."] * 16)] * 4)
     from app.render.pdf import COVER_STYLES, _cover
 
     assert _cover(resume, long, "Letter", *COVER_STYLES[0])[1] == 2  # too long at full size
@@ -290,39 +292,40 @@ def test_a_long_cover_letter_stays_on_one_page(resume):
 
 
 def test_the_cover_contact_line_breaks_between_items(resume):
-    from app.render.pdf import COVER_STYLES, contact_lines
+    from app.render.pdf import CONTACT_SIZE, COVER_STYLES, DESIGN_SIZE, contact_lines
 
     resume.profile.contact = Contact(location="San Francisco Bay Area, CA", phone="+1 (555) 010-2030",
                                      email="jordan.alexander.rivera@example-mail.com",
                                      linkedin="https://www.linkedin.com/in/jordan-alexander-rivera-123456",
                                      website="https://github.com/jordan-alexander-rivera")
-    sheet = Sheet("Letter", 72, COVER_STYLES[0][0], 1.35, "t", "a")
-    lines = contact_lines(sheet, resume.profile.contact, 10)
-    assert len(lines) == 2 and " | ".join(lines) == contact_line(resume.profile.contact)
-    assert all(sheet.measure(line, False, 10) <= sheet.width for line in lines)
+    sheet = Sheet("Letter", 72, COVER_STYLES[0][0], 1.42, "t", "a")
+    size = CONTACT_SIZE * DESIGN_SIZE  # the letter's header is the resume's at its first step
+    lines = contact_lines(resume.profile.contact, size, sheet.width)
+    assert len(lines) == 2 and " · ".join(lines) == contact_line(resume.profile.contact)
+    assert all(text_width(line, REGULAR, size) <= sheet.width for line in lines)
+    text = text_of(render_cover_pdf(resume, CoverLetter(greeting="Dear Sam,", paragraphs=["One."], closing="Best,"))[0])
+    assert text.splitlines()[2:4] == lines  # as drawn: the lines break between items
 
 
 def test_docx_resume_content_and_layout_primitives(resume):
     doc = Document(io.BytesIO(resume_docx(resume, FitStyle())))
-    texts = [p.text for p in doc.paragraphs]
+    texts = [p.text.strip() for p in doc.paragraphs]  # a heading ends in the tab that draws its rule
     assert resume.headline in texts and "SUMMARY" in texts and "EXPERIENCE" in texts
-    assert "Northwind Labs | Engineer 0 | Remote\tMar 2022 - Present" in texts  # the company first, on one line
-    texts = [p.text for p in Document(io.BytesIO(resume_docx(resume, FitStyle(stacked=True)))).paragraphs]
-    row = texts.index("Northwind Labs | Remote\tMar 2022 - Present")
-    assert texts[row + 1] == "Engineer 0"  # stacked: the title on its own line under the company
+    assert "Engineer 0 · Northwind Labs · Remote\tMar 2022 – Present" in texts  # the title first, on one line
     assert not doc.tables and not doc.inline_shapes  # ATS-friendly: no tables or images
 
 
 def test_small_helpers():
-    assert contact_line(Contact(email="a@b.c", phone="1", location="X")) == "X | 1 | a@b.c"
+    assert contact_line(Contact(email="a@b.c", phone="1", location="X")) == "X · 1 · a@b.c"
     assert contact_line(Contact()) == ""
-    assert fmt_dates("Jan 2020", "Present") == "Jan 2020 - Present" and fmt_dates("", "2016") == "2016" and fmt_dates("", "") == ""
+    assert fmt_dates("Jan 2020", "Present") == "Jan 2020 – Present"
+    assert fmt_dates("", "2016") == "2016" and fmt_dates("", "") == ""
 
 
 def test_contact_line_uses_the_usual_resume_order_whatever_the_input_order():
     contact = Contact(website="https://github.com/jrivera/", linkedin="https://www.linkedin.com/in/jrivera/",
                       email="jordan@example.com", phone="(555) 010-2030", location="Austin, TX")
     assert contact_line(contact) == (
-        "Austin, TX | (555) 010-2030 | jordan@example.com | linkedin.com/in/jrivera | github.com/jrivera")
+        "Austin, TX · (555) 010-2030 · jordan@example.com · linkedin.com/in/jrivera · github.com/jrivera")
     assert contact_line(Contact(email="jordan@example.com", location="Austin, TX", phone="  ")) == (
-        "Austin, TX | jordan@example.com")  # missing parts are left out
+        "Austin, TX · jordan@example.com")  # missing parts are left out

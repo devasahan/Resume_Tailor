@@ -11,6 +11,7 @@ import pytest
 
 from app import main, prompts, timing
 from app.llm.base import LLMClient, LLMError
+from app.pipeline import fit
 
 from .conftest import SAMPLE_JD
 from .test_api import save_profile
@@ -40,6 +41,7 @@ def add_up(line):
 
 def test_a_tailoring_and_a_cover_letter_each_log_their_steps(client, caplog):
     save_profile(client)
+    fit._budget.cache_clear()  # a plan kept from another test's run of this resume would load no fonts
     with caplog.at_level(logging.INFO, logger="app"):
         run = client.post("/api/tailor", json={"jd": SAMPLE_JD, "model": "demo-concise"}).json()
         client.post(f"/api/runs/{run['run_id']}/cover-letter", json={})

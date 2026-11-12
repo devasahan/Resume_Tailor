@@ -4,18 +4,17 @@ import asyncio
 import io
 from datetime import date
 
-import pytest
 from docx import Document
 from pypdf import PdfReader
 
 from app.llm.base import LLMClient
 from app.llm.fake_client import FakeClient
 from app.pipeline import validate
-from app.pipeline.fit import bullet_budget, try_styles
+from app.pipeline.fit import bullet_budget
 from app.pipeline.tailor import run_tailor
 from app.prompts import RETRY_MARKER, tailor_system
 from app.render.docx import resume_docx
-from app.render.pdf import Sheet, render_resume_pdf, resume_layout
+from app.render.pdf import TITLE_SIZE, Sheet, render_resume_pdf
 from app.schemas import Company, FitStyle, Profile
 
 from .test_validate import make_output
@@ -96,41 +95,19 @@ def test_no_figures_mode_asks_for_none(router, db, profile, jd):
     assert not any("measured result" in w for w in result.ats_warnings)
 
 
-# ------------------------------------------------------------------ company first, the title below
-def test_the_company_comes_first_and_the_title_has_its_own_line(profile):
+# ------------------------------------------------------------------ the title first, then the company
+def test_the_title_comes_first_on_the_job_line(profile):
     resume = validate.build_resume(profile, make_output())
-    text = "\n".join(page.extract_text() for page in PdfReader(io.BytesIO(render_resume_pdf(
-        resume, FitStyle(stacked=True))[0])).pages)
+    text = PdfReader(io.BytesIO(render_resume_pdf(resume, FitStyle())[0])).pages[0].extract_text()
     lines = [" ".join(line.split()) for line in text.splitlines()]
-    row = lines.index("Northwind Labs | Remote Mar 2022 - Present")
-    assert lines[row + 1] == "Engineer 0"
-    one_line = PdfReader(io.BytesIO(render_resume_pdf(resume, FitStyle())[0])).pages[0].extract_text()
-    assert "Northwind Labs | Engineer 0 | Remote" in " ".join(one_line.split())
+    assert "Engineer 0 · Northwind Labs · Remote Mar 2022 – Present" in lines  # one line, the dates at its end
+    assert "Engineer 1 · Contoso Systems · Dallas, TX · Onsite Jun 2019 – Feb 2022" in lines  # with its place
 
 
-def test_dates_stay_on_the_company_line_for_layout_readers(profile):
-    pdfminer = pytest.importorskip("pdfminer.high_level")
-    pdf, _ = render_resume_pdf(validate.build_resume(profile, make_output()), FitStyle(stacked=True))
-    lines = [" ".join(line.split()) for line in pdfminer.extract_text(io.BytesIO(pdf)).splitlines()]
-    for name, dates in (("Northwind Labs", "Mar 2022 - Present"), ("Contoso Systems", "Jun 2019 - Feb 2022")):
-        assert next(line for line in lines if name in line).endswith(dates)
-
-
-def test_the_two_line_header_is_used_only_when_it_costs_nothing(profile):
-    resume = validate.build_resume(profile, make_output())
-    style, pages, _pdf, notes = try_styles(resume)
-    assert style.stacked and pages == 1 and style.font_pt == 10.5 and not notes
-    sentence = ("Designed and operated reliable data pipelines with Python and SQL for several product teams, "
-                "documenting every decision clearly.")
-    for count in range(12, 40):  # more bullets until two pages are full
-        for exp in resume.experience:
-            exp.bullets = [sentence] * count
-        style, pages, _pdf, _notes = try_styles(resume)
-        if not style.stacked:
-            break
-    assert pages == 2 and not style.stacked  # the title moves onto the company's line ...
-    assert resume_layout(resume, style.model_copy(update={"stacked": True}))[0] == 3  # ... as its own line needs a page
-    assert FitStyle.model_validate({"font_pt": 10.5, "margin_in": 0.65, "paper": "Letter"}).stacked is False
+def test_runs_saved_with_the_title_on_its_own_line_still_load():
+    """Runs saved before the restyle may hold 'stacked' (the title under the company): unused now, never an error."""
+    old = FitStyle.model_validate({"font_pt": 10.5, "margin_in": 0.65, "paper": "Letter", "stacked": True})
+    assert old == FitStyle(font_pt=10.5, margin_in=0.65) and "stacked" not in old.model_dump()
 
 
 def test_the_planned_bullets_are_the_same_as_before():
@@ -145,20 +122,21 @@ def test_a_long_career_keeps_every_bullet(router, db, jd):
         Company(name=f"Employer {i}", start=f"Jan {2023 - 3 * i}", end="Present" if i == 0 else f"Dec {2025 - 3 * i}")
         for i in range(9)])
     result = asyncio.run(run_tailor(router, db, profile=jobs, profile_id=None, jd=jd, model_id="demo-concise"))
-    assert result.status == "ok" and result.fits and result.pages == 2 and not result.style.stacked  # two full pages
+    assert result.status == "ok" and result.fits and result.pages == 2  # two full pages
     assert [len(exp.bullets) for exp in result.resume.experience] == bullet_budget(jobs)
 
 
 # ------------------------------------------------------------------ the title line under the name
 def test_the_title_line_is_larger_but_stays_on_one_line(profile):
-    sheet = Sheet("Letter", 0.65 * 72, 10.5, 1.27, "", "")
-    assert sheet.headline_size("Senior Data Engineer | Python | SQL", 10.5) == 12.5
+    sheet = Sheet("Letter", 0.65 * 72, 10.5, 1.42, "", "")
+    assert sheet.headline_size("Senior Data Engineer | Python | SQL", 10.5) == TITLE_SIZE * 10.5  # the design's 15/13.5
     long = "Senior Distributed Systems and Platform Infrastructure Engineer | Kubernetes | Go | AWS | Terraform | Kafka"
-    assert 10.5 <= sheet.headline_size(long, 10.5) < 12.5
+    assert 10.5 <= sheet.headline_size(long, 10.5) < TITLE_SIZE * 10.5
     resume = validate.build_resume(profile, make_output())
     paragraphs = Document(io.BytesIO(resume_docx(resume, FitStyle()))).paragraphs
     headline = next(p for p in paragraphs if p.text == resume.headline)
-    assert headline.runs[0].bold and headline.runs[0].font.size.pt == 12.5
+    size = round(TITLE_SIZE * FitStyle().font_pt * 2) / 2  # Word keeps half points
+    assert not headline.runs[0].bold and headline.runs[0].font.size.pt == size  # Medium: not bold in Word
 
 
 # ------------------------------------------------------------------ the headline: the role's short name

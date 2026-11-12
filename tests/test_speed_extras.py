@@ -268,7 +268,6 @@ def test_a_changed_resume_style_or_title_is_another_file(profile):
     changed = [
         (edited, style, "Resume"),  # an edit
         (ticked, style, "Resume"),  # a ticked certification
-        (resume, FitStyle(stacked=True), "Resume"),
         (resume, FitStyle(font_pt=10.0, margin_in=0.55), "Resume"),
         (resume, FitStyle(paper="A4"), "Resume"),
         (resume, style, "CV"),  # the same text in EU style: another title and language

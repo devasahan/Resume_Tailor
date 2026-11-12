@@ -2,6 +2,9 @@
 
 Used when no real model is configured for parsing (and by the offline demo models). It is
 best-effort: the Profile page always shows the result for the user to correct before saving.
+It also reads the app's own resumes back: job lines title first ("Data Engineer · Northwind Labs ·
+Remote   Mar 2022 – Present") and, in resumes made before the restyle, company first ("Northwind
+Labs | Data Engineer | Remote   Mar 2022 - Present").
 """
 from __future__ import annotations
 
@@ -24,6 +27,7 @@ DATE_RANGE_RE = re.compile(
 POINT_RE = re.compile(rf"(?<![\w/]){_POINT}(?![\w/])", re.IGNORECASE)
 _PRESENT = ("present", "current", "now", "today")
 MODE_RE = re.compile(r"\b(Remote|On-?site|Hybrid)\b", re.IGNORECASE)
+_MODE_WORD = re.compile(r"\s*\(?\b(?:Remote|On-?site|Hybrid)\b\)?", re.IGNORECASE)  # to take it out of a part
 SEPARATOR_RE = re.compile(r"\s*[|•·—–]\s*|\s+-\s+")
 
 EXPERIENCE_HEAD = re.compile(
@@ -68,6 +72,7 @@ _TITLE_IS_CREDENTIAL = re.compile(
 # and the end of a range, the date it expires ("- Mar 2026"; "- Present" or "No Expiration" is none). A number inside
 # a name ("Windows Server 2016", "ISO 9001") is not a date.
 _CERT_YEAR = rf"(?:{_MONTH}\s+)?(?:19|20)\d{{2}}"
+_CERT_DATE = rf"(?:{_CERT_YEAR}|\d{{1,2}}/(?:19|20)\d{{2}})"  # also '03/2026', as a pasted table may give it
 _RANGE_END = rf"(?:\s*(?:-|–|—|to)\s*({_CERT_YEAR}|present|current|no\s+expiration(?:\s+date)?))?"
 CERT_DATE_RE = re.compile(
     rf"(?:\s*[,|(]|\s+[-–—]|\s*\b(?:issued|earned|obtained|awarded|completed|since)\b:?)\s*({_CERT_YEAR})"
@@ -77,9 +82,22 @@ CERT_DATE_RE = re.compile(
 # The date it expires, said in words: 'Expires Jan 2026', 'expiry: 2026', 'valid until Dec 2025', '(exp. 2027)'
 _EXPIRES_RE = re.compile(
     rf"(?:\s*[,|(·]\s*|\s+)?\b(?:expires?|expiry|expiration(?:\s+date)?|exp\.|valid\s+(?:until|through|thru|till))"
-    rf"(?:\s+on)?\s*:?\s*({_CERT_YEAR})\s*\)?",
+    rf"(?:\s+on)?\s*:?\s*({_CERT_DATE})\s*\)?",
     re.IGNORECASE,
 )
+# A month by its name, in full or cut short ('Mar', 'March', 'Sept.'), never a word that starts like one ('Marketing')
+_MONTH_NAME = (r"(?:jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|june?|july?|aug(?:ust)?|sep(?:t(?:ember)?)?|"
+               r"oct(?:ober)?|nov(?:ember)?|dec(?:ember)?)\.?")
+_ROW_DATE = rf"(?:(?:{_MONTH_NAME}\s+|\d{{1,2}}/)?(?:19|20)\d{{2}})"
+# A row's own dates at its end, after the issuer: 'Name · Issuer   Mar 2023 – Mar 2026', 'Name | Issuer   2020' (the
+# app's rows; see _row_dates for when they count)
+_TRAILING_DATES = re.compile(
+    rf"\s({_ROW_DATE})(?:\s*(?:-|–|—|to)\s*({_ROW_DATE}|present|current|no\s+expiration(?:\s+date)?))?\s*$",
+    re.IGNORECASE,
+)
+_BARE_YEAR = re.compile(r"(?:19|20)\d{2}")
+# The separators between a row's fields, with a space on each side: a dash or a dot inside a name never counts
+_ROW_SEPARATOR = re.compile(r"\s[·|]\s")
 
 
 def _expiry(end: str | None) -> str:
@@ -104,15 +122,85 @@ DEGREE_RE = re.compile(
     re.IGNORECASE,
 )
 
+# The word a job title ends with: 'Senior Data Engineer', 'Product Owner', 'Founder & CEO'
+_ROLE_NOUNS = (
+    "engineer|developer|programmer|architect|administrator|admin|analyst|scientist|researcher|designer|manager|"
+    "director|lead|head|officer|executive|president|founder|owner|partner|consultant|specialist|strategist|"
+    "coordinator|associate|assistant|technician|technologist|intern|trainee|apprentice|fellow|student|recruiter|"
+    "sourcer|accountant|auditor|controller|bookkeeper|actuary|underwriter|economist|statistician|nurse|physician|"
+    "therapist|pharmacist|counsel|counselor|counsellor|attorney|lawyer|paralegal|teacher|instructor|lecturer|"
+    "professor|tutor|trainer|coach|educator|editor|writer|copywriter|journalist|producer|marketer|representative|rep|"
+    "agent|advisor|adviser|supervisor|superintendent|planner|buyer|clerk|receptionist|secretary|operator|mechanic|"
+    "electrician|inspector|investigator|contractor|freelancer|generalist|evangelist|advocate|liaison|facilitator|"
+    "sre|sdet|dba|ceo|cto|cfo|coo|cio|ciso|cmo|cpo"
+)
+# ... then maybe a level ('II', '3', 'L5') and a note in brackets ('(Contract)', its ')' maybe cut off by the split)
+TITLE_END_RE = re.compile(
+    rf"\b(?:{_ROLE_NOUNS})(?:\s+(?:i{{1,3}}|iv|v|[1-5]|l\d))?(?:\s*\([^()]*\)?)?$", re.IGNORECASE
+)
+# A title that starts with its rank: 'Head of Data', 'Senior Director of Engineering', 'VP Sales', 'Chief of Staff'
+TITLE_START_RE = re.compile(
+    r"^(?:(?:senior|sr\.?|deputy|associate|assistant|interim|acting|executive)\s+)?"
+    r"(?:(?:head|director|manager|vp|vice\s+president|chief|member|dean|professor)\s+of\b|"
+    r"[sea]?vp\b|vice\s+president\b|chief\s+\w)",
+    re.IGNORECASE,
+)
+# The one comma a title may hold, right after its rank: 'VP, Engineering', 'Senior Manager, Data Engineering'
+_RANK_COMMA_RE = re.compile(r"^(?:senior\s+)?(?:[sea]?vp|vice\s+president|director|head|manager)\s*,\s", re.IGNORECASE)
+# What only a company has: 'Inc.', 'LLC', 'Ltd', 'Corp', 'plc', 'GmbH', '& Co.', a web address ('lead.io'). Not
+# '.net': 'ASP.NET Developer' is a title.
+COMPANY_MARK_RE = re.compile(
+    r"\b(?:inc|llc|ltd|limited|corp|corporation|plc|gmbh|llp|pvt|pty)\b|&\s*co\b|\bco\.(?=\s|$)|"
+    r"\.(?:com|io|ai|org|co|dev|app)\b",
+    re.IGNORECASE,
+)
+# A sub-heading inside a job, never its company (the whole line): 'Key Responsibilities', 'Achievements', 'Tech Stack'
+_JOB_SUB_HEADING = re.compile(
+    r"(?:key\s+|main\s+|major\s+|selected\s+|notable\s+)?(?:responsibilities|achievements|accomplishments|highlights|"
+    r"projects|duties|results|impact|contributions|overview|summary|technologies|tools|tech(?:nology)?\s+stack|"
+    r"environment|skills|clients)",
+    re.IGNORECASE,
+)
+# Small words a name keeps in small letters: 'Bank of America', 'Procter & Gamble'
+_NAME_LINKS = frozenset({"of", "and", "the", "for", "at", "in", "on", "de", "la", "le", "du", "da", "di", "der", "von",
+                         "van", "y", "&", "+"})
+# One date at the end of a job line, when only the start or the end is known: '... · Remote   Present'
+_LONE_DATE = re.compile(rf"\s({_POINT}|Present|Current)\s*$", re.IGNORECASE)
+
 
 def _normalize_mode(text: str) -> str:
     low = text.lower().replace("-", "")
     return {"remote": "Remote", "onsite": "Onsite", "hybrid": "Hybrid"}.get(low, "")
 
 
+def _reads_as_title(part: str) -> bool:
+    """True when a part of a job line reads as a job title: it ends with a role, maybe with a level ('Senior Data
+    Engineer', 'Data Engineer II', 'Software Engineer (Contract)'), or starts with a rank ('Head of Data', 'VP Sales').
+    Never for a company ('Acme Consulting LLC', 'lead.io') or a part holding more than a title ('Graduate Analyst,
+    Initech, Leeds', as a line split only by commas has it)."""
+    text = part.strip(" ,;:")
+    if not text or COMPANY_MARK_RE.search(text):
+        return False
+    if "," in text:  # only a rank's own comma ('VP, Engineering')
+        return text.count(",") == 1 and bool(_RANK_COMMA_RE.match(text))
+    return bool(TITLE_START_RE.match(text) or TITLE_END_RE.search(text))
+
+
+def _reads_as_name(text: str) -> bool:
+    """True when a line reads as a name ('Bluefin Commerce', 'Bank of America', 'eBay'), not a sentence ('Built the
+    data platform'): a few words, each with a capital letter or a digit, apart from small linking words."""
+    words = text.split()
+    return 1 <= len(words) <= 8 and all(
+        word.lower() in _NAME_LINKS or any(ch.isupper() or ch.isdigit() for ch in word) for word in words)
+
+
 def _is_header(line: str) -> str | None:
     bare = line.strip(" :").strip()
     if len(bare) > 40:
+        return None
+    # A job title is no heading, alone or leading its job line ('Experience Designer', 'History Teacher · Lakeside
+    # High   2019 – 2021'): the app's own job lines start with the title
+    if _reads_as_title(SEPARATOR_RE.split(DATE_RANGE_RE.sub(" ", bare), maxsplit=1)[0]):
         return None
     if CERT_HEAD.match(bare):
         return "certifications"
@@ -157,39 +245,135 @@ def _split_sections(lines: list[str]) -> tuple[list[str], dict[str, list[str]]]:
     return head, sections
 
 
-def _parse_company_line(line: str, previous: str | None) -> Company | None:
+def _titled_job_line(text: str) -> bool:
+    """True when text reads as a job line without its dates: parts split by ' · ' or ' | ', the first or the second of
+    them a job title ('Data Engineer · Northwind Labs · Remote', 'Northwind Labs | Data Engineer')."""
+    if not _ROW_SEPARATOR.search(text):
+        return False
+    parts = [part.strip(" ,()") for part in SEPARATOR_RE.split(text) if part.strip(" ,()")]
+    return len(parts) >= 2 and any(_reads_as_title(part) for part in parts[:2])
+
+
+def _job_dates(line: str) -> tuple[str, str, str] | None:
+    """(the line without its dates, start, end) for a job's dated line: a range with any dash ('Mar 2022 – Present',
+    '2019 - 2021'), or one date ending a job line whose start or end is not known ('Data Engineer · Northwind Labs ·
+    Remote   Present': the end). None for any other line."""
     match = DATE_RANGE_RE.search(line)
-    if not match:
-        return None
-    remainder = (line[: match.start()] + " " + line[match.end() :]).strip(" ,;|-–—•·()")
-    if not remainder and previous:  # the date sits on its own line under the company name
-        remainder = previous
+    if match:
+        rest = (line[: match.start()] + " " + line[match.end() :]).strip(" ,;|-–—•·()")
+        start, end = match.group(1).strip(), match.group(2).strip()
+    else:
+        lone = _LONE_DATE.search(line)
+        if not lone or _LIST_MARK.match(line) or not _titled_job_line(line[: lone.start()]):
+            return None
+        rest, start, end = line[: lone.start()].strip(" ,;|-–—•·()"), "", lone.group(1).strip()
+    return rest, start, "Present" if end.lower() in _PRESENT else end
+
+
+def _job_parts(text: str) -> tuple[list[str], str, str]:
+    """A job line's parts without its dates: (the parts kept, in order; location; work mode). A work mode in any part
+    ('Remote', '(Hybrid)') is the mode; a place ('Dallas, TX') after the first part is the location."""
     mode = ""
     location = ""
     kept: list[str] = []
-    for part in (p.strip(" ,()") for p in SEPARATOR_RE.split(remainder)):
+    for part in (p.strip(" ,()") for p in SEPARATOR_RE.split(text)):
         if not part:
             continue
         found = MODE_RE.search(part)
         if found:
             mode = _normalize_mode(found.group(1))
-            part = re.sub(r"\s*\(?\b(?:Remote|On-?site|Hybrid)\b\)?", "", part, flags=re.IGNORECASE).strip(" ,-()")
+            part = _MODE_WORD.sub("", part).strip(" ,-()")
             if not part:
                 continue
         if LOCATION_RE.fullmatch(part) and kept:
             location = part
         else:
             kept.append(part)
-    if not kept:
+    return kept, location, mode
+
+
+def _rest_of_job_line(line: str | None, need_company: bool) -> tuple[str, str, str] | None:
+    """What a title-first job line too long for one line left for the line under it, as (company, location, mode):
+    'Bluefin Commerce · Dallas, TX · Onsite' under a title alone, 'Dallas, TX · Onsite' under a title and its company.
+    None when that line is anything else: a bullet, a dated line, a sub-heading ('Achievements:', 'Key Projects'), a
+    sentence, another title (an old layout's title under its company), or (under a company) no place or work mode."""
+    if (not line or line.endswith(":") or _LIST_MARK.match(line) or _JOB_SUB_HEADING.fullmatch(line)
+            or DATE_RANGE_RE.search(line) or POINT_RE.search(line)):
         return None
-    end = match.group(2).strip()
-    return Company(
-        name=kept[0],
-        start=match.group(1).strip(),
-        end="Present" if end.lower() in ("present", "current", "now", "today") else end,
-        mode=mode,
-        location=location,
-    )
+    company = location = mode = ""
+    others = 0
+    for part in (p.strip(" ,()") for p in SEPARATOR_RE.split(line)):
+        found = MODE_RE.search(part)
+        if found and not mode:  # 'Onsite', or in a part: 'Contoso Systems, Remote'
+            mode = _normalize_mode(found.group(1))
+            part = _MODE_WORD.sub("", part).strip(" ,-()")
+        if not part:
+            continue
+        if LOCATION_RE.fullmatch(part) and not location:
+            location = part
+        elif need_company and not company and not others:  # the company comes first
+            if ":" in part or not _reads_as_name(part) or _reads_as_title(part):
+                return None
+            company = part
+        else:
+            others += 1
+    return (company, location, mode) if (company or location or mode) and others <= 1 else None
+
+
+def _take_rest(company: Company, rest: tuple[str, str, str]) -> bool:
+    """Fill what the employer's dated line left out from the line under it; True when that line gave anything."""
+    name, location, mode = rest
+    taken = False
+    if name:  # under a title alone: the company's own name, in place of the title
+        company.name, taken = name, True
+    if location and not company.location:
+        company.location, taken = location, True
+    if mode and not company.mode:
+        company.mode, taken = mode, True
+    return taken
+
+
+def _parse_company_line(line: str, previous: str | None, following: str | None = None) -> tuple[Company | None, bool]:
+    """(the employer on a dated experience line or None, True when the line under it was read as the rest of it).
+
+    The company comes first in older layouts ('Northwind Labs | Data Engineer | Remote   Mar 2022 - Present') and
+    second after a title ('Data Engineer · Northwind Labs · Austin, TX · Remote   Mar 2022 – Present', the app's own
+    layout, or an upload's 'Title | Company'). A line of dates alone takes the line above it as its text. A title-first
+    line whose company or place did not fit takes them from the line under it ('Bluefin Commerce · Dallas, TX ·
+    Onsite')."""
+    dates = _job_dates(line)
+    if dates is None:
+        return None, False
+    remainder, start, end = dates
+    if not remainder and previous:  # the date sits on its own line under the company name
+        remainder = previous
+    kept, location, mode = _job_parts(remainder)
+    if not kept:
+        return None, False
+    title_first = _reads_as_title(kept[0])
+    name = kept[1] if title_first and len(kept) > 1 and not _reads_as_title(kept[1]) else kept[0]
+    company = Company(name=name, start=start, end=end, mode=mode, location=location)
+    if not title_first:
+        return company, False
+    rest = _rest_of_job_line(following, need_company=len(kept) == 1)
+    return company, rest is not None and _take_rest(company, rest)
+
+
+def _read_companies(lines: list[str]) -> list[Company]:
+    """The employers in the Experience section, each from its dated line, in the resume's order."""
+    companies: list[Company] = []
+    previous: str | None = None
+    index = 0
+    while index < len(lines):
+        line = lines[index]
+        company, took_next = _parse_company_line(line, previous, lines[index + 1] if index + 1 < len(lines) else None)
+        index += 2 if took_next else 1
+        if company:
+            companies.append(company)
+            previous = None
+        elif not MODE_RE.fullmatch(line.strip()):
+            previous = line.strip(" ,|-–—•·")
+    return companies
 
 
 def _take_dates(line: str) -> tuple[str, str, str]:
@@ -207,24 +391,44 @@ def _take_dates(line: str) -> tuple[str, str, str]:
     return rest.strip(" ,;|-–—•·()"), points[0] if len(points) > 1 else "", points[-1]
 
 
+def _degree_and_field(text: str) -> tuple[str, str]:
+    """'B.S., Computer Science' or 'B.S. in Computer Science' -> ('B.S.', 'Computer Science'), cut at whichever of
+    ', ' and ' in ' comes first. A degree without a field stays whole ('MBA')."""
+    text = re.sub(r"\s{2,}", " ", text).strip(" ,-–—")
+    cuts = [(text.find(mark), len(mark)) for mark in (", ", " in ") if text.find(mark) > 0]
+    if not cuts:
+        return text, ""
+    index, width = min(cuts)
+    return text[:index].strip(" ,"), text[index + width :].strip(" ,")
+
+
+def _school_and_degree(text: str) -> tuple[str, str]:
+    """An education line's (school, degree part), in either order: 'B.S., Computer Science · State University' (the
+    app's own row) or 'State University | B.S. in Computer Science'. The school is the part naming a school, one that
+    names no degree first (not 'Master of Science, School of Engineering'); without separators it is the whole line."""
+    parts = [part.strip(" ,-–—") for part in SEPARATOR_RE.split(text)]
+    parts = [part for part in parts if part]
+    schools = [part for part in parts if SCHOOL_RE.search(part)]
+    school = next((part for part in schools if not DEGREE_RE.search(part)), schools[0] if schools else text)
+    return school, next((part for part in parts if part != school and DEGREE_RE.search(part)), "")
+
+
 def _parse_education(lines: list[str]) -> list[Education]:
     entries: list[Education] = []
     for line in lines:
         text, start, end = _take_dates(line)
         if SCHOOL_RE.search(text):
-            school = SEPARATOR_RE.split(text)[0].strip(" ,-–—")
-            entries.append(Education(school=school or text, start=start, end=end))
+            school, degree_part = _school_and_degree(text)
+            entry = Education(school=school or text, start=start, end=end)
+            if degree_part:
+                entry.degree, entry.field = _degree_and_field(degree_part)
+            entries.append(entry)
         elif DEGREE_RE.search(text):
             if not entries:
                 entries.append(Education(school=""))
-            degree_line = re.sub(r"\s{2,}", " ", text).strip(" ,-–—")
             entry = entries[-1]
             if not entry.degree:
-                if " in " in degree_line:
-                    degree, _, fld = degree_line.partition(" in ")
-                    entry.degree, entry.field = degree.strip(" ,"), fld.strip(" ,")
-                else:
-                    entry.degree = degree_line
+                entry.degree, entry.field = _degree_and_field(text)
             if end and not entry.end:
                 entry.start, entry.end = start, end
         elif end and not text and entries and not entries[-1].end:  # the dates on their own line under the school
@@ -245,11 +449,22 @@ def _balanced(part: str) -> str:
     return part
 
 
+def _row_dates(line: str, found: re.Match[str]) -> bool:
+    """True when the dates ending a certification row (`found`, from _TRAILING_DATES) are its own dates: after a ' · '
+    or ' | ' separator ('Name · Issuer   2020'), or dates no name ends with: a month and year or a range ('Name   Mar
+    2024', a row without an issuer). A bare year right after the name is part of it ('MCSA: Windows Server 2016')."""
+    if not line[: found.start()].strip():
+        return False
+    if _ROW_SEPARATOR.search(line[: found.start() + 1]):  # the space before the date closes the separator
+        return True
+    return found.group(2) is not None or not _BARE_YEAR.fullmatch(found.group(1))
+
+
 def _parse_certifications(lines: list[str]) -> list[Certification]:
     """One certification per line: 'Name, Issuer, 2023', 'Name | Issuer | Mar 2023 - Mar 2026', '• Name (2021,
-    expires 2024)'. A name is never split at a dash ('AWS Certified Solutions Architect – Professional'). LinkedIn's own
-    lines ('Issued Jan 2023 · Expires Jan 2026', 'Expires Jan 2026', 'Credential ID ...') are not certifications: their
-    dates are the one above's."""
+    expires 2024)', the app's own 'Name · Issuer   Mar 2023 – Mar 2026'. A name is never split at a dash ('AWS Certified
+    Solutions Architect – Professional'). LinkedIn's own lines ('Issued Jan 2023 · Expires Jan 2026', 'Expires Jan
+    2026', 'Credential ID ...') are not certifications: their dates are the one above's."""
     certifications: list[Certification] = []
     for raw in lines:
         line = _LIST_MARK.sub("", raw.strip())
@@ -281,13 +496,17 @@ def _parse_certifications(lines: list[str]) -> list[Certification]:
         if lead:
             year, expires, line = lead.group(1), expires or _expiry(lead.group(2)), line[lead.end():]
         line = re.sub(r"\s*\(([^()]*,[^()]*)\)\s*$", r", \1", line)  # 'Name (Issuer, 2020)' -> fields
-        dated = CERT_DATE_RE.search(" " + line)
-        if dated:
+        trailing = _TRAILING_DATES.search(line)
+        if trailing and _row_dates(line, trailing):  # 'Name · Issuer   Mar 2023 – Mar 2026'
+            year, expires = year or trailing.group(1), expires or _expiry(trailing.group(2))
+            line = line[: trailing.start()].rstrip(" ·|,;")
+        elif dated := CERT_DATE_RE.search(" " + line):
             year, expires = year or dated.group(1), expires or _expiry(dated.group(2))
             spaced = " " + line
             line = (spaced[: dated.start()] + spaced[dated.end():]).strip()
-        # ' | ' is the box's own separator, so a name may keep a comma ('Oracle Certified Professional, Java SE 11')
-        pieces = re.split(r"\s+\|\s+", line) if " | " in line else re.split(r"\s*[|·]\s*|,\s+", line)
+        # ' | ' (the box's and older resumes') and ' · ' (the app's rows) separate the fields, so a name may keep a
+        # comma ('Oracle Certified Professional, Java SE 11')
+        pieces = re.split(r"\s+[|·]\s+", line) if _ROW_SEPARATOR.search(line) else re.split(r"\s*[|·]\s*|,\s+", line)
         parts = [_balanced(part.strip(" ,;|")) for part in pieces]
         parts = [part for part in parts if part]
         if not parts or not re.search(r"[A-Za-z]", parts[0]):
@@ -370,7 +589,8 @@ def read_certification_list(text: str) -> list[Certification]:
 
 
 def parse_resume_text(text: str) -> Profile:
-    lines = [ln.strip() for ln in text.replace("\r", "").splitlines() if ln.strip()]
+    # A tab is a gap like the spaces before right-aligned dates: Word files (the app's own too) put dates on a tab stop
+    lines = [ln.replace("\t", "   ").strip() for ln in text.replace("\r", "").splitlines() if ln.strip()]
     head, sections = _split_sections(lines)
     top = head[:10] if head else lines[:10]
 
@@ -400,20 +620,10 @@ def parse_resume_text(text: str) -> Profile:
         if location:
             break
 
-    companies: list[Company] = []
-    previous: str | None = None
-    for line in sections["experience"]:
-        company = _parse_company_line(line, previous)
-        if company:
-            companies.append(company)
-            previous = None
-        elif not MODE_RE.fullmatch(line.strip()):
-            previous = line.strip(" ,|-–—•·")
-
     return Profile(
         name=name,
         contact=Contact(email=email, phone=phone, linkedin=linkedin, location=location),
-        companies=companies,
+        companies=_read_companies(sections["experience"]),
         education=_parse_education(sections["education"]),
         certifications=_parse_certifications(sections["certifications"]),
     )

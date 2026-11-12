@@ -2,17 +2,29 @@
 
   0. before the model writes anything, plan how many full-length bullets fit (bullet_budget), so the
      first draft fits and nothing has to be cut
-  1. pick the largest font and margins that fit (never below 9.5 pt / 0.5 in); a second page that would hold
-     only a few lines is avoided by a smaller step that fits everything on one page
+  1. pick the largest font and margins that fit (never below 8.2 pt / 0.5 in); a second page that would hold
+     only a few lines is avoided by a smaller step that fits everything on one page, and the design's own sizes
+     are used when they need no more pages than that
   2. (done by the caller) ask the model once more with a smaller bullet budget
   3. drop the last bullet of the roles with the most bullets, oldest first, keeping 2 per role
+
+The size ladder starts with the design's own sizes; the steps after it are calibrated to hold as much text per page as
+the five steps before the restyle (Carlito, 10.5 to 9.5 pt), so every bullet plan stays as it was. Runs saved before the
+restyle hold an old step: current_style and saved_resume_pdf show them in the new look.
 """
 from __future__ import annotations
 
 from datetime import date
 from functools import lru_cache
 
-from ..render.pdf import render_resume_pdf, resume_layout, resume_sheet
+from ..render.pdf import (
+    DESIGN_MARGIN,
+    DESIGN_SIZE,
+    Sheet,
+    render_resume_pdf,
+    resume_layout,
+    resume_sheet,
+)
 from ..schemas import (
     MAX_CERTIFICATIONS,
     FitStyle,
@@ -23,7 +35,19 @@ from ..schemas import (
 )
 from .facts import bullet_caps, is_expired, stay_months
 
-LADDER = [(10.5, 0.65), (10.25, 0.6), (10.0, 0.55), (9.75, 0.5), (9.5, 0.5)]
+LADDER = [
+    (DESIGN_SIZE, DESIGN_MARGIN),  # the design's own sizes (13.5 px body text, 64 px sides): the design exactly
+    # Inter in these sizes holds as much text per page as Carlito did in the old ladder's sizes, step for step (its
+    # taller small letters make 9 pt look like 10.5 pt Calibri). Measured on the tests' resumes: 8.45 pt plans every
+    # bullet budget as 9.75 pt did; the other steps match the page counts of the old ones within about 2%.
+    (9.1, 0.67), (9.05, 0.6), (8.8, 0.55), (8.45, 0.5),
+    # The floor holds at least what the old 9.5 pt floor held, also for a long career of many short jobs (the design
+    # gives each job more room than the old layout did), so nothing that fitted before is cut now. Inter's small
+    # letters at 8.2 pt are within about 1% as tall as Calibri's at 9.5 pt.
+    (8.2, 0.5),
+]
+CALIBRATED = 1  # LADDER[CALIBRATED + i] holds as much as OLD_LADDER[i]: only a step below LADDER[CALIBRATED] is noted
+OLD_LADDER = [(10.5, 0.65), (10.25, 0.6), (10.0, 0.55), (9.75, 0.5), (9.5, 0.5)]  # (pt, in) before the restyle
 MAX_PAGES = 2
 MIN_LAST_PAGE_FILL = 0.25  # a second page less full than this looks unfinished: one page at a smaller step is better
 
@@ -33,7 +57,7 @@ def styles(paper: str) -> list[FitStyle]:
 
 
 # Placeholder text at the full length the prompt asks for (32-word bullets, an 85-word summary, 32 skills).
-BUDGET_STYLE = 3  # plan at 9.75 pt, keeping the last ladder step (9.5 pt) as headroom for the longest allowed text
+BUDGET_STYLE = 4  # plan at 8.45 pt (the old 9.75 pt step), keeping the last step as headroom for the longest text
 _PLAN_BULLET = (
     "Designed and rolled out the event-driven order service behind the public REST API, adding retries, idempotency "
     "keys and rate limiting so partner integrations stayed stable during seasonal traffic spikes"
@@ -138,31 +162,41 @@ def _pages_note(pages: int) -> str:
     return {1: "one page", 2: "two pages"}.get(pages, f"{pages} pages")
 
 
+def _first_fit(resume: Resume, ladder: list[FitStyle], first: int, document: str) -> tuple[int, Sheet] | None:
+    """The fitting rule on ladder[first:], as before the restyle: the first step that gives one page, or two pages with
+    the second well filled (a second page holding only a few lines is avoided by a smaller step that fits everything
+    on one page); when there is none, the largest step within MAX_PAGES; None when no step is within it."""
+    largest_within = None
+    for index in range(first, len(ladder)):
+        sheet = resume_sheet(resume, ladder[index], document)
+        pages, fill = sheet.pdf.page, sheet.last_page_fill()
+        if pages == 1 or (pages <= MAX_PAGES and fill >= MIN_LAST_PAGE_FILL):
+            return index, sheet
+        if largest_within is None and pages <= MAX_PAGES:
+            largest_within = index, sheet
+    return largest_within
+
+
 def try_styles(resume: Resume, paper: str = "Letter",
                document: str = "Resume") -> tuple[FitStyle, int, bytes, list[str]] | None:
-    """The largest style that fits on at most MAX_PAGES pages, or None. A second page that would hold only a few
-    lines is avoided when a smaller step fits everything on one page. Each job's title then goes on its own line
-    under the company when that still fits the same pages, so it never costs a bullet, a font step or a page.
-    `document` ("Resume", or "CV" in EU style) names the PDF file in its title and language, as the preview does."""
-    layouts = []  # (ladder step, style, pages, the laid-out sheet, kept to build the file from)
-    for index, style in enumerate(styles(paper)):
-        sheet = resume_sheet(resume, style, document)
-        pages, fill = sheet.pdf.page, sheet.last_page_fill()
-        layouts.append((index, style, pages, sheet))
-        if pages == 1 or (pages <= MAX_PAGES and fill >= MIN_LAST_PAGE_FILL):
-            break
-    else:  # no step is both within the limit and well filled: the largest one within the limit
-        layouts = [layout for layout in layouts if layout[2] <= MAX_PAGES][:1]
-        if not layouts:
-            return None
-    index, style, pages, sheet = layouts[-1]
-    stacked = style.model_copy(update={"stacked": True})
-    stacked_sheet = resume_sheet(resume, stacked, document)
-    if stacked_sheet.pdf.page == pages:
-        style, sheet = stacked, stacked_sheet
+    """The largest style that fits on at most MAX_PAGES pages, or None. The calibrated steps pick the size and the
+    page count as before the restyle (_first_fit); when that is LADDER[CALIBRATED], the design's own sizes are used if
+    they need no more pages, so the larger type never adds a page. A note says when the font is smaller than
+    LADDER[CALIBRATED] (as large as before the restyle). `document` ("Resume", or "CV" in EU style) names the PDF file
+    in its title and language, as the preview does."""
+    ladder = styles(paper)
+    found = _first_fit(resume, ladder, CALIBRATED, document)
+    if found is None:
+        return None
+    index, sheet = found
+    if index == CALIBRATED:  # only then can the design's sizes keep the page count: a smaller step means it would not
+        design = resume_sheet(resume, ladder[0], document)
+        if design.pdf.page <= sheet.pdf.page:
+            index, sheet = 0, design
+    style = ladder[index]
     pdf, pages = sheet.finish()
     notes = []
-    if index:
+    if index > CALIBRATED:
         notes.append(f"Font reduced to {style.font_pt:g} pt and margins to {style.margin_in:g} in to fit "
                      f"{_pages_note(pages)}.")
     return style, pages, pdf, notes
@@ -232,7 +266,8 @@ def trim_to_fit(resume: Resume, paper: str = "Letter",
         style, pages, pdf, _notes = found
     else:
         style, pages, pdf = render_smallest(work, paper, document)
-    notes = [f"Font reduced to {style.font_pt:g} pt and margins to {style.margin_in:g} in."] if style != styles(paper)[0] else []
+    reduced = styles(paper).index(style) > CALIBRATED  # smaller than before the restyle's largest step
+    notes = [f"Font reduced to {style.font_pt:g} pt and margins to {style.margin_in:g} in."] if reduced else []
     if removed:
         shown = " / ".join(r[:60] + "..." for r in removed[:MAX_REMOVED_IN_NOTE])
         more = f" and {len(removed) - MAX_REMOVED_IN_NOTE} more" if len(removed) > MAX_REMOVED_IN_NOTE else ""
@@ -240,3 +275,32 @@ def trim_to_fit(resume: Resume, paper: str = "Letter",
     if pages > MAX_PAGES:
         notes.append(f"Still more than {_pages_note(MAX_PAGES)} after trimming. Shorten the text in the editor.")
     return work, style, pages, pdf, notes
+
+
+# ---------------------------------------------------------------------- runs saved before the restyle
+def current_style(style: FitStyle) -> FitStyle:
+    """A saved run's style in the current design. A step of the old ladder (a run saved before the restyle, or an
+    error run's FitStyle() of then) becomes the calibrated step that holds as much text per page; any other style is
+    the current design's already."""
+    pair = (style.font_pt, style.margin_in)
+    if pair not in OLD_LADDER:
+        return style
+    font_pt, margin_in = LADDER[CALIBRATED + OLD_LADDER.index(pair)]
+    return style.model_copy(update={"font_pt": font_pt, "margin_in": margin_in})
+
+
+def saved_resume_pdf(resume: Resume, style: FitStyle, pages: int, document: str = "Resume") -> bytes:
+    """The PDF of a saved run, laid out once. A run saved before the restyle is laid out at current_style(style); only
+    when that takes more pages than the run had (`pages`; MAX_PAGES when not known) are the next, smaller steps tried,
+    and the first that keeps its page count is used (else the smallest). Its text is never trimmed and nothing is
+    saved: the caller keeps the file under the run's saved style (remember_resume_pdf)."""
+    start = current_style(style)
+    if start == style:  # made in the current design: its own style
+        return render_resume_pdf(resume, style, document)[0]
+    ladder, limit = styles(style.paper), pages or MAX_PAGES
+    pdf, laid_out = render_resume_pdf(resume, start, document)
+    for smaller in ladder[ladder.index(start) + 1:]:
+        if laid_out <= limit:
+            break
+        pdf, laid_out = render_resume_pdf(resume, smaller, document)
+    return pdf
