@@ -13,6 +13,7 @@ from __future__ import annotations
 from typing import Literal
 
 from pydantic import BaseModel, Field, field_validator
+from pydantic.json_schema import SkipJsonSchema
 
 
 # ---------------------------------------------------------------- fixed facts (from the base resume)
@@ -85,7 +86,10 @@ class JDAnalysis(BaseModel):
     must_have_skills: list[str]
     nice_to_have_skills: list[str]
     keywords: list[str]
-    key_responsibilities: list[str]
+    # No longer asked for (prompt v35): new runs never used it, and it cost 80-200 written tokens a draft. Kept so runs
+    # saved before still load, and analysis_terms still reads it; SkipJsonSchema keeps it out of the model's schema
+    # (strict_json_schema makes every property it sees required, so a default alone would not).
+    key_responsibilities: SkipJsonSchema[list[str]] = Field(default_factory=list)
 
 
 class SkillGroup(BaseModel):
@@ -270,6 +274,26 @@ class FitStyle(BaseModel):
     stacked: bool = False  # each job's title on its own line under the company (used when it costs no bullet)
 
 
+class CallTime(BaseModel):
+    """One AI call of a run, for the admin."""
+    model: str
+    kind: str  # the answer asked for: tailor_output (a draft), tailor_revision (the rewrite pass), cover_letter
+    seconds: float
+    input: int = 0  # tokens in
+    output: int = 0  # tokens out, thinking included (what is billed)
+    thinking: int = 0  # of which thinking, when the provider says
+    result: Literal["ok", "stopped", "no answer", "failed", "unusable"] = "ok"
+
+
+class RunTiming(BaseModel):
+    """Where a run's time went, for the admin's line on the Tailor page (never shown to users). No key in it is named
+    cover_letter: History finds the runs with a letter by that key in the stored text (COVER_MARK in storage/db.py)."""
+    steps: list[tuple[str, float]] = Field(default_factory=list)  # the job's steps in order, as the server log has them
+    letter_seconds: float = 0.0  # how long the cover letter took, written alongside the layout (0: none asked for)
+    calls: list[CallTime] = Field(default_factory=list)
+    total_seconds: float = 0.0  # from the start of the job until the run is saved (the saving itself not counted)
+
+
 class TailorResult(BaseModel):
     run_id: int | None = None
     requested_model: str
@@ -312,3 +336,4 @@ class TailorResult(BaseModel):
     # did): each later tick starts from them again, so unticking brings those bullets back.
     untrimmed: list[ResumeExperience] = Field(default_factory=list)
     created_at: str = ""
+    timing: RunTiming | None = None  # where the job's time went (admin only); None in older runs

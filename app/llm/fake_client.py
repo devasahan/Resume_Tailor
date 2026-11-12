@@ -349,7 +349,6 @@ class FakeClient(LLMClient):
                 "must_have_skills": keywords[:6],
                 "nice_to_have_skills": keywords[6:10],
                 "keywords": keywords,
-                "key_responsibilities": ["Deliver reliable work", "Collaborate across teams", "Communicate progress clearly"],
             },
             # none while the Certifications section is off (Settings): a real model then lists only the job post's
             # own certifications, which are never printed and only keep their names out of the resume

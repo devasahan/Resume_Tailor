@@ -189,7 +189,7 @@ class Hanging(LLMClient):
 
 
 def run_with_backup(router, db, profile, monkeypatch, *, limit=1, fallback=True):
-    monkeypatch.setattr(tailor, "SWITCH_EXTRA_SECONDS", 0.0)
+    monkeypatch.setattr(tailor, "SWITCH_AFTER_SECONDS", 1.0)
     monkeypatch.setattr(tailor, "LAST_MODEL_SECONDS", 1.0)
     db.set_settings({"resume_time_limit_s": limit, "fallback_models": ["demo-concise"] if fallback else []})
     started = time.perf_counter()
@@ -209,21 +209,18 @@ def test_a_follow_up_skipped_with_no_time_left_never_crashes(router):
     assert out.value == "draft" and out.follow_up == "skipped" and generate._FOLLOW_UP_SECONDS == {}
 
 
-def test_a_model_that_does_not_answer_is_left_for_the_backup(router, db, profile, monkeypatch):
+def test_a_model_that_does_not_answer_is_left_for_the_backup_and_tried_first_again(router, db, profile, monkeypatch):
+    """The owner: 'Should wait until it is tailored. and also most of case should use Gemini 3.8': a model that did not
+    answer in time is not skipped in the next run (it used to rest for 5 minutes, and the backup made every resume)."""
     hanging = Hanging()
     router.overrides["demo-detailed"] = hanging
     result, took = run_with_backup(router, db, profile, monkeypatch)
     assert result.status == "ok" and result.fallback_chain == ["demo-detailed", "demo-concise"] and took < 4
     assert any("demo-detailed could not be used (did not answer within 1 seconds), so demo-concise made this resume"
                in note for note in result.notes)
-    assert result.input_tokens > 0 and generate.resting("demo-detailed")  # its prompt was sent: it counts
-    # the next resume does not wait for it again: it rests, and the backup answers at once
-    again, took = run_with_backup(router, db, profile, monkeypatch)
-    assert hanging.calls == 1 and again.fallback_chain == ["demo-concise"] and took < 2
-    assert any("it is resting after a recent failure" in note for note in again.notes)
-    generate._RESTING_UNTIL["demo-detailed"] = 0.0  # its rest is over: it is tried again
-    run_with_backup(router, db, profile, monkeypatch)
-    assert hanging.calls == 2
+    assert result.input_tokens > 0 and not generate.resting("demo-detailed")  # its prompt was sent: it counts
+    again, _took = run_with_backup(router, db, profile, monkeypatch)
+    assert hanging.calls == 2 and again.fallback_chain == ["demo-detailed", "demo-concise"]  # asked first again
 
 
 def test_the_last_model_is_given_a_bounded_wait_and_always_tried(router, db, profile, monkeypatch):
@@ -262,7 +259,8 @@ def test_a_failed_attempt_is_logged_with_its_reason(router, caplog):
             parse=lambda data: data, context={"jd": "A remote job paying $100,000 a year."}))
     assert out.final_model_id == "demo-concise"
     assert "demo-detailed job_facts attempt 1 failed after" in caplog.text and "HTTP 503" in caplog.text
-    assert "demo-detailed rests for 5 minutes (HTTP 503)" in caplog.text and generate.resting("demo-detailed")
+    # a busy model is asked first again next time: most resumes should come from the chosen model
+    assert "rests for" not in caplog.text and not generate.resting("demo-detailed")
 
 
 
@@ -295,7 +293,8 @@ def test_a_used_up_quota_rests_the_model_as_long_as_the_provider_says(router, ca
     router.overrides["demo-detailed"] = OutOfQuota(86400.0)  # never longer than an hour: a reload is not needed
     ask()
     assert 3500 < generate._RESTING_UNTIL["demo-detailed"] - time.monotonic() <= 3600
-    assert tailor.LAST_MODEL_SECONDS == 60
+    # a slow answer is waited for: 2 minutes before a backup, about 4 for the last model, never the time limit
+    assert tailor.SWITCH_AFTER_SECONDS == 120 and tailor.LAST_MODEL_SECONDS == 250 and tailor.LETTER_WAIT_SECONDS == 120
 
 
 def test_settings_warns_when_every_backup_uses_the_same_key(client):
@@ -323,3 +322,15 @@ def test_the_note_keeps_the_quota_advice_whole(router, db, profile, monkeypatch)
     assert result.status == "ok"
     assert any(f"demo-detailed could not be used ({message}), so demo-concise made this resume" in note
                for note in result.notes)
+
+
+def test_a_slow_answer_from_the_chosen_model_is_used_however_short_the_time_limit(router, db, profile, monkeypatch):
+    """A draft slower than the time limit (1 s here) is still waited for, as long as SWITCH_AFTER_SECONDS: the backup is
+    for a model that fails, not for one that is slow."""
+    monkeypatch.setattr(tailor, "SWITCH_AFTER_SECONDS", 5.0)
+    router.overrides["demo-detailed"] = SlowRewrite(FakeClient(router.registry.get("demo-detailed")), 0.0, first=1.5)
+    db.set_settings({"resume_time_limit_s": 1, "fallback_models": ["demo-concise"]})
+    result = asyncio.run(run_tailor(router, db, profile=profile, profile_id=None, jd=SAMPLE_JD,
+                                    model_id="demo-detailed", save=False))
+    assert result.status == "ok" and result.fallback_chain == ["demo-detailed"]
+    assert not any("could not be used" in note for note in result.notes)

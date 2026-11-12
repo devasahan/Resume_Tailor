@@ -81,6 +81,15 @@ def fresh_model_memory(monkeypatch):
 
 
 @pytest.fixture(autouse=True)
+def fresh_letter_times(monkeypatch):
+    """How long the last cover letter took per model (a resume with a letter keeps that much of its time limit free)
+    belongs to that test only."""
+    from app.pipeline import tailor
+
+    monkeypatch.setattr(tailor, "_LETTER_SECONDS", {})
+
+
+@pytest.fixture(autouse=True)
 def test_accounts(monkeypatch):
     """Test credentials for the admin account, never the developer's real .env values; a cheap scrypt setting
     so hashing does not slow the suite down."""
@@ -88,6 +97,14 @@ def test_accounts(monkeypatch):
     monkeypatch.setenv("ADMIN_PASSWORD", ADMIN_PASSWORD)
     monkeypatch.delenv("COOKIE_SECURE", raising=False)
     monkeypatch.setattr(auth, "SCRYPT_N", 2**4)
+
+
+@pytest.fixture(autouse=True)
+def no_kept_pdfs():
+    """A resume PDF kept in memory by one test (app/render/pdf.py) is never served in another."""
+    from app.render.pdf import forget_resume_pdfs
+
+    forget_resume_pdfs()
 
 
 def log_in(client: TestClient, email: str, password: str) -> TestClient:

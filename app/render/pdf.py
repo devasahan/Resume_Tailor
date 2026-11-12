@@ -7,11 +7,17 @@ tables, images or icons: the layout ATS parsers read best.
 The code is a small typesetter: measure text, wrap it into lines, draw the lines top to bottom.
 Drawing in reading order also gives a clean text layer for ATS extraction. A page break never splits a bullet,
 and never leaves a section heading or a job title alone at the bottom of a page.
+
+The latest resume PDFs are kept in memory (remember_resume_pdf), so the preview and the downloads that follow a run
+serve the file its job made instead of laying the resume out again.
 """
 from __future__ import annotations
 
+import hashlib
 import re
+import threading
 import time
+from collections import OrderedDict
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -305,8 +311,15 @@ class Sheet:
 
 
 # ---------------------------------------------------------------------- resume
+def document_name(spelling: str | None) -> str:
+    """What a run calls its resume, in the PDF's title and the file names: a CV in EU style (British usage), a
+    resume otherwise (US style, and runs made before the style buttons)."""
+    return "CV" if spelling == "eu" else "Resume"
+
+
 def render_resume_pdf(resume: Resume, style: FitStyle, document: str = "Resume") -> tuple[bytes, int]:
-    """Return (pdf bytes, page count). `document` names it in the file's title: "Resume", or "CV" in EU style."""
+    """Return (pdf bytes, page count). `document` names it in the file's title: "Resume", or "CV" in EU style.
+    Always lays the resume out (the server's warm-up relies on it): recent_resume_pdf serves a kept file."""
     return resume_sheet(resume, style, document).finish()
 
 
@@ -405,6 +418,47 @@ def resume_sheet(resume: Resume, style: FitStyle, document: str = "Resume") -> S
             sheet.keep(height)
             sheet.row(left, year)
     return sheet
+
+
+# ---------------------------------------------------------------------- recent resume PDFs
+RECENT_PDFS = 8  # files kept in memory: a run's preview and downloads come soon after it
+_recent_pdfs: OrderedDict[str, bytes] = OrderedDict()  # least recently used first
+_recent_lock = threading.Lock()  # a job's worker thread and the PDF requests' threads use it at once
+
+
+def _pdf_key(resume: Resume, style: FitStyle, document: str) -> str:
+    """What the file is made of: the resume's text and facts, the layout style and the document word. An edit, a
+    ticked certification or another style is another key, so a kept file never stands in for a changed resume."""
+    parts = (resume.model_dump_json(), style.model_dump_json(), document)
+    return hashlib.sha256("\n".join(parts).encode("utf-8")).hexdigest()
+
+
+def remember_resume_pdf(resume: Resume, style: FitStyle, document: str, pdf: bytes) -> None:
+    """Keep a resume PDF just made, such as a job's fitted file. `pdf` must be the file of exactly this resume, style
+    and document (what render_resume_pdf would make of them). The least recently used file goes when more than
+    RECENT_PDFS are kept."""
+    key, pdf = _pdf_key(resume, style, document), bytes(pdf)
+    with _recent_lock:
+        _recent_pdfs[key] = pdf
+        _recent_pdfs.move_to_end(key)
+        while len(_recent_pdfs) > RECENT_PDFS:
+            _recent_pdfs.popitem(last=False)
+
+
+def recent_resume_pdf(resume: Resume, style: FitStyle, document: str) -> bytes | None:
+    """The kept PDF of this resume, style and document, or None when it is not kept (any more)."""
+    key = _pdf_key(resume, style, document)
+    with _recent_lock:
+        pdf = _recent_pdfs.get(key)
+        if pdf is not None:
+            _recent_pdfs.move_to_end(key)  # read again: kept longer
+        return pdf
+
+
+def forget_resume_pdfs() -> None:
+    """Drop every kept PDF (the admin deleted an account, or all data)."""
+    with _recent_lock:
+        _recent_pdfs.clear()
 
 
 # ---------------------------------------------------------------------- cover letter

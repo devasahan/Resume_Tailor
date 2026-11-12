@@ -19,15 +19,14 @@ FOLLOW_UP_SHARE = 0.5  # a follow-up (a fix, not a whole draft) takes at least a
 # How long the last follow-up took, per (model, kind of answer), in this process; one that was stopped at the time
 # limit counts as at least the time it ran. A follow-up that cannot finish in time is not started at all.
 _FOLLOW_UP_SECONDS: dict[tuple[str, str], float] = {}
-# A model that did not answer in time, or failed for a provider reason (overloaded, rate-limited, network), rests this
-# long: while another model follows it in the chain, it is skipped, so every run does not wait for it again first.
-MODEL_REST_SECONDS = 300.0
-QUOTA_REST_SECONDS = 3600.0  # a used-up quota rests the model this long, or less when the provider says so
+# A model whose API key's quota is used up rests this long, or less when the provider says when it resets: while
+# another model follows it in the chain it is skipped, since its provider refuses every call until then. A model that
+# was slow, busy or unreachable is tried first again in the next run: most resumes should come from the chosen model.
+QUOTA_REST_SECONDS = 3600.0
 _RESTING_UNTIL: dict[str, float] = {}  # model id -> time.monotonic() until which it is skipped
-_REST_STATUSES = frozenset({408, 409, 429, 500, 502, 503, 504, 529})
 
 
-def _rest(model_id: str, why: str, seconds: float = MODEL_REST_SECONDS) -> None:
+def _rest(model_id: str, why: str, seconds: float) -> None:
     _RESTING_UNTIL[model_id] = time.monotonic() + seconds
     span = f"{seconds:.0f} seconds" if seconds < 120 else f"{seconds / 60:.0f} minutes"
     log.info("%s rests for %s (%s): the next model in the chain is used meanwhile", model_id, span, why)
@@ -41,15 +40,26 @@ def resting(model_id: str) -> bool:
     return until is not None
 
 
-def record_sent(out: Outcome, router: Router, model_id: str, system: str, user: str) -> None:
+def record_sent(out: Outcome, router: Router, model_id: str, system: str, user: str) -> Usage:
     """A call stopped at the time limit had already sent its whole prompt, which the provider bills: count it
-    (about 4 characters a token, as the demo models do) in the run's cost, Spent today and the daily cost cap."""
+    (about 4 characters a token, as the demo models do) in the run's cost, Spent today and the daily cost cap.
+    Returns the tokens counted."""
     sent = Usage(input_tokens=(len(system) + len(user)) // 4)
     try:
         cost = router.registry.get(model_id).cost(sent)
     except KeyError:
         cost = 0.0
     out.add_usage(sent, cost)
+    return sent
+
+
+def add_call(out: Outcome, model_id: str, kind: str, seconds: float, usage: Usage | None, result: str) -> None:
+    """One AI attempt in the run's timing record: the model, the kind of answer asked for, how long it took, its tokens
+    (in, out with thinking, of which thinking) and how it ended: "ok", "stopped" (at the time limit, after its
+    prompt was sent), "no answer" (in time), "failed" or "unusable"."""
+    usage = usage or Usage()
+    out.calls.append({"model": model_id, "kind": kind, "seconds": round(seconds, 2), "input": usage.input_tokens,
+                      "output": usage.output_tokens, "thinking": usage.thinking_tokens, "result": result})
 
 
 def follow_up_seconds(model_id: str, schema_name: str, first_call_seconds: float) -> float:
@@ -92,6 +102,7 @@ class Outcome(Generic[T]):
     errors: list[str] = field(default_factory=list)
     follow_up: str = ""  # "skipped" or "stopped" when the deadline left no time for the follow-up, else ""
     first_call_seconds: float = 0.0  # how long the first answer took (a whole new draft takes about as long)
+    calls: list[dict] = field(default_factory=list)  # one entry per attempt, see add_call (the admin's timing line)
 
     def add_usage(self, usage: Usage, price_cost: float) -> None:
         self.input_tokens += usage.input_tokens
@@ -126,16 +137,16 @@ async def generate_validated(
     in time (see follow_up_seconds), and it is stopped at the deadline; the first answer is kept either way. A
     follow-up marked `required` ignores the deadline.
     `switch_after` (seconds) stops waiting for a model's answer when another model follows it in the chain, and
-    `last_after` for the last model: that bounds a hanging request and the provider's own retry pauses. A model that
-    did not answer in time, or failed for a provider reason, rests for MODEL_REST_SECONDS: it is skipped while
-    another model follows it (the last model is always tried).
+    `last_after` for the last model: that bounds a hanging request and the provider's own retry pauses. A model whose
+    API key's quota is used up rests (QUOTA_REST_SECONDS): it is skipped while another model follows it (the last
+    model is always tried). A slow or busy model never rests: the next run tries it first again.
     """
     out = outcome or Outcome()
     first = Ask(user, schema, schema_name, parse, context)
     for position, model_id in enumerate(model_ids):
         last = position == len(model_ids) - 1
         if not last and resting(model_id):
-            log.info("%s %s skipped: it is resting after a recent failure, so %s is used", model_id, schema_name,
+            log.info("%s %s skipped: its API key's quota is used up for now, so %s is used", model_id, schema_name,
                      model_ids[position + 1])
             continue
         answer_limit = last_after if last else switch_after
@@ -156,7 +167,8 @@ async def generate_validated(
                 result, spec = await (asyncio.wait_for(call, limit) if limit is not None else call)
             except TimeoutError:
                 ran = time.perf_counter() - started
-                record_sent(out, router, model_id, system, ask.user)  # the provider got the whole prompt
+                sent = record_sent(out, router, model_id, system, ask.user)  # the provider got the whole prompt
+                add_call(out, model_id, ask.schema_name, ran, sent, "stopped" if kept is not None else "no answer")
                 if kept is not None:  # the follow-up ran past the deadline: the first answer is kept
                     log.info("%s %s attempt %d stopped at the time limit after %.1fs", model_id, ask.schema_name,
                              attempt, ran)
@@ -167,13 +179,14 @@ async def generate_validated(
                 out.errors.append(f"{model_id}: did not answer within {limit:.0f} seconds")
                 log.info("%s %s attempt %d: no answer within %.0fs%s", model_id, ask.schema_name, attempt, ran,
                          "" if last else f", switching to {model_ids[position + 1]}")
-                _rest(model_id, f"no answer within {limit:.0f}s")
                 break
-            except CostCapError:
+            except CostCapError:  # stopped before the prompt was sent
+                add_call(out, model_id, ask.schema_name, time.perf_counter() - started, None, "failed")
                 if kept is not None:
                     break
                 raise
             except InvalidOutputError as exc:  # no usable JSON came back: no usage info either
+                add_call(out, model_id, ask.schema_name, time.perf_counter() - started, None, "unusable")
                 out.errors.append(f"{model_id}: {exc}")
                 log.info("%s %s attempt %d failed after %.1fs: %s", model_id, ask.schema_name, attempt,
                          time.perf_counter() - started, str(exc)[:200])
@@ -183,14 +196,13 @@ async def generate_validated(
                     continue
                 break
             except LLMError as exc:
+                add_call(out, model_id, ask.schema_name, time.perf_counter() - started, None, "failed")
                 out.errors.append(f"{model_id}: {exc}")
                 log.info("%s %s attempt %d failed after %.1fs: %s", model_id, ask.schema_name, attempt,
                          time.perf_counter() - started, str(exc)[:200])
                 if isinstance(exc, ProviderError) and exc.quota:
                     _rest(model_id, "its API key's quota is used up", QUOTA_REST_SECONDS if exc.retry_after is None
                           else min(exc.retry_after, QUOTA_REST_SECONDS))
-                elif isinstance(exc, ProviderError) and (exc.status is None or exc.status in _REST_STATUSES):
-                    _rest(model_id, f"HTTP {exc.status}" if exc.status else "network error")
                 break
             took = time.perf_counter() - started
             thinking = f" (thinking {result.usage.thinking_tokens})" if result.usage.thinking_tokens else ""
@@ -204,6 +216,7 @@ async def generate_validated(
             try:
                 value = ask.parse(result.data)
             except ValueError as exc:  # includes pydantic.ValidationError
+                add_call(out, model_id, ask.schema_name, took, result.usage, "unusable")
                 message = str(exc)[:700]
                 out.errors.append(f"{model_id}: invalid structure: {message}")
                 log.info("%s %s attempt %d: unusable answer: %s", model_id, ask.schema_name, attempt, message[:200])
@@ -212,6 +225,7 @@ async def generate_validated(
                     out.retries += 1
                     continue
                 break
+            add_call(out, model_id, ask.schema_name, took, result.usage, "ok")
             if attempt == 1 and refine is not None:
                 follow_up = refine(value)
                 if follow_up is not None and not follow_up.required and deadline is not None:

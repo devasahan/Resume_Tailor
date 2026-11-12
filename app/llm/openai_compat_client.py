@@ -4,7 +4,8 @@ Used for Gemini, Grok, Mistral, DeepSeek, Qwen, GLM, Kimi (see models.yaml). Pro
 what they accept (json_schema vs json_object, reasoning_effort), so a request that gets HTTP
 400/422 is retried with progressively fewer features until one works; the variant that worked is
 remembered for the rest of the process. A rejected API key is not a missing feature: some providers
-(Gemini) answer it with HTTP 400, so it is recognised by its message and reported at once.
+(Gemini) answer it with HTTP 400, so it is recognised by its message and reported at once. Each model keeps one
+connection pool, so its next call reuses the open connection instead of setting up a new one.
 """
 from __future__ import annotations
 
@@ -97,6 +98,8 @@ RETRY_DELAYS = (1.5, 4.0)  # network errors, rate limits (429) and other short h
 # minute, for paid keys too. Tailoring runs as a background job, so the page keeps waiting ("Still tailoring...").
 BUSY = {500, 502, 503, 504}
 BUSY_RETRY_DELAYS = (3.0, 8.0, 15.0, 30.0)
+# A model may think for minutes before it answers; a host that cannot be reached at all is reported much sooner.
+TIMEOUT = httpx.Timeout(240.0, connect=15.0)
 
 
 class OpenAICompatClient(LLMClient):
@@ -110,6 +113,10 @@ class OpenAICompatClient(LLMClient):
         self._transport = transport
         self._sleep = sleep
         self._start = 0  # index of the first variant worth trying (learned at runtime)
+        # One connection pool for all of this model's calls (see _client): a call soon after another one reuses its
+        # connection, with no new TCP and TLS setup through the host's proxy and no new SSL context.
+        self._http: httpx.AsyncClient | None = None
+        self._http_loop: asyncio.AbstractEventLoop | None = None  # the event loop its connections belong to
 
     # ------------------------------------------------------------------ request building
     def _variants(self) -> list[tuple[str, bool]]:
@@ -160,6 +167,27 @@ class OpenAICompatClient(LLMClient):
         return body
 
     # ------------------------------------------------------------------ transport
+    def _client(self) -> httpx.AsyncClient:
+        """This model's connection pool, made on its first call. A connection belongs to the event loop that opened
+        it, so a call in another loop (tests run several asyncio.run loops) gets a new pool, as does a call after the
+        pool was closed. A call never closes the pool: Router.forget_clients drops the whole client when a key
+        changes. httpx's default keep-alive is kept on purpose: a connection idle for more than 5 s is closed instead
+        of reused, so a proxy tunnel that the other end may have dropped meanwhile is never tried again."""
+        loop = asyncio.get_running_loop()
+        if self._http is None or self._http.is_closed or self._http_loop is not loop:
+            self._http = httpx.AsyncClient(transport=self._transport, timeout=TIMEOUT)
+            self._http_loop = loop
+        return self._http
+
+    def _forget_pool(self, http: httpx.AsyncClient) -> None:
+        """A call was stopped part-way (the time limit, or its job was cancelled): the next call starts a new pool.
+        httpx closes the stopped call's connection itself, but httpcore before 1.0.3 leaves it in the pool when the
+        call was stopped while connecting (a slow proxy tunnel), and enough of those block every later call. The
+        old pool is not closed, because calls beside the stopped one may still be using it; it goes away after
+        them."""
+        if self._http is http:
+            self._http, self._http_loop = None, None
+
     async def _post(self, http: httpx.AsyncClient, body: dict) -> httpx.Response:
         url = f"{self.spec.base_url.rstrip('/')}/chat/completions"
         headers = {"Authorization": f"Bearer {self.spec.api_key()}", "Content-Type": "application/json"}
@@ -167,6 +195,8 @@ class OpenAICompatClient(LLMClient):
         while True:
             try:
                 resp = await http.post(url, json=body, headers=headers)
+            except httpx.ReadTimeout as exc:  # no answer for the whole read timeout: asking again would double the wait
+                raise ProviderError(f"{self.spec.label}: no answer within {TIMEOUT.read:g} seconds") from exc
             except (httpx.TimeoutException, httpx.TransportError) as exc:
                 last = ProviderError(f"{self.spec.label}: network error ({type(exc).__name__})")
                 delays = RETRY_DELAYS
@@ -193,9 +223,8 @@ class OpenAICompatClient(LLMClient):
     ) -> LLMResult:
         variants = self._variants()
         resp: httpx.Response | None = None
-        async with httpx.AsyncClient(
-            transport=self._transport, timeout=httpx.Timeout(240.0, connect=15.0)
-        ) as http:
+        http = self._client()  # every attempt and retry of this call uses the same pool
+        try:
             for index in range(self._start, len(variants)):
                 body = self._body(variants[index], system, user, schema, schema_name, max_tokens)
                 resp = await self._post(http, body)
@@ -206,6 +235,9 @@ class OpenAICompatClient(LLMClient):
                 if resp.status_code < 400:
                     self._start = index  # remember only a variant that actually worked
                 break
+        except asyncio.CancelledError:  # stopped from outside, such as asyncio.wait_for at the time limit
+            self._forget_pool(http)
+            raise
         assert resp is not None
         if resp.status_code >= 400 and is_quota_error(resp):
             provider, where = BILLING.get(urlsplit(self.spec.base_url).hostname or "",

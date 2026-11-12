@@ -30,7 +30,7 @@
   <div class="grid2">
     <div><label for="daily_cost_cap_usd">Daily cost cap, USD <span class="opt">(0 = none; soft cap; the day starts at midnight Texas time)</span></label><input type="number" id="daily_cost_cap_usd" min="0" step="0.5"></div>
     <div><label for="retention_days">Delete tailored runs after, days <span class="opt">(and their download history; 0 = keep; uploaded resumes stay until their owner deletes them)</span></label><input type="number" id="retention_days" min="0" max="3650"></div>
-    <div><label for="resume_time_limit_s">Time limit for a resume, seconds <span class="opt">(when the AI is slow, its second polishing pass is skipped to stay within it; 0 = no limit: always polish, best quality but slower)</span></label><input type="number" id="resume_time_limit_s" min="0" max="600" step="5"></div>
+    <div><label for="resume_time_limit_s">Time limit for a resume and its cover letter, seconds <span class="opt">(the AI's answer is always waited for; when it is slow, the second polishing pass is skipped to stay within the limit; with a cover letter, the time the letter usually takes is kept free, so the polishing pass runs less often; 0 = no limit: always polish, best quality but slower)</span></label><input type="number" id="resume_time_limit_s" min="0" max="600" step="5"></div>
     <div><label for="paper_size">Paper size</label><select id="paper_size"><option>Letter</option><option>A4</option></select></div>
     <div><label for="metrics_mode">Numbers in bullets</label><select id="metrics_mode">
       <option value="estimate">Add realistic estimates (each one flagged for you to confirm)</option>

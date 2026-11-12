@@ -138,13 +138,15 @@ def _pages_note(pages: int) -> str:
     return {1: "one page", 2: "two pages"}.get(pages, f"{pages} pages")
 
 
-def try_styles(resume: Resume, paper: str = "Letter") -> tuple[FitStyle, int, bytes, list[str]] | None:
+def try_styles(resume: Resume, paper: str = "Letter",
+               document: str = "Resume") -> tuple[FitStyle, int, bytes, list[str]] | None:
     """The largest style that fits on at most MAX_PAGES pages, or None. A second page that would hold only a few
     lines is avoided when a smaller step fits everything on one page. Each job's title then goes on its own line
-    under the company when that still fits the same pages, so it never costs a bullet, a font step or a page."""
+    under the company when that still fits the same pages, so it never costs a bullet, a font step or a page.
+    `document` ("Resume", or "CV" in EU style) names the PDF file in its title and language, as the preview does."""
     layouts = []  # (ladder step, style, pages, the laid-out sheet, kept to build the file from)
     for index, style in enumerate(styles(paper)):
-        sheet = resume_sheet(resume, style)
+        sheet = resume_sheet(resume, style, document)
         pages, fill = sheet.pdf.page, sheet.last_page_fill()
         layouts.append((index, style, pages, sheet))
         if pages == 1 or (pages <= MAX_PAGES and fill >= MIN_LAST_PAGE_FILL):
@@ -155,7 +157,7 @@ def try_styles(resume: Resume, paper: str = "Letter") -> tuple[FitStyle, int, by
             return None
     index, style, pages, sheet = layouts[-1]
     stacked = style.model_copy(update={"stacked": True})
-    stacked_sheet = resume_sheet(resume, stacked)
+    stacked_sheet = resume_sheet(resume, stacked, document)
     if stacked_sheet.pdf.page == pages:
         style, sheet = stacked, stacked_sheet
     pdf, pages = sheet.finish()
@@ -166,9 +168,9 @@ def try_styles(resume: Resume, paper: str = "Letter") -> tuple[FitStyle, int, by
     return style, pages, pdf, notes
 
 
-def render_smallest(resume: Resume, paper: str = "Letter") -> tuple[FitStyle, int, bytes]:
+def render_smallest(resume: Resume, paper: str = "Letter", document: str = "Resume") -> tuple[FitStyle, int, bytes]:
     style = styles(paper)[-1]
-    pdf, pages = render_resume_pdf(resume, style)
+    pdf, pages = render_resume_pdf(resume, style, document)
     return style, pages, pdf
 
 
@@ -195,10 +197,12 @@ def _without(resume: Resume, order: list[int], k: int) -> Resume:
 MAX_REMOVED_IN_NOTE = 5
 
 
-def trim_to_fit(resume: Resume, paper: str = "Letter") -> tuple[Resume, FitStyle, int, bytes, list[str]]:
+def trim_to_fit(resume: Resume, paper: str = "Letter",
+                document: str = "Resume") -> tuple[Resume, FitStyle, int, bytes, list[str]]:
     """Remove bullets until the resume fits on MAX_PAGES pages (or nothing more can be removed). Works on a copy.
     Fewer bullets never take more room, so the fewest removals that fit are found by halving (a few layouts, not
-    one per removed bullet)."""
+    one per removed bullet). Each job keeps its first 2 bullets, and the headline, summary, skills and titles stay
+    as they are (a cover letter written from them meanwhile stays true). `document`: as in try_styles."""
     order, smallest, seen = _removal_order(resume), styles(paper)[-1], {}
 
     def fits(k: int) -> bool:
@@ -223,11 +227,11 @@ def trim_to_fit(resume: Resume, paper: str = "Letter") -> tuple[Resume, FitStyle
         popped[position] = popped.get(position, 0) + 1
         company = resume.profile.companies[exp.company_index].name
         removed.append(f"{company}: {exp.bullets[len(exp.bullets) - popped[position]]}")
-    found = try_styles(work, paper)  # after trimming, the largest font that fits
+    found = try_styles(work, paper, document)  # after trimming, the largest font that fits
     if found:
         style, pages, pdf, _notes = found
     else:
-        style, pages, pdf = render_smallest(work, paper)
+        style, pages, pdf = render_smallest(work, paper, document)
     notes = [f"Font reduced to {style.font_pt:g} pt and margins to {style.margin_in:g} in."] if style != styles(paper)[0] else []
     if removed:
         shown = " / ".join(r[:60] + "..." for r in removed[:MAX_REMOVED_IN_NOTE])

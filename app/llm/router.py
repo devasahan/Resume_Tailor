@@ -88,9 +88,11 @@ class Router:
             raise ProviderError(f"{spec.label} is not available: {status.reason}")
         return spec
 
-    def check_cost_cap(self) -> None:
+    def check_cost_cap(self, extra: float = 0.0) -> None:
+        """Stop when today's spend reached the daily cap in Settings. `extra`: spent but not saved yet (a draft whose
+        run is saved only after its cover letter), so it counts too."""
         cap = float(self.settings().get("daily_cost_cap_usd") or 0)
-        if cap > 0 and self.db.cost_today() >= cap:
+        if cap > 0 and self.db.cost_today() + extra >= cap:
             raise CostCapError(f"Daily cost cap of ${cap:.2f} reached. Raise it in Settings to continue.")
 
     async def call(

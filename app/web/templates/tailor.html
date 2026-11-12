@@ -57,6 +57,7 @@
         <h2 class="card-title">Your documents</h2>
         <div class="metrics" id="chips"></div>
       </div>
+      <p class="small muted hidden" id="timing" style="margin:0 0 10px"></p>
       <div class="downloads" id="downloads"></div>
       <div id="cert-note"></div>
       <div class="certs hidden" id="certs">
@@ -80,6 +81,8 @@
 <script>
 let resumes = [], current = null;  // current = { run, jd, profileId, spelling }
 let working = false, letterComing = false, ticking = null;
+let timed = null;  // { runId, pageMs }: the run this page just tailored, and how long the page waited for it
+const NO_LETTER = 'Your resume is ready. The cover letter could not be written this time; press Add cover letter to try again.';
 let spelling = 'us';  // the US style / EU style buttons: US each time the page opens
 const SPELLING_HINT = {
   us: 'American spelling (optimization, behavior).',
@@ -154,8 +157,39 @@ function showResult(run, view = 'resume') {
         : el('button', { class: 'outline', id: 'add-cover', type: 'button', disabled: working, onclick: () => create(true, true) },
           el('span', { class: 'icon i-plus', 'aria-hidden': 'true' }), 'Add cover letter'));
   $('#toggles').classList.toggle('hidden', !run.cover_letter);
+  showTiming(run);
   showCertifications(run);
   preview(run.cover_letter ? view : 'resume');
+}
+
+// Admin only: where the job's time went, from the run's timing record. Only for the run this page just tailored:
+// after Add or Rewrite cover letter, the saved record is still the tailoring's, not the new letter's.
+function showTiming(run) {
+  const on = Boolean(ME.admin && run.timing && timed && timed.runId === run.run_id);
+  $('#timing').classList.toggle('hidden', !on);
+  $('#timing').textContent = on ? timingLine(run, timed.pageMs) : '';
+}
+
+// 'AI 21.4 s (8,214 in / 1,912 out + 2,105 thinking) · cover letter 6.1 s, alongside · layout and checks 1.3 s ·
+// total 29.6 s (this page 30.2 s)'. The letter runs alongside the layout: the job waited only for the rest of it.
+function timingLine(run, pageMs) {
+  const t = run.timing;
+  const secs = s => `${s.toFixed(1)} s`;
+  const count = n => n.toLocaleString('en-US');
+  const step = name => t.steps.reduce((sum, [n, s]) => sum + (n === name ? s : 0), 0);
+  const drafts = t.calls.filter(c => c.kind !== 'cover_letter');
+  const tokens = key => drafts.reduce((sum, c) => sum + c[key], 0);
+  const thinking = tokens('thinking');
+  const ai = step('AI') + step('shorter draft'), wait = step('cover letter wait');
+  const parts = [`AI ${secs(ai)} (${count(tokens('input'))} in / ${count(tokens('output') - thinking)} out`
+    + (thinking ? ` + ${count(thinking)} thinking)` : ')')];
+  if (t.steps.some(([n]) => n === 'cover letter wait')) {
+    parts.push(run.cover_letter ? `cover letter ${secs(t.letter_seconds)}${wait < t.letter_seconds ? ', alongside' : ''}`
+      : `cover letter not written (${secs(t.letter_seconds)})`);
+  }
+  parts.push(`layout and checks ${secs(Math.max(0, t.total_seconds - ai - wait))}`,
+    `total ${secs(t.total_seconds)} (this page ${secs(pageMs / 1000)})`);
+  return parts.join(' · ');
 }
 
 // The AI's picks for this job, each with an "I have it" tick: only ticked ones are printed on the resume.
@@ -222,32 +256,43 @@ function clearResult() {  // no usable result: do not leave the previous one's d
   $('#result').classList.add('hidden'); $('#empty').classList.remove('hidden');
 }
 
-async function tailorNow(jd) {
+// A new resume, with its cover letter written in the same job when `withLetter` (one wait, one run).
+async function tailorNow(jd, withLetter) {
   const profileId = chosenId();
+  const began = Date.now();
+  const body = { jd, profile_id: profileId, spelling, ...(withLetter ? { cover_letter: true } : {}) };
   let run;
   try {
-    run = await finished(await api('/api/tailor', { method: 'POST', body: { jd, profile_id: profileId, spelling } }),
+    run = await finished(await api('/api/tailor', { method: 'POST', body }),
       (waited, error) => busy(true, stillWorking(waited, error)));
   } catch (err) { clearResult(); throw err; }
   if (run.status === 'error') {
     clearResult();
     throw new Error(run.error || 'Tailoring failed.');
   }
+  timed = { runId: run.run_id, pageMs: Date.now() - began };
   current = { run, jd, profileId, spelling };
   $('#cert-note').replaceChildren();  // a note about the previous resume's ticks
-  showResult(run);
   return run;
 }
 
-// One click: the resume, then (unless "Resume only") the cover letter. "Add cover letter" and "Rewrite cover letter"
-// keep the resume made for this same job and base resume.
+// What the admin is told about a missing letter: the reason the run saved (users only see NO_LETTER).
+function letterReason(run) {
+  return (run.notes || []).filter(n => n.startsWith('Cover letter failed') || n.startsWith('Cover letter not written'));
+}
+
+// One click: a new resume, and (unless "Resume only") its cover letter, written in the same job. "Add cover letter"
+// and "Rewrite cover letter" keep the resume made for this same job and base resume, and write only the letter.
 async function create(withLetter, keepResume = false) {
   const jd = readJd();
   if (!jd) return;
   $('#messages').replaceChildren();
   const reuse = keepResume && current && current.jd === jd && current.profileId === chosenId()
     && current.spelling === spelling;  // after switching style, the resume is made again in the new style
+  const together = withLetter && !reuse;  // one job writes both, so the list shows one row with one clock
   $('#steps').classList.remove('hidden');
+  $('.label', step('resume')).textContent = together ? 'Writing your resume and cover letter' : 'Tailoring your resume';
+  step('cover').style.display = together ? 'none' : '';  // not the hidden attribute: the CSS shows each row as flex
   stepState('resume', reuse ? 'done' : '');
   stepState('cover', withLetter ? '' : 'skipped', withLetter ? '' : 'skipped');
   stepState('ready', '');
@@ -257,22 +302,29 @@ async function create(withLetter, keepResume = false) {
     if (!reuse) {
       startStep('resume');
       busy(true, stillWorking(0, null));
-      await tailorNow(jd);
+      await tailorNow(jd, together);
       endStep('resume', 'done');
-    }
-    if (withLetter) {
+    } else if (withLetter) {
       now = 'cover';
       startStep('cover');
       busy(true, stillWorking(0, null));
       const run = await finished(await api(`/api/runs/${current.run.run_id}/cover-letter`, { method: 'POST', body: {} }),
         (waited, error) => busy(true, stillWorking(waited, error)));
       endStep('cover', 'done');
+      timed = null;  // the run's saved timing is the tailoring's, not this letter's
       current.run = run;
     }
     letterComing = false;
-    showResult(current.run, withLetter ? 'cover' : 'resume');
+    const missing = withLetter && !current.run.cover_letter;  // the resume is ready, its letter could not be written
+    showResult(current.run, withLetter && !missing ? 'cover' : 'resume');
     stepState('ready', 'done');
-    busy(false, withLetter ? 'Your resume and cover letter are ready.' : 'Your resume is ready.');
+    if (missing) {
+      busy(false, '');
+      $('#messages').replaceChildren(notice('warn', NO_LETTER, ME.admin ? letterReason(current.run) : []));
+      say(NO_LETTER);
+    } else {
+      busy(false, withLetter ? 'Your resume and cover letter are ready.' : 'Your resume is ready.');
+    }
     if (window.matchMedia('(max-width: 960px)').matches) $('#result').scrollIntoView({ behavior: 'smooth', block: 'start' });
   } catch (err) {
     endStep(now, 'failed');

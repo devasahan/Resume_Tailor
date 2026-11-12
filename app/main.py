@@ -42,7 +42,15 @@ from .prompts import METRICS_MODES
 from .prompts import read_all as read_prompt_files
 from .pipeline.tailor import analysis_terms, fit_report, refit, run_checks, run_tailor, write_cover_letter
 from .render.docx import cover_docx, resume_docx
-from .render.pdf import person_name, render_cover_pdf, render_resume_pdf
+from .render.pdf import (
+    document_name,
+    forget_resume_pdfs,
+    person_name,
+    recent_resume_pdf,
+    remember_resume_pdf,
+    render_cover_pdf,
+    render_resume_pdf,
+)
 from .schemas import (
     MAX_CERTIFICATIONS,
     Certification,
@@ -415,7 +423,7 @@ def file_part(text: str, limit: int = 50) -> str:
 
 def document_word(result: TailorResult) -> str:
     """What the run calls the document: a CV in EU style (British usage), a resume otherwise."""
-    return "CV" if result.spelling == "eu" else "Resume"
+    return document_name(result.spelling)
 
 
 def document_lang(result: TailorResult) -> str:
@@ -839,6 +847,7 @@ def create_app(db: Database | None = None, registry: Registry | None = None, rou
         """Reject a sign-up, or remove an account with its resumes and runs (download history stays)."""
         if not db.delete_user(user_id):
             raise HTTPException(404, "Account not found.")
+        forget_resume_pdfs()  # the PDFs kept in memory for the latest runs go too (everyone's: only a speed-up)
         return {"deleted": True}
 
     @app.get("/api/downloads", dependencies=[Depends(admin_user)])
@@ -1255,10 +1264,17 @@ def create_app(db: Database | None = None, registry: Registry | None = None, rou
     # ------------------------------------------------------------------ files (a Download click is logged)
     @app.get("/api/runs/{run_id}/resume.pdf")
     def api_resume_pdf(run_id: int, download: int = 0, user: auth.User = Depends(current_user)):
+        """The resume PDF, for the preview (inline) and the download. A file this process still keeps for the same
+        text, style and title is served as it is (the run's own file, right after the run); otherwise the resume is
+        laid out now, and that file is kept for the download that usually follows the preview."""
         result = load_run(run_id, user)
         if result.resume is None:
             raise HTTPException(404, "No resume in this run.")
-        pdf, _pages = render_resume_pdf(result.resume, result.style, document_word(result))
+        document = document_word(result)
+        pdf = recent_resume_pdf(result.resume, result.style, document)
+        if pdf is None:
+            pdf, _pages = render_resume_pdf(result.resume, result.style, document)
+            remember_resume_pdf(result.resume, result.style, document, pdf)
         name = download_name(result, "pdf")
         if download:
             log_download(user, run_id, result, "resume", "pdf", name)
@@ -1306,6 +1322,7 @@ def create_app(db: Database | None = None, registry: Registry | None = None, rou
     def api_delete_all():
         """Privacy control: remove every resume, run and download record (accounts and settings stay)."""
         db.purge_all()
+        forget_resume_pdfs()  # and the PDFs kept in memory for the latest runs
         return {"deleted": True}
 
     return app
