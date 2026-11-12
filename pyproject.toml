@@ -36,4 +36,4 @@ filterwarnings = ["ignore::DeprecationWarning"]
 include = ["app*"]
 
 [tool.setuptools.package-data]
-app = ["prompts/*.md", "render/fonts/*", "web/templates/*", "web/static/*"]
+app = ["prompts/*.md", "render/fonts/*", "pipeline/carlito/*", "web/templates/*", "web/static/*"]

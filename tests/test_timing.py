@@ -11,7 +11,6 @@ import pytest
 
 from app import main, prompts, timing
 from app.llm.base import LLMClient, LLMError
-from app.pipeline import fit
 
 from .conftest import SAMPLE_JD
 from .test_api import save_profile
@@ -41,7 +40,6 @@ def add_up(line):
 
 def test_a_tailoring_and_a_cover_letter_each_log_their_steps(client, caplog):
     save_profile(client)
-    fit._budget.cache_clear()  # a plan kept from another test's run of this resume would load no fonts
     with caplog.at_level(logging.INFO, logger="app"):
         run = client.post("/api/tailor", json={"jd": SAMPLE_JD, "model": "demo-concise"}).json()
         client.post(f"/api/runs/{run['run_id']}/cover-letter", json={})
@@ -49,7 +47,8 @@ def test_a_tailoring_and_a_cover_letter_each_log_their_steps(client, caplog):
     assert [name for name, _ in steps_of(tailored)] == [
         "setup", "models", "thread wait", "bullet plan", "prompts", "AI", "layout", "checks", "saving"]
     add_up(tailored)
-    assert int(tailored["db"]) >= 3 and int(tailored["fonts"]) >= 2  # settings, models, saving; plan and layout
+    # settings, models, saving; the layout at its step and at the design's sizes (the bullet plan loads no font)
+    assert int(tailored["db"]) >= 3 and int(tailored["fonts"]) >= 2
     covered = finished_line(caplog, "cover_letter")
     assert [name for name, _ in steps_of(covered)] == [
         "reading the run", "cover models", "cover prompts", "cover AI", "cost record", "reading the run again",

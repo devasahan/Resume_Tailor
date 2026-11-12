@@ -26,6 +26,7 @@ from app.pipeline.fit import (
     OLD_LADDER,
     current_style,
     saved_resume_pdf,
+    saved_style,
     styles,
 )
 from app.render.docx import cover_docx, resume_docx
@@ -347,11 +348,12 @@ def test_a_saved_run_tries_smaller_steps_only_when_it_needs_more_pages(profile, 
     laid_out = []
     real = fit.render_resume_pdf
     monkeypatch.setattr(fit, "render_resume_pdf", lambda r, s, d="Resume": laid_out.append(s) or real(r, s, d))
-    two_pages = saved_resume_pdf(resume, old, 2)
-    assert laid_out == [current_style(old)] and len(PdfReader(io.BytesIO(two_pages)).pages) == 2  # once: it fits
+    two_pages, shown = saved_resume_pdf(resume, old, 2)
+    assert laid_out == [current_style(old)] == [shown] and len(PdfReader(io.BytesIO(two_pages)).pages) == 2  # it fits
     laid_out.clear()
-    one_page = saved_resume_pdf(resume, old, 1)  # it was one page then: smaller steps until it is one page again
+    one_page, shown = saved_resume_pdf(resume, old, 1)  # it was one page then: smaller steps until it is one page again
     assert laid_out[0] == current_style(old) and len(laid_out) > 1 and len(PdfReader(io.BytesIO(one_page)).pages) == 1
+    assert shown == laid_out[-1] == saved_style(resume, old, 1)  # the style it settled on, found again without a file
     text = " ".join(" ".join(page.extract_text() for page in PdfReader(io.BytesIO(one_page)).pages).split())
     assert all(bullet in text for exp in resume.experience for bullet in exp.bullets)  # never trimmed
 
@@ -376,4 +378,27 @@ def test_a_run_saved_before_the_restyle_shows_in_the_new_look_with_every_bullet(
     saved = db.get_run(run["run_id"])
     assert saved.style == FitStyle(font_pt=10.0, margin_in=0.55) and saved.pages == 2  # nothing written back
     docx = Document(io.BytesIO(client.get(f"/api/runs/{run['run_id']}/resume.docx").content))
-    assert docx.styles["Normal"].font.size.pt == int(current_style(saved.style).font_pt * 2) / 2  # the new look
+    shown = saved_style(saved.resume, saved.style, saved.pages)  # the new look, at the size of its PDF
+    assert docx.styles["Normal"].font.size.pt == int(shown.font_pt * 2) / 2  # Word keeps half points, rounded down
+
+
+def test_an_old_runs_word_copy_has_the_size_its_pdf_is_shown_at(client, profile):
+    """A run saved at the old 10.5 pt step on one page, which the matching new step lays out on two: its PDF is shown at
+    a smaller step that keeps one page, and the admin's Word copy is made at that same step, not at the matching one."""
+    save_profile(client)
+    run = client.post("/api/tailor", json={"jd": SAMPLE_JD, "model": "demo-concise"}).json()
+    resume, old = long_resume(profile, bullets=6), FitStyle(font_pt=10.5, margin_in=0.65)
+    db = client.app.state.db
+    with sqlite3.connect(db.path) as raw:
+        stored = json.loads(raw.execute("SELECT result FROM runs WHERE id = ?", (run["run_id"],)).fetchone()[0])
+        stored.update(resume=json.loads(resume.model_dump_json()), pages=1,
+                      style={"font_pt": 10.5, "margin_in": 0.65, "paper": "Letter", "stacked": False})
+        raw.execute("UPDATE runs SET result = ? WHERE id = ?", (json.dumps(stored), run["run_id"]))
+    pdf = client.get(f"/api/runs/{run['run_id']}/resume.pdf").content
+    shown = saved_style(resume, old, 1)
+    assert resume_layout(resume, current_style(old))[0] == 2 and shown != current_style(old)  # it stepped down
+    assert len(PdfReader(io.BytesIO(pdf)).pages) == 1 and saved_resume_pdf(resume, old, 1)[1] == shown
+    docx = Document(io.BytesIO(client.get(f"/api/runs/{run['run_id']}/resume.docx").content))
+    assert docx.styles["Normal"].font.size.pt == int(shown.font_pt * 2) / 2
+    assert docx.sections[0].left_margin.inches == pytest.approx(shown.margin_in, abs=1e-3)
+    assert saved_style(resume, FitStyle(), 1) == FitStyle()  # a run made in the new look: its own style, as saved

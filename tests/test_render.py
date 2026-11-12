@@ -119,10 +119,10 @@ def test_a_bullet_that_fits_at_the_bottom_of_a_page_stays_there():
 
 
 def test_overflow_makes_more_pages_and_the_fit_steps_repair_it(profile):
-    resume = long_resume(profile, bullets=20)
+    resume = long_resume(profile, bullets=28)
     _, pages = render_resume_pdf(resume, FitStyle())
-    assert pages == 3
-    assert try_styles(resume) is None  # shrinking alone cannot save this much text
+    assert pages == 4
+    assert try_styles(resume) is None  # shrinking alone cannot save this much text (8 pt holds 26 bullets a job)
     trimmed, style, pages, _pdf, notes = trim_to_fit(resume)
     assert pages <= MAX_PAGES and render_resume_pdf(trimmed, style)[1] == pages
     assert all(len(e.bullets) >= 2 for e in trimmed.experience)

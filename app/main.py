@@ -36,7 +36,7 @@ from .parsing.heuristic import MAX_OWN_CERTIFICATIONS, read_certification_list
 from .parsing.resume_parser import MAX_BYTES, extract_text, parse_resume, profile_warnings, read_resume
 from .pipeline import validate
 from .pipeline.facts import is_expired
-from .pipeline.fit import current_style, saved_resume_pdf
+from .pipeline.fit import saved_resume_pdf, saved_style
 from .pipeline.generate import GenerationFailed
 from .pipeline.job_facts import check_job_facts
 from .prompts import METRICS_MODES
@@ -1276,7 +1276,7 @@ def create_app(db: Database | None = None, registry: Registry | None = None, rou
         document = document_word(result)
         pdf = recent_resume_pdf(result.resume, result.style, document)
         if pdf is None:
-            pdf = saved_resume_pdf(result.resume, result.style, result.pages, document)
+            pdf, _shown_at = saved_resume_pdf(result.resume, result.style, result.pages, document)
             remember_resume_pdf(result.resume, result.style, document, pdf)
         name = download_name(result, "pdf")
         if download:
@@ -1290,7 +1290,9 @@ def create_app(db: Database | None = None, registry: Registry | None = None, rou
             raise HTTPException(404, "No resume in this run.")
         name = download_name(result, "docx")
         log_download(user, run_id, result, "resume", "docx", name)
-        docx = resume_docx(result.resume, current_style(result.style), document_word(result))  # sizes of the new look
+        # the sizes its PDF is shown at (a run saved before the restyle: the step of the new look that keeps its pages)
+        style = saved_style(result.resume, result.style, result.pages)
+        docx = resume_docx(result.resume, style, document_word(result))
         return file_response(docx, DOCX, "attachment", name)
 
     @app.get("/api/runs/{run_id}/cover.pdf")

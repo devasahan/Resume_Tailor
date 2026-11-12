@@ -378,12 +378,12 @@ def test_the_page_plan_leaves_room_for_the_persons_certifications(profile):
 
 
 def test_a_tick_that_needs_room_removes_the_fewest_bullets(certified):
-    resume = long_resume(certified, bullets=24)
+    resume = long_resume(certified, bullets=30)  # more than the smallest step holds on two pages (8 pt: 26 a job)
     resume.certifications = [AWS, CSM]
     fitted, _style, pages, fits, _notes, removed = asyncio.run(refit(resume, "Letter"))
     assert fits and pages <= 2 and removed and sum(removed.values()) == (
         sum(len(e.bullets) for e in resume.experience) - sum(len(e.bullets) for e in fitted.experience))
-    assert fitted.certifications == [AWS, CSM] and len(resume.experience[0].bullets) == 24  # a copy was trimmed
+    assert fitted.certifications == [AWS, CSM] and len(resume.experience[0].bullets) == 30  # a copy was trimmed
 
 
 # ------------------------------------------------------------------ prompts
