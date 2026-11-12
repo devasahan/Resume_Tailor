@@ -71,7 +71,8 @@ support@pythonanywhere.com), or use B now and move to A later.
 
 ### B. Web tab website (always works on a free account)
 It handles one request at a time, so the others wait while it works. A slow tailoring also moves forward only
-while the Tailor page stays open and shows "Tailoring your resume" with its timer.
+while the Tailor page stays open and shows "Writing your resume and cover letter" (or "Tailoring your resume")
+with its timer.
 1. **Web** > **Add a new web app** > **Next** > **Manual configuration** > choose the Python version that the
    setup script printed (for example 3.13) > **Next**.
 2. On the Web page that opens:
@@ -125,12 +126,12 @@ changed in `.env`, works at once. A new `ADMIN_PASSWORD` replaces the old one an
 | GPT check fails with "401" | The OpenAI API key is wrong, or the OpenAI account has no payment method yet (platform.openai.com, Billing) |
 | Gemini says "HTTP 503" and "high demand" | Google's servers for that model are overloaded, for paid keys too. The app already waits about a minute and tries again before it shows this; wait a few minutes and try again |
 | "Gateway Time-out" or "finished is not defined" while tailoring | Update to the newest version (see **Updating** above), then press **Ctrl+F5** on the Tailor page once. Slow work then goes on in the background and the page shows "Writing your resume and cover letter" (or "Tailoring your resume") with its timer |
-| Tailoring feels slow | As the admin, the line under the result on the Tailor page shows where that job's time went (the AI, the cover letter, the app's own work). For more, run the command under this table in a Bash console. Each run's "job finished" line gives every step's time, the CPU used and the time spent waiting for a CPU ("quota throttled" is the part of that wait caused by the host's CPU limit for the site, not the Gemini quota), and how many database steps and font loads ran; "attempt" lines are the AI calls; "follow-up" lines say why a rewrite pass was skipped; "rests for" and "resting" lines name a model left out because its API key's quota is used up; "slow database step" and "slow request" lines name anything that took long |
+| Tailoring feels slow | As the admin, the line under the result on the Tailor page shows where that job's time went (the AI, the cover letter, the app's own work). For more, run the command under this table in a Bash console. Each run's "job finished" line gives every step's time, the CPU used and the time spent waiting for a CPU ("quota throttled" is the part of that wait caused by the host's CPU limit for the site, not the Gemini quota), and how many database steps and font loads ran; "attempt" lines are the AI calls; "follow-up" lines say why a rewrite pass was skipped; "rests for" and "skipped" lines name a model left out because its API key's quota is used up; "slow database step" and "slow request" lines name anything that took long |
 | Gemini says "quota" or "429" | The Gemini free tier allows few requests per minute; wait a minute, or turn on billing in Google AI Studio |
 | The site stopped after a month | Free accounts must be renewed: on the Web tab (B) press **Run until 1 month from today**; for A, log in to PythonAnywhere and follow its renewal notice |
 
 When tailoring feels slow (A; for B use the **Error log** link on the Web tab). It reads both log files, as the app's
 lines can be in either, and lists the latest 40 in time order:
 ```
-grep -hiE "attempt|follow-up|rests for|resting|job finished|slow|warm-up" /var/log/USERNAME.pythonanywhere.com.server.log /var/log/USERNAME.pythonanywhere.com.error.log 2>/dev/null | sort | tail -40
+grep -hiE "attempt|follow-up|rests for|skipped|job finished|slow|warm-up" /var/log/USERNAME.pythonanywhere.com.server.log /var/log/USERNAME.pythonanywhere.com.error.log 2>/dev/null | sort | tail -40
 ```

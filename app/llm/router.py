@@ -20,8 +20,12 @@ class Router:
 
     def forget_clients(self) -> None:
         """An API key changed: the next call builds its client again, with the key as it is now (the Anthropic SDK
-        keeps the key it was made with). A call already running finishes with the client it has."""
+        keeps the key it was made with). A call already running finishes with the client it has. A model resting
+        because its old key's quota was used up is asked again at once: a new key has its own quota."""
         self._clients.clear()
+        from ..pipeline import generate  # here: generate imports this module
+
+        generate._RESTING_UNTIL.clear()
 
     # ------------------------------------------------------------------ selection
     def settings(self) -> dict:

@@ -12,6 +12,7 @@ from fastapi.testclient import TestClient
 
 from app import main
 from app.main import create_app
+from app.render import pdf as pdf_module
 from app.storage.db import Database, now_iso
 
 from .conftest import (
@@ -178,6 +179,7 @@ def test_a_deleted_account_keeps_nothing_from_a_job_still_running(browsers, monk
     with sqlite3.connect(db.path) as raw:
         assert raw.execute("SELECT COUNT(*) FROM runs WHERE user_id = ?", (user_id,)).fetchone()[0] == 0
         assert raw.execute("SELECT COUNT(*) FROM jobs WHERE user_id = ?", (user_id,)).fetchone()[0] == 0
+    assert not pdf_module._recent_pdfs  # nor the PDF its job kept in memory after the delete
 
 
 def test_the_heartbeat_column_is_added_to_a_database_from_the_first_job_version(tmp_path):

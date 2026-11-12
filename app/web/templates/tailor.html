@@ -171,7 +171,7 @@ function showTiming(run) {
 }
 
 // 'AI 21.4 s (8,214 in / 1,912 out + 2,105 thinking) · cover letter 6.1 s, alongside · layout and checks 1.3 s ·
-// total 29.6 s (this page 30.2 s)'. The letter runs alongside the layout: the job waited only for the rest of it.
+// total 27.7 s (this page 28.3 s)'. The letter runs alongside the layout: the job waited only for the rest of it.
 function timingLine(run, pageMs) {
   const t = run.timing;
   const secs = s => `${s.toFixed(1)} s`;
@@ -184,7 +184,7 @@ function timingLine(run, pageMs) {
   const parts = [`AI ${secs(ai)} (${count(tokens('input'))} in / ${count(tokens('output') - thinking)} out`
     + (thinking ? ` + ${count(thinking)} thinking)` : ')')];
   if (t.steps.some(([n]) => n === 'cover letter wait')) {
-    parts.push(run.cover_letter ? `cover letter ${secs(t.letter_seconds)}${wait < t.letter_seconds ? ', alongside' : ''}`
+    parts.push(run.cover_letter ? `cover letter ${secs(t.letter_seconds)}${wait + 0.01 < t.letter_seconds ? ', alongside' : ''}`
       : `cover letter not written (${secs(t.letter_seconds)})`);
   }
   parts.push(`layout and checks ${secs(Math.max(0, t.total_seconds - ai - wait))}`,

@@ -666,6 +666,7 @@ def create_app(db: Database | None = None, registry: Registry | None = None, rou
                 raise
             if not db.finish_job(job_id, run_id=result.run_id) and kind == "tailor" and result.run_id is not None:
                 db.delete_run(result.run_id)  # the account (or all data) was deleted meanwhile: keep nothing of it
+                forget_resume_pdfs()  # nor the PDF its job kept in memory
             return result
 
         task = asyncio.create_task(run())

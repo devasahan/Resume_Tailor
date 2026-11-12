@@ -163,18 +163,24 @@ async def generate_validated(
                     model_id, system=system, user=ask.user, schema=ask.schema, schema_name=ask.schema_name,
                     context=ask.context,
                 )
-                limit = time_left if kept is not None else answer_limit
+                # a follow-up: the time left before the deadline, else (no time limit, or a required fix) the
+                # model's longest wait, so no call is ever waited for without an end
+                limit = time_left if kept is not None and time_left is not None else answer_limit
                 result, spec = await (asyncio.wait_for(call, limit) if limit is not None else call)
             except TimeoutError:
                 ran = time.perf_counter() - started
                 sent = record_sent(out, router, model_id, system, ask.user)  # the provider got the whole prompt
                 add_call(out, model_id, ask.schema_name, ran, sent, "stopped" if kept is not None else "no answer")
-                if kept is not None:  # the follow-up ran past the deadline: the first answer is kept
+                if kept is not None and time_left is not None:  # past the deadline: the first answer is kept
                     log.info("%s %s attempt %d stopped at the time limit after %.1fs", model_id, ask.schema_name,
                              attempt, ran)
                     key = (model_id, ask.schema_name)
                     _FOLLOW_UP_SECONDS[key] = max(_FOLLOW_UP_SECONDS.get(key, 0.0), ran)  # it needed at least this
                     out.follow_up = "stopped"
+                    break
+                if kept is not None:  # no answer within the model's longest wait: the first answer is kept
+                    log.info("%s %s attempt %d: no answer within %.0fs, the first answer is kept", model_id,
+                             ask.schema_name, attempt, ran)
                     break
                 out.errors.append(f"{model_id}: did not answer within {limit:.0f} seconds")
                 log.info("%s %s attempt %d: no answer within %.0fs%s", model_id, ask.schema_name, attempt, ran,

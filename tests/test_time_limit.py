@@ -334,3 +334,11 @@ def test_a_slow_answer_from_the_chosen_model_is_used_however_short_the_time_limi
                                     model_id="demo-detailed", save=False))
     assert result.status == "ok" and result.fallback_chain == ["demo-detailed"]
     assert not any("could not be used" in note for note in result.notes)
+
+
+def test_a_new_api_key_ends_a_quota_rest(router):
+    """A new key has its own quota: saving it (which forgets the clients) asks the chosen model again at once."""
+    generate._rest("demo-detailed", "its API key's quota is used up", 3600)
+    assert generate.resting("demo-detailed")
+    router.forget_clients()
+    assert not generate.resting("demo-detailed")

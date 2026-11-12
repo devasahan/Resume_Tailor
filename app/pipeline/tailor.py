@@ -582,15 +582,21 @@ async def run_tailor(
 
         async def write_letter(final: Resume, out: TailorOutput,
                                pending: float) -> tuple[CoverLetter | None, str | None, float]:
-            """(letter or None, why not, seconds it took) for the final resume text."""
+            """(letter or None, why not, seconds it took) for the final resume text, within LETTER_WAIT_SECONDS
+            in all, however many letter models and attempts that takes: the finished resume is not held longer."""
             began = time.perf_counter()
-            letter, why = await _write_letter(
-                router, final, out.jd_analysis, jd=jd, hints=hints, facts=facts, spelling=spelling,
-                company_name=company_name or out.jd_analysis.company, hiring_manager=hiring_manager,
-                model_id=cover_model_id or outcome.final_model_id, allow_fallback=allow_fallback,
-                wait=LETTER_WAIT_SECONDS,
-                outcome=letter_outcome, pending_cost=pending,
-            )
+            letter_model = cover_model_id or outcome.final_model_id
+            try:
+                letter, why = await asyncio.wait_for(_write_letter(
+                    router, final, out.jd_analysis, jd=jd, hints=hints, facts=facts, spelling=spelling,
+                    company_name=company_name or out.jd_analysis.company, hiring_manager=hiring_manager,
+                    model_id=letter_model, allow_fallback=allow_fallback, wait=LETTER_WAIT_SECONDS,
+                    outcome=letter_outcome, pending_cost=pending,
+                ), LETTER_WAIT_SECONDS)
+            except TimeoutError:  # the call on its way was billed (_write_letter counts it when it is stopped)
+                model = letter_outcome.chain[-1] if letter_outcome.chain else letter_model
+                letter = None
+                why = f"{LETTER_NOTES[0]}: {model}: did not answer within {LETTER_WAIT_SECONDS:.0f} seconds"
             return letter, why, time.perf_counter() - began
 
         def start_letter(final: Resume, out: TailorOutput) -> None:
@@ -628,6 +634,7 @@ async def run_tailor(
                     schema=schema, schema_name="tailor_output", parse=parse,
                     context={**context, "shorten": True, "bullets": smaller}, outcome=second,
                     refine=None,  # the shorten call is already the extra call; never let it ask a third time
+                    last_after=LAST_MODEL_SECONDS,  # bounded with no time limit too (its chain is one model)
                 )
                 await (asyncio.wait_for(shorter, time_left) if time_left is not None else shorter)
                 _absorb(outcome, second)
@@ -744,8 +751,9 @@ async def _write_letter(
     """The cover letter for a final resume: (letter, None), or (None, why no letter was written). Never raises, so a
     letter never fails the resume it goes with; the reason starts with one of LETTER_NOTES, so a later letter can
     replace it. `outcome` gets what it spent. A model is waited for as long as for the resume (SWITCH_AFTER_SECONDS
-    before the next model is tried); the last one `wait` seconds (LAST_MODEL_SECONDS when not given). `pending_cost`: spent on the draft, not saved yet,
-    so the daily cost cap counts it. `steps` (the Add/Rewrite cover letter job's) gets a mark after each step.
+    before the next model is tried); the last one `wait` seconds (LAST_MODEL_SECONDS when not given).
+    `pending_cost`: spent on the draft, not saved yet, so the daily cost cap counts it. `steps` (the Add/Rewrite
+    cover letter job's) gets a mark after each step.
     Cancelled while its call is on its way, it counts that call's prompt (the provider bills it), then stops."""
     style = spelling or "us"
     keep = validate.known_names(resume, analysis, company_name, hiring_manager)
@@ -790,7 +798,9 @@ async def _write_letter(
                 "target_role": analysis.target_role, "keywords": analysis.keywords,
             },
             outcome=outcome,
-            switch_after=SWITCH_AFTER_SECONDS, last_after=LAST_MODEL_SECONDS if wait is None else wait,
+            # with a total `wait`, a backup letter model gets its turn after half of it
+            switch_after=SWITCH_AFTER_SECONDS if wait is None else min(SWITCH_AFTER_SECONDS, wait / 2),
+            last_after=LAST_MODEL_SECONDS if wait is None else wait,
         )
         mark("cover AI")
         took = [call["seconds"] for call in outcome.calls[calls:] if call["result"] == "ok"]

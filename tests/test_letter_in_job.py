@@ -82,7 +82,8 @@ def tailored(router, db, profile, model="demo-concise", **kwargs):
 
 def career(jobs: int) -> Profile:
     return Profile(name="Avery Lindqvist", companies=[
-        Company(name=f"Harbor Works {i}", start=f"Jan {2023 - 3 * i}", end="Present" if i == 0 else f"Dec {2025 - 3 * i}")
+        Company(name=f"Harbor Works {i}", start=f"Jan {2023 - 3 * i}",
+                end="Present" if i == 0 else f"Dec {2025 - 3 * i}")
         for i in range(jobs)])
 
 
@@ -101,7 +102,8 @@ def test_the_letter_is_written_while_the_layout_runs(router, db, registry, profi
     (layout_start, layout_end), *_ = layouts
     assert draft["end"] <= letter["start"] < layout_end  # written during the layout, after the draft
     assert min(letter["end"], layout_end) - max(letter["start"], layout_start) >= 0.4  # at the same time
-    one_after_another = (draft["end"] - draft["start"]) + (layout_end - layout_start) + (letter["end"] - letter["start"])
+    one_after_another = ((draft["end"] - draft["start"]) + (layout_end - layout_start)
+                         + (letter["end"] - letter["start"]))
     assert ended - draft["start"] < one_after_another - 0.3  # clearly less than one after the other
     timing = result.timing
     wait = sum(seconds for name, seconds in timing.steps if name == "cover letter wait")
@@ -322,7 +324,8 @@ def test_one_job_brings_both_documents_with_its_timing_for_the_admin_only(client
     mine = user_client.post("/api/tailor", json={"jd": SAMPLE_JD, "cover_letter": True}).json()
     assert mine["status"] == "ok" and mine["cover_letter"]["paragraphs"] and "timing" not in mine
     assert "timing" not in user_client.get(f"/api/runs/{mine['run_id']}").json()
-    assert set(main.public_run(TailorResult.model_validate(client.get(f"/api/runs/{mine['run_id']}").json()))) == set(mine)
+    saved = TailorResult.model_validate(client.get(f"/api/runs/{mine['run_id']}").json())
+    assert set(main.public_run(saved)) == set(mine)
     assert client.get(f"/api/runs/{mine['run_id']}").json()["timing"]["calls"]  # the admin sees anyone's
 
 
@@ -494,3 +497,60 @@ def test_the_fitted_pdf_is_titled_cv_in_eu_style(router, db, profile, monkeypatc
         reader = PdfReader(io.BytesIO(pdf))
         assert reader.metadata.title == "Jordan Rivera - CV" and reader.trailer["/Root"]["/Lang"] == "en-GB"
     assert PdfReader(io.BytesIO(real(resume, "Letter")[2])).metadata.title == "Jordan Rivera - Resume"
+
+
+# ------------------------------------------------------------------ bounded waits (review cycle 7)
+def test_the_resume_waits_for_its_letter_at_most_the_letter_wait_in_all(router, db, registry, profile, monkeypatch):
+    """Two letter models (a backup in Settings), both silent: the finished resume is held LETTER_WAIT_SECONDS in all,
+    not that long for each model or each attempt."""
+    monkeypatch.setattr(tailor, "LETTER_WAIT_SECONDS", 2.0)  # each model alone would get 1 s and 2 s: 3 s in all
+    db.set_settings({"fallback_models": ["demo-detailed"]})
+    router.overrides["demo-concise"] = LetterFails(FakeClient(registry.get("demo-concise")), "hanging")
+    router.overrides["demo-detailed"] = LetterFails(FakeClient(registry.get("demo-detailed")), "hanging")
+    result = tailored(router, db, profile, cover_letter=True)
+    assert result.status == "ok" and result.resume is not None and result.cover_letter is None
+    assert 1.9 < result.timing.letter_seconds < 2.6  # one deadline for the whole letter
+    assert any(note.startswith("Cover letter failed: ") and note.endswith("did not answer within 2 seconds")
+               for note in result.notes)
+    letters = [call for call in result.timing.calls if call.kind == "cover_letter"]
+    assert letters and letters[-1].result in ("stopped", "no answer")  # the stopped call is counted (and billed)
+
+
+def test_a_backup_letter_model_gets_its_turn_within_the_letter_wait(router, db, registry, profile, monkeypatch):
+    monkeypatch.setattr(tailor, "LETTER_WAIT_SECONDS", 2.0)  # the backup is asked after half of it
+    db.set_settings({"fallback_models": ["demo-detailed"]})
+    router.overrides["demo-concise"] = LetterFails(FakeClient(registry.get("demo-concise")), "hanging")
+    result = tailored(router, db, profile, cover_letter=True)
+    assert result.status == "ok" and result.cover_letter is not None
+    assert [call.model for call in result.timing.calls if call.kind == "cover_letter"] == ["demo-concise",
+                                                                                           "demo-detailed"]
+
+
+def test_with_no_time_limit_a_silent_rewrite_pass_still_ends(router, db, registry, profile, monkeypatch):
+    """With Settings > Time limit 0 (and for a required fix) a follow-up has no deadline: its model's longest wait
+    still ends it, and the first draft is kept."""
+    monkeypatch.setattr(tailor, "LAST_MODEL_SECONDS", 1.0)
+    client = SlowRewrite(FakeClient(registry.get("demo-concise")), 30.0)
+    router.overrides["demo-concise"] = client
+    started = time.perf_counter()
+    result = tailored(router, db, profile, time_limit=0)
+    assert time.perf_counter() - started < 4 and result.status == "ok"
+    assert client.calls == ["tailor_output", "tailor_revision"]
+    assert not any("time limit" in note for note in result.notes)
+
+
+def test_with_no_time_limit_a_silent_shorter_draft_still_ends(router, db, registry, monkeypatch):
+    monkeypatch.setattr(tailor, "LAST_MODEL_SECONDS", 1.0)
+
+    class SilentShorterDraft(Paced):
+        async def generate_structured(self, **kwargs):
+            if kwargs["schema_name"] == "tailor_output" and len(self.of("tailor_output")) == 1:
+                self.calls.append({"kind": "tailor_output", "start": time.perf_counter(), "end": None})
+                await asyncio.sleep(60)  # the shorter draft never comes
+            return await super().generate_structured(**kwargs)
+
+    router.overrides["demo-detailed"] = SilentShorterDraft(FakeClient(registry.get("demo-detailed")))
+    started = time.perf_counter()
+    result = tailored(router, db, career(9), model="demo-detailed", time_limit=0)
+    assert time.perf_counter() - started < 8 and result.status == "ok"
+    assert "Asking the model for shorter bullets failed, so the text was trimmed instead." in result.notes
