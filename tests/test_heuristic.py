@@ -530,3 +530,132 @@ def test_a_town_typed_with_two_spaces_keeps_its_name():
                        ("Austin, TX  78701 | taylor@example.com", "Austin, TX"),
                        ("Senior Data Engineer  Austin, TX", "Austin, TX")):
         assert parse_resume_text(f"Taylor Quinn\n{line}\n").contact.location == town, line
+
+
+# ------------------------------------------------------------------ the reader's third review: what the second one lost
+def test_a_list_marked_job_line_is_judged_without_its_mark_signs_or_notes():
+    """A job line with a list mark is judged by its words without the mark, a note in brackets or signs ('/'): a
+    student's '• Fourth Coffee — Barista / Shift Lead (2021 – Present)', a PDF's Word bullet (U+F0B7), '*' bullets, an
+    'Other experience' list. The mark is no part of the employer. A bullet's sentence with a range is still no job."""
+    assert experience("• Fourth Coffee — Barista / Shift Lead (2021 – Present)",
+                      "• Contoso Market — Cashier / Stock Associate (2019 – 2021)") == [
+        ("Fourth Coffee", "2021", "Present", "", ""), ("Contoso Market", "2019", "2021", "", "")]
+    for mark in ("", "*", "●"):
+        assert experience(f"{mark} Northwind Labs | Data Engineer | Jan 2021 - Present",
+                          f"{mark} Bluefin Commerce | Data Analyst | Jun 2018 - Dec 2020") == [
+            ("Northwind Labs", "Jan 2021", "Present", "", ""),
+            ("Bluefin Commerce", "Jun 2018", "Dec 2020", "", "")], repr(mark)
+    assert experience("Northwind Labs | Data Engineer   Jan 2021 – Present", "• Built the pipelines.",
+                      "Other experience:", "• Fabrikam Inc. — Data Analyst (contract), 2018 – 2020",
+                      "• Contoso Ltd. — Barista / Shift Lead, 2015 – 2018",
+                      "• Led the 2019 – 2021 move of 40 services to AWS.") == [
+        ("Northwind Labs", "Jan 2021", "Present", "", ""), ("Fabrikam Inc.", "2018", "2020", "", ""),
+        ("Contoso Ltd.", "2015", "2018", "", "")]
+
+
+def test_dot_lines_with_their_dates_under_them_follow_their_section():
+    """A person's 'Title · Company' over a line of dates: a line whose parts do not decide (a title the rules do not
+    know) follows its section, and such lines vote it too, so 'Barista · Fourth Coffee' keeps its employer."""
+    assert experience("Data Analyst · Northwind Labs", "2021 – Present", "• Built dashboards.",
+                      "Barista · Fourth Coffee", "2018 – 2021", "• Made coffee.",
+                      "Cashier · Contoso Market", "2016 – 2018", "• Ran the till.") == [
+        ("Northwind Labs", "2021", "Present", "", ""), ("Fourth Coffee", "2018", "2021", "", ""),
+        ("Contoso Market", "2016", "2018", "", "")]
+    assert experience("Scrum Master · Northwind Labs · Austin, TX", "Jan 2021 – Present", "• Ran the sprints.",
+                      "Product Owner · Bluefin Commerce · Dallas, TX", "Jun 2017 – Dec 2020", "• Wrote it.") == [
+        ("Northwind Labs", "Jan 2021", "Present", "", "Austin, TX"),
+        ("Bluefin Commerce", "Jun 2017", "Dec 2020", "", "Dallas, TX")]
+
+
+def test_a_unit_or_team_line_under_the_employer_is_no_employer():
+    """'Title   dates' over the employer, then a unit or team with its place or work mode ('Pediatric ICU · Seattle,
+    WA'): the app's wrapped title is read so only for a title of 45 characters or more, so the unit is no employer."""
+    assert experience("Registered Nurse   2019 – Present", "Contoso Children's Hospital", "Pediatric ICU · Seattle, WA",
+                      "• Cared for 6 patients a shift.", "Registered Nurse   2016 – 2019",
+                      "Fabrikam Regional Medical Center", "Emergency Department · Tacoma, WA", "• Ran triage.") == [
+        ("Contoso Children's Hospital", "2019", "Present", "", ""),
+        ("Fabrikam Regional Medical Center", "2016", "2019", "", "")]
+    assert experience("Senior Data Engineer   2021 – Present", "Northwind Labs", "Data Platform Team · Remote",
+                      "• Built the pipelines.") == [("Northwind Labs", "2021", "Present", "", "")]
+
+
+def test_without_the_title_check_only_an_experience_heading_may_lead_a_title():
+    """When the headings are read again without the job-title check (side labels run into the lines beside them),
+    only an Experience heading on a line with no dates may lead a title: a job titled 'Education Coordinator' is no
+    Education heading, so its employer is no school. A teacher's 'History Teacher' line under 'Teaching Experience'
+    (a heading the rules do not know) is no heading either: such an upload is refused, not saved without the
+    current job."""
+    profile = parse_resume_text("""Jordan Rivera
+jordan.rivera@example.com | Austin, TX
+Employment Program Manager
+Northwind Labs | Austin, TX | Jan 2020 – Present
+- Ran the programs.
+Education Coordinator
+Lakeside Unified School District | Austin, TX | 2015 – 2019
+- Ran the tutoring program.
+Education B.A. in Education
+State University | 2010 – 2014""")
+    assert [(c.name, c.start, c.end, c.location) for c in profile.companies] == [
+        ("Northwind Labs", "Jan 2020", "Present", "Austin, TX"),
+        ("Lakeside Unified School District", "2015", "2019", "Austin, TX")]
+    assert [e.school for e in profile.education] == ["State University"]
+    assert parse_resume_text("""Jordan Rivera
+Austin, TX | jordan.rivera@example.com | (555) 010-2233
+TEACHING EXPERIENCE
+History Teacher   Aug 2018 – Present
+Lakeside High School, Austin, TX
+• Taught US History to 150 students a year.
+Social Studies Teacher   Aug 2014 – Jun 2018
+Contoso Middle School, Austin, TX
+• Coached the debate team.
+EDUCATION
+State University | B.A. in History   2010 – 2014""").companies == []
+
+
+def test_a_headline_before_two_spaces_is_no_part_of_the_town():
+    """Two spaces keep a place whole only after one word ('New  York, NY'): after a headline of more words, the town
+    alone is the place."""
+    for line in ("Scrum Master  Austin, TX", "Open to Relocation  Austin, TX", "US Citizen  Austin, TX",
+                 "taylor.quinn@example.com  Scrum Master  Austin, TX"):
+        assert parse_resume_text(f"Taylor Quinn\n{line}\n").contact.location == "Austin, TX", line
+
+
+def test_a_company_mark_under_a_title_shows_the_sections_order():
+    """'Title   dates' over 'Company | Place', every title one the rules do not know: a company mark under a title
+    (Inc., Ltd) shows that the titles stand over their companies, so each company is the employer, with its place."""
+    assert experience("Flight Attendant        11/2022 — 01/2024", "Proseware, Inc. | Seattle, WA", "Led a crew of 8.",
+                      "Special Education Paraprofessional        04/2020 — 09/2022",
+                      "Wingtip Toys Ltd | London, England", "Supported 12 students.",
+                      "Bank Teller        05/2014 — 01/2016", "Margie's Travel | London, England", "Opened accounts.",
+                      "Clinical Social Worker        01/2008 — 12/2010",
+                      "Lakeside Unified School District | Toronto, Ontario", "Ran the intake.") == [
+        ("Proseware, Inc.", "11/2022", "01/2024", "", "Seattle, WA"),
+        ("Wingtip Toys Ltd", "04/2020", "09/2022", "", "London, England"),
+        ("Margie's Travel", "05/2014", "01/2016", "", "London, England"),
+        ("Lakeside Unified School District", "01/2008", "12/2010", "", "Toronto, Ontario")]
+
+
+def test_a_bulleted_degree_or_certifications_line_is_read_without_its_mark():
+    """A degree bulleted under its school, and 'Certifications: ...' bulleted in another section, as Word bullets and
+    PDFs give them: the mark is no part of the degree, and the certifications are read."""
+    profile = parse_resume_text(
+        "Taylor Quinn\ntaylor.quinn@example.com\nEXPERIENCE\nNorthwind Labs | Data Engineer   2019 – Present\n"
+        "EDUCATION\nState University   2012 – 2016\n• B.S. in Computer Science\nLakeside Community College   2010 – "
+        "2012\n• Associate of Arts\nSKILLS\n"
+        "• Certifications: AWS Certified Solutions Architect – Associate, Certified ScrumMaster (CSM)")
+    assert [(e.school, e.degree, e.field) for e in profile.education] == [
+        ("State University", "B.S.", "Computer Science"), ("Lakeside Community College", "Associate of Arts", "")]
+    assert [c.name for c in profile.certifications] == [
+        "AWS Certified Solutions Architect – Associate", "Certified ScrumMaster (CSM)"]
+
+
+def test_the_apps_job_line_with_one_date_and_a_title_holding_a_work_mode():
+    """The app's job line with one date ('Principal · Bluefin Analytics · Onsite   Feb 2022', two parts and a work mode
+    or place) is read even when the rules know neither part as a title; a line of one date without a place or mode
+    stays no job. A work-mode word inside the title ('Hybrid Cloud Engineer') is no work mode."""
+    assert experience("Data Analyst · Northwind Labs · Austin, TX   Mar 2022 – Present", "• Ran the reports.",
+                      "Principal · Bluefin Analytics · Onsite   Feb 2022", "• Ran the school.",
+                      "Hybrid Cloud Engineer · Contoso Systems · Seattle, WA   2016 – 2019", "• Moved it.") == [
+        ("Northwind Labs", "Mar 2022", "Present", "", "Austin, TX"), ("Bluefin Analytics", "", "Feb 2022", "Onsite", ""),
+        ("Contoso Systems", "2016", "2019", "", "Seattle, WA")]
+    assert experience("Award · Employee of the Year · 2021") == []

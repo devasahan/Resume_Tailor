@@ -7,7 +7,14 @@ with ' | ' and hyphens, and some stacked the title on its own line. Every fact t
 the contact details, each employer (name, dates, work mode, place), each school and each certification. The profile
 keeps no job titles (each run writes its own), so a title must never come back as an employer or a place.
 """
+import io
+import time
+
 import pytest
+from docx import Document
+from docx.enum.style import WD_STYLE_TYPE
+from docx.oxml import OxmlElement
+from docx.oxml.ns import qn
 
 from app.parsing.heuristic import parse_resume_text
 from app.parsing.resume_parser import extract_text
@@ -290,3 +297,163 @@ def test_a_certification_with_a_year_and_no_issuer_reads_back_from_the_word_copy
     assert "\nSix Sigma Green Belt\t2020\n" in text
     assert [c.model_dump() for c in parse_resume_text(text).certifications] == [
         c.model_dump() for c in certifications]
+
+
+# ---------------------------------------------------------------- the reader's third review: people's Word files
+def numbered(paragraph, num_id: str = "1"):
+    """Word's own bullet or number on a paragraph (its w:numPr, as the Bullets button gives it); numId 0 is none."""
+    num = OxmlElement("w:numPr")
+    for tag, value in (("w:ilvl", "0"), ("w:numId", num_id)):
+        child = OxmlElement(tag)
+        child.set(qn("w:val"), value)
+        num.append(child)
+    paragraph._p.get_or_add_pPr().append(num)
+    return paragraph
+
+
+def word_upload(document: Document) -> str:
+    data = io.BytesIO()
+    document.save(data)
+    return extract_text(data.getvalue(), "resume.docx")
+
+
+def word_resume(*paragraphs) -> Document:
+    """Taylor Quinn's invented Word resume: the header, then (text, style, numbering) per paragraph."""
+    document = Document()
+    document.add_paragraph("Taylor Quinn")
+    document.add_paragraph("taylor.quinn@example.com | (555) 010-4477 | Seattle, WA")
+    for text, style, num_id in paragraphs:
+        paragraph = document.add_paragraph(text, style=style)
+        if num_id is not None:
+            numbered(paragraph, num_id)
+    return document
+
+
+def test_a_word_paragraph_gets_its_bullet_only_where_word_draws_one():
+    """A paragraph in a List style is marked '• ' only when Word draws a bullet or number before it: its own
+    numbering, or its style's ('List Bullet'). A heading or job line left in List Paragraph with its bullet taken off
+    (numId 0), or in List Continue, has none on the page, so it is still a heading or a job line."""
+    text = word_upload(word_resume(
+        ("EXPERIENCE", None, None), ("Northwind Labs | Data Engineer\t2019 – Present", None, None),
+        ("Built the reporting pipeline for the finance team.", "List Paragraph", "1"),
+        ("Bluefin Commerce — Data Analyst (contract)\t2016 – 2019", "List Continue", None),
+        ("Wrote the weekly sales reports.", "List Bullet", None),
+        ("Store Manager\t2013 – 2016", "List Paragraph", "0"), ("Contoso Market, Seattle, WA", "List Paragraph", "0"),
+        ("Ran the store.", "List Paragraph", "1"),
+        ("EDUCATION", "List Paragraph", "0"), ("State University | B.S. in Computer Science\t2009 – 2013", None, None)))
+    assert "\n• Built the reporting pipeline for the finance team.\n• " not in text
+    assert "\n• Wrote the weekly sales reports.\n" in text and "\n• Ran the store.\n" in text
+    assert "\nEDUCATION\n" in text and "\nStore Manager\t2013 – 2016\n" in text
+    profile = parse_resume_text(text)
+    assert [(c.name, c.start, c.end) for c in profile.companies] == [
+        ("Northwind Labs", "2019", "Present"), ("Bluefin Commerce", "2016", "2019"),
+        ("Contoso Market, Seattle, WA", "2013", "2016")]
+    assert [(e.school, e.degree) for e in profile.education] == [("State University", "B.S.")]
+
+
+@pytest.mark.parametrize("style", ["List Paragraph", "List Number"])
+def test_section_headings_word_numbers_stay_headings(style):
+    """Headings Word bullets or numbers ('1. Work Experience'): a heading is never marked, so the upload is read (it was
+    refused for having no employer)."""
+    num_id = "1" if style == "List Paragraph" else None
+    text = word_upload(word_resume(
+        ("WORK EXPERIENCE", style, num_id), ("Bluefin Commerce, Austin, TX\tMar 2021 – Present", None, None),
+        ("Store Manager", None, None), ("Ran a team of 14 across two shifts.", "List Paragraph", "1"),
+        ("Fourth Coffee, Austin, TX\tJun 2017 – Feb 2021", None, None), ("Shift Supervisor", None, None),
+        ("Education", style, num_id), ("Lakeside Community College\t2015 – 2017", None, None),
+        ("Associate of Arts, Business", None, None),
+        ("Certifications", style, num_id), ("ServSafe Food Handler, National Restaurant Association, 2019", None, None)))
+    profile = parse_resume_text(text)
+    assert [(c.name, c.start, c.end) for c in profile.companies] == [
+        ("Bluefin Commerce, Austin, TX", "Mar 2021", "Present"), ("Fourth Coffee, Austin, TX", "Jun 2017", "Feb 2021")]
+    assert [e.school for e in profile.education] == ["Lakeside Community College"]
+    assert [c.name for c in profile.certifications] == ["ServSafe Food Handler"]
+
+
+def test_a_bulleted_degree_and_certifications_line_read_from_a_word_file():
+    """Word bullets on a degree under its school and on 'Certifications: ...' in Skills: 'B.S.' (not '• B.S.'), and
+    both certifications."""
+    profile = parse_resume_text(word_upload(word_resume(
+        ("EXPERIENCE", None, None), ("Northwind Labs | Data Engineer\t2019 – Present", None, None),
+        ("EDUCATION", None, None), ("State University\t2010 – 2014", None, None),
+        ("B.S. in Computer Science", "List Paragraph", "1"), ("SKILLS", None, None),
+        ("Certifications: AWS Certified Solutions Architect – Associate, Certified ScrumMaster (CSM)", "List Paragraph",
+         "1"))))
+    assert [(e.school, e.degree, e.field) for e in profile.education] == [("State University", "B.S.", "Computer Science")]
+    assert [c.name for c in profile.certifications] == [
+        "AWS Certified Solutions Architect – Associate", "Certified ScrumMaster (CSM)"]
+
+
+def test_word_styles_are_read_once_and_never_stop_an_upload():
+    """The styles are read once per file, not once per paragraph: a file with a thousand styles and thousands of
+    paragraphs reads at once (it took seconds, longer with more). A style whose id holds a double quote (python-docx
+    keeps it from the name) no longer stops the upload."""
+    document = word_resume(("EXPERIENCE", None, None))
+    quoted = document.styles.add_style('Job "Line"', WD_STYLE_TYPE.PARAGRAPH)
+    document.add_paragraph("Northwind Labs | Data Engineer\t2019 – Present", style=quoted)
+    assert [c.name for c in parse_resume_text(word_upload(document)).companies] == ["Northwind Labs"]
+    for index in range(1000):
+        document.styles.add_style(f"Extra {index}", WD_STYLE_TYPE.PARAGRAPH)
+    for _ in range(3000):
+        document.add_paragraph("")
+    started = time.perf_counter()
+    assert "\nNorthwind Labs | Data Engineer\t2019 – Present" in word_upload(document)
+    assert time.perf_counter() - started < 1.5
+
+
+# ---------------------------------------------------------------- the reader's third review: the app's own files
+def small_resume(jobs: list[tuple[str, Company]]) -> Resume:
+    profile = Profile(name=NAME, contact=CONTACT, companies=[company for _title, company in jobs])
+    return Resume(profile=profile, headline="Store Lead", summary="Practical professional.",
+                  skills=[SkillGroup(category="Tools", skills=["Point of Sale", "Inventory"])],
+                  experience=[ResumeExperience(company_index=i, job_title=title, bullets=["Served 200 guests a day."])
+                              for i, (title, _company) in enumerate(jobs)])
+
+
+def every_render(resume: Resume) -> dict[str, str]:
+    texts = {f"{paper} step {step}": extract_text(render_resume_pdf(resume, style)[0], "resume.pdf")
+             for paper in ("Letter", "A4") for step, style in enumerate(styles(paper))}
+    texts.update({f"Word {paper}": extract_text(resume_docx(resume, styles(paper)[0]), "resume.docx")
+                  for paper in ("Letter", "A4")})
+    return texts
+
+
+LONG_TITLE = ("Customer Experience Associate for Premium Accounts, Loyalty Programs and In-Store Events Across Three "
+              "Locations")
+
+
+def test_long_titles_over_their_companies_read_back():
+    """The app breaks a long title's line before its company. One such line over an employer named like a role
+    ('Chief Tailspin Outfitters', a known limit) no longer turns the section's other long titles into employers; and
+    a company with no place or work mode under a broken line keeps its name when the section's broken lines show the
+    app's layout. (At the design's sizes the 83-character title wraps, and its last word is read as the employer.)"""
+    lakeside = Company(name="Lakeside Unified School District", start="2016", end="2019", location="Paris, France")
+    fourth = Company(name="Fourth Coffee", start="2014", end="2016")
+    resume = small_resume([
+        ("Head of Platform Engineering, Developer Experience, Observability and Site Reliability",
+         Company(name="Chief Tailspin Outfitters", start="2019", end="Present", location="London, UK", mode="Remote")),
+        (LONG_TITLE, lakeside), ("Sales Associate", fourth)])
+    for label, text in every_render(resume).items():
+        assert [c.model_dump() for c in parse_resume_text(text).companies[1:]] == [
+            lakeside.model_dump(), fourth.model_dump()], label
+    northwind = Company(name="Northwind Labs", start="11/2022", end="Present")
+    resume = small_resume([
+        ("Lead Teacher for Early Childhood Literacy and Bilingual Family Engagement Programs", northwind),
+        ("Lead Barista and Coffee Program Mentor for the Downtown Flagship Store",
+         Company(name="Fourth Coffee", start="Feb 2020", end="Sep 2022", location="Seattle, WA", mode="Onsite"))])
+    for label, text in every_render(resume).items():
+        if " step 0" not in label:
+            assert parse_resume_text(text).companies[0].model_dump() == northwind.model_dump(), label
+
+
+def test_the_apps_job_with_one_date_and_a_title_holding_a_work_mode_read_back():
+    """A job with only its end date ('Principal · Bluefin Analytics · Onsite   Feb 2022') is read back with that
+    date, although the rules know neither part as a title; 'Hybrid Cloud Engineer' gives a job with no work mode none."""
+    jobs = [("Data Analyst", Company(name="Northwind Labs", start="Mar 2022", end="Present", location="Austin, TX")),
+            ("Principal", Company(name="Bluefin Analytics", start="", end="Feb 2022", mode="Onsite")),
+            ("Hybrid Cloud Engineer", Company(name="Contoso Systems", start="2016", end="2019", location="Seattle, WA"))]
+    resume = small_resume(jobs)
+    for label, text in (("PDF", extract_text(render_resume_pdf(resume, styles("Letter")[0])[0], "resume.pdf")),
+                        ("Word", extract_text(resume_docx(resume, styles("Letter")[0]), "resume.docx"))):
+        assert [c.model_dump() for c in parse_resume_text(text).companies] == [
+            company.model_dump() for _title, company in jobs], label

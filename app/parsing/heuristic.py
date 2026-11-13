@@ -287,8 +287,9 @@ def _job_dates(line: str) -> tuple[str, str, str] | None:
     a job ('• Northwind Labs — Data Engineer (2019 – 2021)')."""
     match = DATE_RANGE_RE.search(line)
     if match:
-        rest = (line[: match.start()] + " " + line[match.end() :]).strip(" ,;|-–—•·()")
-        text = re.sub(r"\([^()]*\)?", " ", SEPARATOR_RE.sub(" ", _LIST_MARK.sub("", rest)))
+        # without its list mark ('* Northwind Labs', a PDF's Word bullet U+F0B7), which is no part of the employer
+        rest = _LIST_MARK.sub("", line[: match.start()] + " " + line[match.end() :]).strip(" ,;|-–—•·()")
+        text = re.sub(r"\([^()]*\)?", " ", SEPARATOR_RE.sub(" ", rest))  # judged without notes in brackets and signs
         if _LIST_MARK.match(line) and not _capitalized(" ".join(w for w in text.split() if any(c.isalpha() for c in w))):
             return None
         start, end = match.group(1).strip(), match.group(2).strip()
