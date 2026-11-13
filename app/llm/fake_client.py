@@ -20,6 +20,7 @@ import re
 
 from ..parsing.heuristic import parse_resume_text
 from ..pipeline.facts import is_expired
+from ..pipeline.notes import clean_notes
 from ..pipeline.validate import same_certification
 from ..prompts import RETRY_MARKER
 from .base import LLMClient, LLMResult, Usage
@@ -180,9 +181,10 @@ def guess_role(jd: str) -> tuple[str, str]:
 
 
 def first_project(notes: str) -> str:
-    """The first product or project a person's notes name: the first line's words before a colon, a bracket or a
-    dash, at most five ('Order tracking app (2023): rebuilt its API' -> 'Order tracking app')."""
-    for line in notes.splitlines():
+    """The first product or project a person's notes name, as the model reads them (no links or sources): the first
+    line's words before a colon, a bracket or a dash, at most five ('Order tracking app (2023): rebuilt its API' ->
+    'Order tracking app')."""
+    for line in clean_notes(notes).splitlines():
         words = re.split(r"[:(]| - | – ", line.strip(" -*•\t"))[0].split()
         if words:
             return " ".join(words[:5])

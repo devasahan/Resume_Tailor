@@ -125,12 +125,13 @@ function certificationsBox(r) {
 
 // The person's own notes on the products and projects they worked on at each employer. Tailoring writes that
 // employer's bullets about this work; the notes themselves are never printed.
+const MAX_PROJECT_CHARS = 4000;  // as app/schemas.py; checked on Save, so a long paste is never cut off unseen
 function projectsBox(r) {
   const jobs = r.profile.companies || [];
   if (!jobs.length) return null;
   let names = jobs.map(job => job.name);  // as shown: the save is refused if the employers changed since (another tab)
   const areas = jobs.map(job => {
-    const area = el('textarea', { rows: 3, maxlength: 2000, 'aria-label': `Projects you worked on at ${job.name}`,
+    const area = el('textarea', { rows: 3, 'aria-label': `Projects you worked on at ${job.name}`,
       placeholder: 'Products and projects you worked on here, one per line, with dates if you know them. For example:\nOrder tracking app (2023): rebuilt the API behind it' });
     area.value = area.dataset.saved = job.projects || '';
     return area;
@@ -144,6 +145,12 @@ function projectsBox(r) {
   const status = el('span', { class: 'small muted' });
   const save = el('button', { type: 'button', class: 'small primary', text: 'Save projects' });
   save.addEventListener('click', async () => {
+    const long = jobs.map((job, i) => [job.name, areas[i].value.trim().length]).filter(([, n]) => n > MAX_PROJECT_CHARS);
+    if (long.length) {
+      status.textContent = long.map(([name, n]) => `${name}: ${n.toLocaleString('en-US')} characters.`).join(' ')
+        + ` Each employer's notes can be up to ${MAX_PROJECT_CHARS.toLocaleString('en-US')} characters: shorten them, then press Save projects again.`;
+      return;
+    }
     save.disabled = true;
     status.textContent = 'Saving…';
     try {
@@ -157,7 +164,7 @@ function projectsBox(r) {
     finally { save.disabled = false; }
   });
   return el('details', { class: 'project-list', 'data-resume': r.id }, summary,
-    el('p', { class: 'small muted', text: 'For each employer, list the products and projects you really worked on there; dates help. The AI writes that job\'s bullets about this work: what you built or ran for it, how, and what changed. The notes themselves are never printed.' }),
+    el('p', { class: 'small muted', text: 'For each employer, list the products and projects you really worked on there; dates help. You can paste your notes as they are: links and lists of sources are left out. The AI writes that job\'s bullets about this work: what you built or ran for it, how, and what changed. The notes themselves are never printed.' }),
     jobs.map((job, i) => el('label', { class: 'project' },
       el('span', { class: 'small' }, el('strong', { text: job.name }), ` · ${job.start || '?'} - ${job.end || 'Present'}`),
       areas[i])),

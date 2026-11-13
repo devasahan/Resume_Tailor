@@ -41,6 +41,7 @@ from ..schemas import (
 )
 from . import spelling
 from .facts import is_expired, months_phrase, parse_point, stay_months
+from .notes import clean_notes
 
 _PUNCT_MAP = str.maketrans({
     "\u2019": "'", "\u2018": "'", "\u201c": '"', "\u201d": '"', "\u2013": "-", "\u2014": " - ", "\u2015": " - ",
@@ -1676,7 +1677,7 @@ def era_problems(resume: Resume) -> list[str]:
         company = resume.profile.companies[exp.company_index]
         text = "\n".join([exp.job_title, *exp.bullets])
         when = f"{company.name} ({company.start or '?'} - {company.end or 'Present'})"
-        notes = company.projects  # the person's own notes: a tool they name for this job is theirs there
+        notes = clean_notes(company.projects)  # the person's own notes: a tool they name for this job is theirs there
         if index >= AI_RECENT_JOBS:
             for term in AI_TOOLS:
                 if _mentions_tool(text, term) and not _mentions_tool(notes, term):
@@ -1817,19 +1818,20 @@ def is_round_figure(token: str) -> bool:
     return (value >= 10 and value % 5 == 0) or (thousands > 0 and value < 10)
 
 
-def figure_style_problems(resume: Resume, allowed_text: str) -> list[str]:
+def figure_style_problems(resume: Resume, allowed_text: str, notes: str = "") -> list[str]:
     """Estimated figures that look like round guesses or approximations ("35%", "40+", "~30%").
 
-    Figures that appear in `allowed_text` (the user's hints and the computed facts) are never reported.
+    Figures that appear in `allowed_text` (the user's hints and the computed facts) are never reported, nor those
+    the person's project notes give whole (`notes`, see note_figures).
     """
-    allowed = allowed_text.lower()
+    allowed, own = allowed_text.lower(), note_figures(notes)
     problems: list[str] = []
     texts = [resume.summary] + [bullet for exp in resume.experience for bullet in exp.bullets]
     for text in texts:
         for match in _APPROX.finditer(text):
             problems.append(match.group(0).strip())
         for token in _numbers_in(text):
-            if token and token.lower() not in allowed and is_round_figure(token):
+            if token and token.lower() not in allowed and figure_key(token) not in own and is_round_figure(token):
                 problems.append(token)
     return list(dict.fromkeys(problems))
 
@@ -2699,14 +2701,17 @@ def _quoted(items: list[str]) -> str:
     return " and ".join(quoted) if len(quoted) <= 2 else ", ".join(quoted[:-1]) + " and " + quoted[-1]
 
 
-def claim_flags(resume: Resume, jd: str, hints: str) -> list[Flag]:
-    """Things the user did not provide and should confirm before sending the resume."""
+def claim_flags(resume: Resume, jd: str, hints: str, notes: str = "") -> list[Flag]:
+    """Things the user did not provide and should confirm before sending the resume. `notes`: the person's project
+    notes as the model reads them (project_notes): the skills they name are the person's own, and so are the figures
+    they give whole (note_figures; the digits of a year or a date are not one)."""
     flags: list[Flag] = []
-    hints_l = hints.lower()
+    hints_l, own = hints.lower(), note_figures(notes)
 
     def check_numbers(section: str, text: str) -> None:
         """One flag naming every estimate in the text (a job's first bullet gives its size and its result)."""
-        tokens = list(dict.fromkeys(t for t in _numbers_in(text) if t and t.lower() not in hints_l))
+        tokens = list(dict.fromkeys(t for t in _numbers_in(text)
+                                    if t and t.lower() not in hints_l and figure_key(t) not in own))
         if not tokens:
             return
         if len(tokens) == 1:
@@ -2728,7 +2733,7 @@ def claim_flags(resume: Resume, jd: str, hints: str) -> list[Flag]:
             check_numbers(f"experience:{exp.company_index}", bullet)
     for group in resume.skills:
         for item in group.skills:
-            if not _in_either_spelling(item, jd) and not _in_either_spelling(item, hints):
+            if not _in_either_spelling(item, jd) and not _in_either_spelling(item, f"{hints}\n{notes}"):
                 flags.append(
                     Flag(section="skills", text=item, level="info",
                          reason="Related skill added (not in the job description). Keep it only if you have it.")
@@ -2764,12 +2769,14 @@ def posting_match_flags(resume: Resume, analysis: JDAnalysis, hints: str) -> lis
     return flags[:MAX_POSTING_FLAGS]
 
 
-def cover_flags(letter: CoverLetter, hints: str) -> list[Flag]:
+def cover_flags(letter: CoverLetter, hints: str, notes: str = "") -> list[Flag]:
+    """A letter paragraph with a figure the person did not give: not in the hints, and not whole in their project
+    notes (`notes`, see note_figures)."""
     flags: list[Flag] = []
-    hints_l = hints.lower()
+    hints_l, own = hints.lower(), note_figures(notes)
     for paragraph in letter.paragraphs:
         for token in _numbers_in(paragraph):
-            if token.lower() not in hints_l:
+            if token.lower() not in hints_l and figure_key(token) not in own:
                 flags.append(
                     Flag(section="cover_letter", text=paragraph, level="verify",
                          reason=f"Contains '{token}', which is not in your hints. Only keep figures you can back up.")
@@ -2795,16 +2802,57 @@ _PERSON_TITLES = frozenset({"mr", "mrs", "ms", "mx", "dr", "prof", "sir", "dame"
 
 
 def project_notes(profile: Profile) -> str:
-    """The person's own project notes, every employer's (Profile page): their figures, tools and names are the
-    person's own, like the hints."""
-    return "\n".join(c.projects.strip() for c in profile.companies if c.projects.strip())
+    """The person's own project notes, every employer's (Profile page), as the model reads them (clean_notes: no links
+    or source lists): the tools and names in them are the person's own, and so are the figures they give whole
+    (note_figures)."""
+    return "\n".join(notes for notes in (clean_notes(c.projects) for c in profile.companies) if notes)
+
+
+def figure_key(token: str) -> str:
+    """A figure as the checks compare it with the notes': lower case, without currency signs, thousands commas, '+'
+    or '~' ('$1,200+' -> '1200', '12.4K' -> '12.4k')."""
+    return re.sub(r"[$€£,+~\s]", "", token.lower())
+
+
+def note_figures(notes: str) -> frozenset[str]:
+    """The figures the person's notes give, each whole (figure_key): '450' there makes '450' or '450+' in a bullet the
+    person's own, never the '4' or the '20' that only sit inside a '450' or a '2024'."""
+    return frozenset(figure_key(token) for token in _numbers_in(notes) if token)
+
+
+_NOTE_NAME = re.compile(r"[A-Z][\w'\u2019&.]*(?:[ ][A-Z][\w'\u2019&.]*)*")
+
+
+def _clause_start(line: str, position: int) -> bool:
+    """True when nothing but list marks or Markdown comes before `position` in the line, or the words before it end
+    a sentence or a label ('.', '!', '?', ':' or ';', also inside bold: '**Role:** Optimized ...')."""
+    before = re.sub(r"[*_`~\s]+$", "", line[:position])
+    return not re.search(r"\w", before) or before[-1:] in ".!?:;"
+
+
+def note_names(notes: str) -> list[str]:
+    """The product and project names in the person's notes, for the spelling keep-list: runs of capitalised words
+    ('Order Hub', 'Data Visualization Studio'), and a single capitalised word inside a sentence ('the Optimizer
+    service'). A capital at the start of a line, a sentence or the text after a colon is no sign of a name: a single
+    word there is left out ('Optimized the checkout API'), and so is the first word of a run there when it has a
+    spelling in the other style ('Modernized Partner Portal' -> 'Partner Portal')."""
+    names: list[str] = []
+    for line in notes.splitlines():
+        for match in _NOTE_NAME.finditer(line):
+            words = match.group(0).split(" ")
+            start = _clause_start(line, match.start())
+            if start and len(spelling.twins(words[0])) > 1:
+                words, start = words[1:], False
+            if len(words) > 1 or (words and not start):
+                names.append(" ".join(words))
+    return names
 
 
 def known_names(resume: Resume, analysis: JDAnalysis | None = None, company: str = "", manager: str = "") -> list[str]:
     """What keeps its own spelling: the employers, the schools, the hiring company (each also in its short form), the
     names in the person's project notes, and the hiring manager, also by each part of their name ('Ms. Gray')."""
     names = [c.name for c in resume.profile.companies] + [e.school for e in resume.profile.education]
-    names += re.findall(r"\b[A-Z][\w'\u2019&.]*(?:[ ][A-Z][\w'\u2019&.]*)*", project_notes(resume.profile))
+    names += note_names(project_notes(resume.profile))
     names += [cert.name for cert in resume.certifications]
     if analysis is not None:
         names.append(analysis.company)

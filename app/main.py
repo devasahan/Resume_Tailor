@@ -35,7 +35,7 @@ from .llm.router import Router
 from .parsing.heuristic import MAX_OWN_CERTIFICATIONS, read_certification_list
 from .parsing.resume_parser import MAX_BYTES, extract_text, parse_resume, profile_warnings, read_resume
 from .pipeline import validate
-from .pipeline.facts import is_expired
+from .pipeline.facts import is_expired, parse_point
 from .pipeline.fit import saved_resume_pdf, saved_style
 from .pipeline.generate import GenerationFailed
 from .pipeline.job_facts import check_job_facts
@@ -263,22 +263,47 @@ def profile_problem(profile: Profile) -> str | None:
     return None
 
 
-def carry_project_notes(profile: Profile, earlier: list[Profile]) -> list[str]:
-    """A resume uploaded again keeps the project notes typed on the Profile page for the same employers (the name,
-    whatever its case and spacing), from the newest earlier upload that has some. Returns the employers given notes."""
-    def key(name: str) -> str:
-        return " ".join(name.lower().split())
+KEPT_NOTES = "Project notes kept from your earlier upload for: "  # an upload note every user sees
 
-    kept = []
-    for company in profile.companies:
-        if company.projects.strip():
+
+def _same_name(name: str) -> str:
+    return " ".join(name.lower().split())
+
+
+def _paired(new: list[Company], old: list[Company]) -> list[tuple[Company, Company]]:
+    """Employers of the same name in a new and an earlier upload, in pairs: those with the same start date first (a
+    promotion listed as two jobs keeps each job's notes), then the rest in their order. Each one pairs once at most."""
+    def start(company: Company) -> tuple[int, int] | str:
+        return parse_point(company.start, is_end=False) or _same_name(company.start)
+
+    pairs, left = [], list(old)
+    for company in new:
+        match = next((o for o in left if start(o) == start(company)), None)
+        if match is not None:
+            pairs.append((company, match))
+            left.remove(match)
+    rest = [company for company in new if all(company is not pair[0] for pair in pairs)]
+    return pairs + list(zip(rest, left))
+
+
+def carry_project_notes(profile: Profile, earlier: list[Profile]) -> list[str]:
+    """A resume uploaded again keeps the project notes typed on the Profile page. For each employer (the name,
+    whatever its case and spacing), they come from the newest earlier upload of the same person (the same name) that
+    lists it, so notes cleared there stay cleared, and another person's resume never gets them. Returns the names of
+    the employers given notes."""
+    person = _same_name(profile.name)
+    mine = [old for old in earlier if _same_name(old.name) == person]  # newest first
+    kept: list[str] = []
+    for name in dict.fromkeys(_same_name(company.name) for company in profile.companies):
+        source = next((old for old in mine if any(_same_name(c.name) == name for c in old.companies)), None)
+        if source is None:
             continue
-        found = next((c.projects for old in earlier for c in old.companies
-                      if key(c.name) == key(company.name) and c.projects.strip()), "")
-        if found:
-            company.projects = found
-            kept.append(company.name)
-    return kept
+        for company, old in _paired([c for c in profile.companies if _same_name(c.name) == name],
+                                    [c for c in source.companies if _same_name(c.name) == name]):
+            if old.projects.strip() and not company.projects.strip():
+                company.projects = old.projects
+                kept.append(company.name)
+    return list(dict.fromkeys(kept))
 
 
 def resume_entry(entry: dict, registry: Registry, admin: bool) -> dict:
@@ -287,10 +312,11 @@ def resume_entry(entry: dict, registry: Registry, admin: bool) -> dict:
     method = entry["method"]
     profile: Profile = entry["profile"]
     expired = [cert.name for cert in profile.certifications if is_expired(cert.expires)]
-    if not admin:
+    if not admin:  # of the upload notes, only which project notes were kept: the others name the models
+        kept = [note for note in entry["notes"] if note.startswith(KEPT_NOTES)]
         return {
             "id": entry["id"], "created_at": entry["created_at"], "filename": entry["filename"], "method": "",
-            "read_with": "", "profile": profile.model_dump(), "warnings": profile_warnings(profile),
+            "read_with": "", "profile": profile.model_dump(), "warnings": kept + profile_warnings(profile),
             "expired": expired,
         }
     if method.startswith("model:"):
@@ -1036,7 +1062,7 @@ def create_app(db: Database | None = None, registry: Registry | None = None, rou
             raise PlainError(422, f"Could not find {missing} in {filename}, so it was not saved.{tip}")
         kept = carry_project_notes(profile, [entry["profile"] for entry in db.list_profiles(user_id=user.id)])
         if kept:
-            notes.append("Project notes kept from your earlier upload for: " + ", ".join(kept) + ".")
+            notes.append(KEPT_NOTES + ", ".join(kept) + ".")
         profile_id = db.save_profile(profile, user_id=user.id, filename=filename, method=method, notes=notes)
         db.purge(db.get_settings()["retention_days"])
         entry = db.profile_entry(profile_id, user_id=user.id)

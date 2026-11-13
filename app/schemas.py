@@ -25,7 +25,7 @@ class Contact(BaseModel):
     website: str = ""
 
 
-MAX_PROJECT_CHARS = 2000  # one employer's project notes (Profile page)
+MAX_PROJECT_CHARS = 4000  # one employer's project notes (Profile page), sources included: the model reads fewer
 
 
 class Company(BaseModel):

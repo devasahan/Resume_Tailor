@@ -220,9 +220,9 @@ def run_checks(result: TailorResult, jd_text: str) -> None:
             "Required by the posting but not shown in the summary or a bullet: " + ", ".join(absent + listed_only)
             + ". An ATS and a recruiter look for these in your experience, not only in the skills list."
         )
-    own = validate.project_notes(result.resume.profile)  # the person's project notes: as true as the hints
-    allowed = f"{result.hints}\n{result.facts}\n{own}"
-    flags = validate.claim_flags(result.resume, jd_text, allowed)
+    own = validate.project_notes(result.resume.profile)  # the person's project notes, as the model read them
+    allowed = f"{result.hints}\n{result.facts}"
+    flags = validate.claim_flags(result.resume, jd_text, allowed, own)  # a figure the notes give whole is theirs
     # the names the run's checks kept out of the text, in either Settings mode: the rows (or, while the section was
     # off, the job post's certifications the model listed), the person's own and the job post's credential
     # abbreviations (CISSP, PMP)
@@ -243,14 +243,14 @@ def run_checks(result: TailorResult, jd_text: str) -> None:
             "Many bullets carry figures (" + "; ".join(dense) + "). Recruiters read a few strong numbers better "
             "than many: consider keeping at most 2 per role."
         )
-    rounded = validate.figure_style_problems(result.resume, allowed)
+    rounded = validate.figure_style_problems(result.resume, allowed, own)
     if rounded:
         result.ats_warnings.append(
             "These figures look rounded or approximate: " + ", ".join(rounded[:8])
             + ". Replace them with your real numbers (specific values such as 23.4% or 21% read as measured)."
         )
     if result.cover_letter:
-        result.flags += validate.cover_flags(result.cover_letter, f"{result.hints}\n{own}")
+        result.flags += validate.cover_flags(result.cover_letter, result.hints, own)
 
 
 async def fit_report(resume: Resume, paper: str) -> tuple[FitStyle, int, bool, list[str]]:
@@ -351,8 +351,9 @@ async def run_tailor(
         steps.mark("bullet plan")
         context = {"profile": profile.model_dump(), "jd": jd, "hints": hints, "bullets": budget, "metrics": metrics_mode,
                    "spelling": spelling, "certifications_section": certifications_on}
-        # what the person gave as true: the hints, the facts and their project notes (their figures are their own)
-        own_text = f"{hints}\n{facts}\n{validate.project_notes(profile)}"
+        # what the person gave as true: the hints, the facts and their project notes (as the model reads them)
+        own_notes = validate.project_notes(profile)
+        own_text = f"{hints}\n{facts}\n{own_notes}"
 
         def build(out: TailorOutput):
             """(output, resume, notes). The analysis keeps keywords only, the headline the role's short name,
@@ -393,7 +394,7 @@ async def run_tailor(
             return out.jd_analysis.model_copy(update={
                 "keywords": [k for k in out.jd_analysis.keywords if not validate.names_certification(k, names)]})
 
-        allowed_figures = own_text
+        allowed_figures = f"{hints}\n{facts}"  # and the figures own_notes give whole
 
         def refine(value) -> Ask | None:
             """Ask once to fix the draft if it uses too many figures, round guesses, thin text, leaves must-have
@@ -435,7 +436,7 @@ async def run_tailor(
                        "values match the percentage (from 41 to 32 is 22%). " if mismatched else "")
                     + "Keep a figure the candidate gave exactly as it is."
                 )
-            rounded = validate.figure_style_problems(value[1], allowed_figures)
+            rounded = validate.figure_style_problems(value[1], allowed_figures, own_notes)
             if len(rounded) >= 2:
                 feedback.append(
                     "Some figures look like round guesses or approximations: " + ", ".join(rounded[:8])

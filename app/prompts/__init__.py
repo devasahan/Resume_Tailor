@@ -17,6 +17,7 @@ from ..pipeline.facts import (
     months_phrase,
     stay_months,
 )
+from ..pipeline.notes import clean_notes
 from ..schemas import CareerStep, Certification, Company, JDAnalysis, Resume
 
 PROMPT_VERSION = "v36"
@@ -126,22 +127,10 @@ def tailor_system(metrics_mode: str = "estimate", spelling: str = "us", certific
                  spelling_rule=_spelling_rule(spelling), certifications_rule=_read(rule).strip())
 
 
-_LINK = re.compile(r"\[([^\]]*)\]\([^)]*\)|<?https?://\S+|\bwww\.\S+", re.IGNORECASE)
-_SOURCES_LINE = re.compile(r"^\W*(?:sources?|links?|references?)\W*$", re.IGNORECASE)
-
-
 def prompt_notes(text: str) -> str:
-    """One employer's notes as the model reads them: no links (a Markdown link keeps its words) and no 'Sources'
-    lines, at most one blank line in a row, and angle brackets as their single-quote kin, so a note can never close
-    the block or open another."""
-    lines = []
-    for line in text.strip().splitlines():
-        line = _LINK.sub(lambda m: m.group(1) or "", line).rstrip()
-        if _SOURCES_LINE.match(line) or (line.strip(" -*•") == "" and line.strip()):
-            continue
-        lines.append(line)
-    notes = re.sub(r"\n{3,}", "\n\n", "\n".join(lines)).strip()
-    return notes.replace("<", "‹").replace(">", "›")
+    """One employer's notes as the model reads them (clean_notes: no links or source lists), with angle brackets as
+    their single-quote kin, so a note can never close the block or open another."""
+    return clean_notes(text).replace("<", "‹").replace(">", "›")
 
 
 def projects_block(companies: list[Company]) -> str:
