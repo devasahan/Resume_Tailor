@@ -172,3 +172,45 @@ def test_the_history_page_links_each_job_post_safely(client):
     assert "'Job title', 'Job link', 'File'" in page and "postLink(d.job_link)" in page
     assert "url.protocol !== 'https:' && url.protocol !== 'http:'" in page  # never javascript: or data:
     assert "href: url.href, target: '_blank', rel: 'noopener noreferrer'" in page and "innerHTML" not in page
+
+
+def test_an_edit_in_flight_keeps_a_link_recorded_meanwhile(client, monkeypatch):
+    """The admin's resume edit lays the pages out before saving; a Rewrite cover letter that records a corrected link
+    in that time keeps it."""
+    import app.main as main_module
+
+    save_profile(client)
+    run_id = tailor(client, job_link=LINK).json()["run_id"]
+    db, real = client.app.state.db, main_module.fit_report
+
+    async def fit_while_a_letter_is_written(*args, **kwargs):
+        fresh = db.get_run(run_id)
+        fresh.job_link = "https://careers.example.org/jobs/7"  # what the letter's request records meanwhile
+        db.update_run(fresh)
+        return await real(*args, **kwargs)
+
+    monkeypatch.setattr(main_module, "fit_report", fit_while_a_letter_is_written)
+    resume = client.get(f"/api/runs/{run_id}").json()["resume"]
+    edit = {"headline": resume["headline"], "summary": resume["summary"], "skills": resume["skills"],
+            "experience": resume["experience"]}
+    assert client.put(f"/api/runs/{run_id}/resume", json=edit).status_code == 200
+    assert client.get(f"/api/runs/{run_id}").json()["job_link"] == "https://careers.example.org/jobs/7"
+
+
+def test_the_page_rule_reads_the_host_as_the_server_does_and_never_lets_a_post_shrink(client):
+    """Markup and script text only (checked in a browser by hand): the page refuses a host whose dot only a browser
+    finds ('careers。fabrikam。example', a number), as the server does; cutting a post back to its first words never
+    moves a link or a company to the shorter post, so pasting another post after them empties the link."""
+    page = client.get("/tailor").text
+    assert "return url.hostname.includes('.') && name.includes('.') ? link : null;" in page
+    assert page.count("if (head.length > linkPost.length) linkPost = head;") == 1
+    assert page.count("if (head.length > companyPost.length) companyPost = head;") == 1
+    for typed in ("careers。fabrikam。example/jobs/3", "https://0x7f000001/jobs", "https://jobs%2Eexample/x"):
+        with pytest.raises(PlainError):
+            checked_job_link(typed)
+
+
+def test_a_long_site_name_wraps_in_history(client):
+    assert "el('td', { class: 'link-cell' }, postLink(d.job_link))" in client.get("/history").text
+    css = client.get("/static/style.css").text
+    assert ".link-cell { min-width: 12em; overflow-wrap: anywhere; }" in css

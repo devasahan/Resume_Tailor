@@ -393,7 +393,11 @@ function companyNote(found) {
 function keepCompanyWithPost() {
   const box = $('#company'), head = headOf($('#jd').value);
   if (!box.value.trim()) { companyPost = ''; companyFound = false; return; }
-  if (!companyPost || samePost(head, companyPost)) { companyPost = head; return; }
+  if (!companyPost) { companyPost = head; return; }
+  if (samePost(head, companyPost)) {  // the post grew or shrank at its end: only a longer opening is kept
+    if (head.length > companyPost.length) companyPost = head;
+    return;
+  }
   box.value = ''; companyPost = ''; companyFound = false;
   companyNote(undefined);
 }
@@ -408,7 +412,11 @@ function linkOf(text) {
   if (!/^https?:\/\//i.test(link)) return null;
   let url;
   try { url = new URL(link); } catch (err) { return null; }
-  return url.hostname.includes('.') ? link : null;
+  // the host as typed needs a plain dot too, as the server reads it: a browser turns '。' or a number into an address
+  const netloc = link.replace(/^https?:\/\//i, '').split(/[/?#]/, 1)[0];
+  const host = netloc.slice(netloc.lastIndexOf('@') + 1);
+  const name = host.startsWith('[') ? host.slice(1, host.indexOf(']')) : host.split(':', 1)[0];
+  return url.hostname.includes('.') && name.includes('.') ? link : null;
 }
 
 function readLink() {  // the link, or null after saying what is missing (the box gets the focus)
@@ -424,7 +432,11 @@ function readLink() {  // the link, or null after saying what is missing (the bo
 function keepLinkWithPost() {
   const box = $('#job-link'), head = headOf($('#jd').value);
   if (!box.value.trim()) { linkPost = ''; return; }
-  if (!linkPost || samePost(head, linkPost)) { linkPost = head; return; }
+  if (!linkPost) { linkPost = head; return; }
+  if (samePost(head, linkPost)) {  // as for the company: cutting the post back never moves the link to a shorter one
+    if (head.length > linkPost.length) linkPost = head;
+    return;
+  }
   box.value = ''; linkPost = '';
   $('#job-link-note').textContent = 'The job post changed, so the Job link box was emptied: paste the link of this job post.';
 }

@@ -86,7 +86,7 @@ function row(d) {
   return el('tr', {},
     el('td', { class: 'nowrap', text: isNaN(when) ? d.created_at : timeName.format(when) }),
     el('td', {}, d.email, tag ? ' ' : null, tag), el('td', { text: d.candidate || '-' }), el('td', { text: d.company || '-' }),
-    el('td', { text: d.role || '-' }), el('td', {}, postLink(d.job_link)),
+    el('td', { text: d.role || '-' }), el('td', { class: 'link-cell' }, postLink(d.job_link)),
     el('td', {}, chip(`${FILES[d.kind] || d.kind} ${d.format.toUpperCase()}`, d.kind === 'cover_letter' ? 'ok' : ''),
       el('div', { class: 'small muted', text: d.filename })),
     el('td', { text: d.model || '-' }), el('td', { text: money(d.cost_usd) }),

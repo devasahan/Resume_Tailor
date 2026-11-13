@@ -1289,6 +1289,8 @@ def create_app(db: Database | None = None, registry: Registry | None = None, rou
         result.resume = merged
         style, pages, fits, notes = await fit_report(merged, db.get_settings()["paper_size"])
         latest = db.get_run(run_id)  # a cover letter may have been written while this edit was in flight
+        if latest is not None:
+            result.job_link = latest.job_link  # with a corrected job link, recorded by that letter's request
         if latest is not None and body.cover_paragraphs is None:
             result.cover_letter, result.cover_cost_usd = latest.cover_letter, latest.cover_cost_usd
         result.style, result.pages, result.fits = style, pages, fits
