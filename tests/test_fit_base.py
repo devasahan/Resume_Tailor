@@ -1,6 +1,7 @@
 """The restyle changes only the look. The bullet plan and the page count are still worked out on the layout from before
-it (app/pipeline/old_layout.py: Carlito, measured without drawing), so every plan is the one made then, no resume takes
-more pages than it did, and the new floor holds what the old one held. The numbers below were recorded with the app as
+it (app/pipeline/old_layout.py: Carlito, measured without drawing), so the restyle changed no plan (only the current
+job's share changed since: it always has the most), no resume takes more pages than it did, and the new floor holds
+what the old one held. The numbers below were recorded with the app as
 it was before the restyle (commit aa88a1a: fpdf2 and the Carlito files). Every person and employer here is invented."""
 import asyncio
 import io
@@ -206,33 +207,63 @@ def test_the_old_layout_gives_the_pages_and_fill_of_before():
 
 # ------------------------------------------------------------------ the bullet plan
 PLANS = {  # (certifications, paper, short stays): the plans for 2, 3, ... 15 employers, one digit a job
-    (0, "Letter", False): "55 555 5553 55533 555333 5553333 55533333 555333333 5553333333 55533333222 555332222222 "
-                          "5543222222222 44422222222222 333222222222222",
-    (0, "Letter", True): "33 333 3334 33343 333432 3334323 33343232 333432323 3334323233 33343232333 333432323333 "
-                         "3334323233222 33343232222222 333222222222222",
-    (0, "A4", False): "55 555 5553 55533 555333 5553333 55533333 555333333 5553333333 55533333333 555333333222 "
-                      "5553333222222 55433222222222 544222222222222",
-    (0, "A4", True): "33 333 3334 33343 333432 3334323 33343232 333432323 3334323233 33343232333 333432323333 "
-                     "3334323233333 33343232333222 333432322222222",
-    (4, "Letter", False): "55 555 5553 55533 555333 5553333 55533333 555333333 5553333222 55533222222 544322222222 "
-                          "4442222222222 33322222222222 222222222222222",
-    (4, "Letter", True): "33 333 3334 33343 333432 3334323 33343232 333432323 3334323233 33343232333 333432323322 "
-                         "3334322222222 33322222222222 222222222222222",
-    (4, "A4", False): "55 555 5553 55533 555333 5553333 55533333 555333333 5553333333 55533333322 555333222222 "
-                      "5543322222222 54422222222222 433222222222222",
-    (4, "A4", True): "33 333 3334 33343 333432 3334323 33343232 333432323 3334323233 33343232333 333432323333 "
-                     "3334323233322 33343232222222 333322222222222",
+    (0, "Letter", False): "85 855 8553 85533 855333 8553333 85533333 855333333 8553333322 75533322222 655332222222 "
+                          "5543222222222 54322222222222 432222222222222",
+    (0, "Letter", True): "83 833 8334 83343 833432 8334323 83343232 833432323 8334323233 83343232332 833432222222 "
+                         "6334322222222 53332222222222 432222222222222",
+    (0, "A4", False): "85 855 8553 85533 855333 8553333 85533333 855333333 8553333333 85533333222 755333322222 "
+                      "6553332222222 65432222222222 544222222222222",
+    (0, "A4", True): "83 833 8334 83343 833432 8334323 83343232 833432323 8334323233 83343232333 833432323332 "
+                     "8334323232222 73343222222222 633322222222222",
+    (4, "Letter", False): "85 855 8553 85533 855333 8553333 85533333 855333332 7553332222 65533222222 544322222222 "
+                          "5432222222222 43222222222222 222222222222222",
+    (4, "Letter", True): "83 833 8334 83343 833432 8334323 83343232 833432323 8334323233 83343222222 633332222222 "
+                         "5333222222222 43222222222222 222222222222222",
+    (4, "A4", False): "85 855 8553 85533 855333 8553333 85533333 855333333 8553333322 75533332222 655332222222 "
+                      "6543222222222 54422222222222 433222222222222",
+    (4, "A4", True): "83 833 8334 83343 833432 8334323 83343232 833432323 8334323233 83343232333 833432322222 "
+                     "7334322222222 63332222222222 532222222222222",
 }
 
 
-def test_the_bullet_plans_are_the_ones_made_before_the_restyle():
-    """The model is asked for exactly as many bullets per job as before, for careers of 2 to 15 employers, with and
-    without certifications, on both papers."""
+def test_the_bullet_plans_give_the_current_job_the_most():
+    """The bullets the model is asked for per job, for careers of 2 to 15 employers, with and without certifications,
+    on both papers, measured on the layout from before the restyle. They are the plans made before it but for the
+    current job (the first), which always has the most: it is never a short stay, and when the pages run out it gets
+    each extra bullet before any other job gets its own."""
     for (certifications, paper, short_stays), plans in PLANS.items():
         for employers, plan in enumerate(plans.split(), start=2):
             profile = career(employers, certifications, short_stays)
-            assert bullet_budget(profile, paper, today=TODAY) == [int(n) for n in plan], (employers, certifications,
-                                                                                          paper, short_stays)
+            budget = bullet_budget(profile, paper, today=TODAY)
+            assert budget == [int(n) for n in plan], (employers, certifications, paper, short_stays)
+            assert budget[0] == max(budget)
+
+
+def ten_month_current_job() -> Profile:
+    """A current job of 10 months over a 1.5-year job, a 3-year job and two short older ones (invented)."""
+    jobs = [("Northwind Labs", "Jan 2026", "Present"), ("Bluefin Commerce", "Jul 2024", "Dec 2025"),
+            ("Contoso Education", "Jun 2021", "Jun 2024"), ("Fabrikam Bank", "May 2020", "May 2021"),
+            ("Tailspin Apps", "Mar 2019", "May 2020")]
+    return Profile(name="Taylor Quinn", contact=Contact(email="taylor.quinn@example.com"),
+                   companies=[Company(name=name, start=start, end=end) for name, start, end in jobs],
+                   education=[Education(school="State University", degree="B.S.", field="Computer Science",
+                                        end="2020")])
+
+
+def test_a_current_job_of_ten_months_gets_the_most_bullets():
+    """A current job is never a short stay: 10 months into it, it gets the most bullets (it got 3, under the 5 of
+    the jobs before it), and the plan still fits two pages at full length. Asking for a shorter draft and trimming
+    keep it the richest."""
+    profile = ten_month_current_job()
+    budget = bullet_budget(profile, today=TODAY)
+    assert budget == [8, 5, 5, 4, 3]
+    assert fit.try_styles(fit._plan_resume(profile, budget))[1] == 2
+    assert fit.smaller_budget(budget) == [7, 4, 4, 3, 3]
+    resume = fit._plan_resume(profile, budget)
+    order = fit._removal_order(resume)
+    for k in range(len(order) + 1):
+        counts = [len(exp.bullets) for exp in fit._without(resume, order, k).experience]
+        assert counts[0] == max(counts), k
 
 
 # ------------------------------------------------------------------ the page count

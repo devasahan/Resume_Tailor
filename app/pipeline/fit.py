@@ -10,8 +10,8 @@
   3. drop the last bullet of the roles with the most bullets, oldest first, keeping 2 per role
 
 The restyle changes only the look. The bullet plan and the page count are still worked out on the layout from before
-it (old_layout: Carlito on five steps from 10.5 to 9.5 pt, measured without drawing), so every plan is the one made
-then and no resume takes more pages than it did. The size ladder starts with the design's own sizes; the steps after it
+it (old_layout: Carlito on five steps from 10.5 to 9.5 pt, measured without drawing), so the restyle changed no plan
+(the current job's share has changed since: it always has the most) and no resume takes more pages than it did. The size ladder starts with the design's own sizes; the steps after it
 hold about as much text per page as the old steps, and the last two (8 pt with the gaps brought closer, COMPACT, then
 also the skills in line), whichever holds more, at least as much as the old 9.5 pt on ordinary text. Runs saved before
 the restyle hold an old step: current_style and saved_resume_pdf show them in the new look.
@@ -131,10 +131,11 @@ def bullet_budget(profile: Profile, paper: str = "Letter", today: date | None = 
 
     Each employer gets up to its cap from bullet_caps (recent roles and long stays get the most). Only when that
     is too long for the pages: every employer starts with 2 and extras are handed out in order while the
-    placeholder resume still fits. Recent roles are favoured and so are long stays: a role held for 2-3 years gets
-    its 3rd bullet before a role held for 8 months, even when that one is newer.
-    The placeholder resume is measured in the layout from before the restyle (old_layout), so the plan is the one made
-    then: the restyle changes how the bullets look, never how many the model is asked for.
+    placeholder resume still fits. The most recent role always has the most; after it, recent roles are favoured and
+    so are long stays: a role held for 2-3 years gets its 3rd bullet before a role held for 8 months, even when that
+    one is newer.
+    The placeholder resume is measured in the layout from before the restyle (old_layout), so the restyle changes
+    how the bullets look, never how many the model is asked for.
     Cached per profile, paper, page limit and day, because compare mode asks once per model for the same profile.
     """
     return list(_budget(profile.model_dump_json(), paper, today or date.today(), max_pages))
@@ -171,11 +172,12 @@ def _budget(profile_json: str, paper: str, today: date, max_pages: int) -> tuple
 
 def extra_order(profile: Profile, caps: list[int], today: date) -> list[tuple[int, int]]:
     """(employer, bullet number) for every bullet above 2, in the order they are handed out when the pages run
-    out: recent roles first, and long stays before short ones (a role held 3 years gets its 3rd bullet before a
-    newer role held 8 months)."""
+    out: the most recent role's bullet at each number first, so it always has the most; then recent roles first, and
+    long stays before short ones (a role held 3 years gets its 3rd bullet before a newer role held 8 months)."""
     years = [min((stay_months(c, today) or 12) / 12, 3) for c in profile.companies]  # unreadable dates: 1 year
+    # any other role's score at a level is at least level - 0.75 (0.75 * 1 - 0.5 * 3), so level - 1 comes first
     return [(index, level) for _score, index, level in sorted(
-        (level + 0.75 * index - 0.5 * years[index], index, level)
+        (level - 1 if index == 0 else level + 0.75 * index - 0.5 * years[index], index, level)
         for index, cap in enumerate(caps)
         for level in range(3, cap + 1)
     )]

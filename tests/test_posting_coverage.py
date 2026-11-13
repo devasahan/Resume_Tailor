@@ -36,7 +36,7 @@ def test_long_stays_get_bullets_before_short_recent_ones():
     profile = five_jobs(5)
     order = extra_order(profile, bullet_caps(profile.companies, TODAY), TODAY)
     assert order.index((2, 3)) < order.index((1, 3))  # Contoso Education (3 yrs 1 mo) before Bluefin.com (8 mo)
-    assert bullet_budget(profile, today=TODAY) == [5, 3, 5, 4, 3]  # two pages hold every cap
+    assert bullet_budget(profile, today=TODAY) == [8, 3, 5, 4, 3]  # two pages hold every cap (the current job: 8)
     older = [Company(name=f"Old {i}", start=f"Jun {2016 - 2 * i}", end=f"May {2018 - 2 * i}") for i in range(10)]
     long = profile.model_copy(update={"companies": profile.companies + older})  # 15 jobs: two pages run out
     assert bullet_budget(long, today=TODAY) == [4, 2, 3, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2]
