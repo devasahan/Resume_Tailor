@@ -9,6 +9,7 @@ Labs | Data Engineer | Remote   Mar 2022 - Present").
 from __future__ import annotations
 
 import re
+from typing import NamedTuple
 
 from ..pipeline.facts import parse_point
 from ..pipeline.validate import same_certification
@@ -18,8 +19,11 @@ EMAIL_RE = re.compile(r"[\w.+-]+@[\w-]+(?:\.[\w-]+)+")
 PHONE_RE = re.compile(r"(?<!\d)(?:\+?\d{1,3}[\s.-]?)?(?:\(\d{3}\)|\d{3})[\s.-]?\d{3}[\s.-]?\d{4}(?!\d)")
 LINKEDIN_RE = re.compile(r"(?:https?://)?(?:www\.)?linkedin\.com/[\w\-/%.]+", re.IGNORECASE)
 LOCATION_RE = re.compile(r"\b([A-Z][A-Za-z.' -]+,\s*(?:[A-Z]{2}|[A-Z][a-z]+(?: [A-Z][a-z]+)?))\b")
+_TOWN_AND_STATE = re.compile(r",\s*[A-Z]{2}$")  # a place no company is named like: 'Austin, TX' (not 'Rivera, Quinn')
 
-_MONTH = r"(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Sept|Oct|Nov|Dec)[a-z]*\.?"
+# A month, cut short or in full ('Sep', 'Sept.', 'September'): at most six letters after its first three, as a longer
+# run makes the date patterns slow ('janjanjan...': their time grows with the square of the run)
+_MONTH = r"(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Sept|Oct|Nov|Dec)[a-z]{0,6}\.?"
 _POINT = rf"(?:{_MONTH}\s+\d{{4}}|\d{{1,2}}/\d{{4}}|\d{{4}})"
 DATE_RANGE_RE = re.compile(
     rf"({_POINT})\s*(?:-|–|—|to)\s*({_POINT}|Present|Current|Now|Today)", re.IGNORECASE
@@ -33,7 +37,9 @@ _DOT = re.compile(r"\s+·\s+")  # the app's own separator between a job line's p
 # A run of tabs (and the spaces around it), or of more than three spaces: one gap. Long runs of white space make some
 # of the patterns below slow (their time grows with the square of the run).
 _GAPS = re.compile(r"\s*\t\s*|\s{4,}")
-_GAP = re.compile(r"(?<!,)\s{2,}")  # the gap a tab leaves between two items on a line ('Austin,  TX' keeps its spaces)
+# The gap a tab leaves between two items on a line, and a narrower one ('Austin,  TX' keeps its spaces)
+_WIDE_GAP = re.compile(r"(?<!,)\s{3,}")
+_GAP = re.compile(r"(?<!,)\s{2,}")
 
 EXPERIENCE_HEAD = re.compile(
     r"^(?:work |professional |employment )?(?:experience|history)|^employment", re.IGNORECASE
@@ -204,18 +210,20 @@ def _reads_as_name(text: str) -> bool:
     return 1 <= len(text.split()) <= 8 and _capitalized(text)
 
 
-def _is_header(line: str) -> str | None:
+def _is_header(line: str, title_check: bool = True) -> str | None:
     bare = line.strip(" :").strip()
     if len(bare) > 40:
         return None
     # A job title is no heading, alone or leading its job line ('Experience Designer', 'History Teacher · Lakeside
     # High   2019 – 2021'): the app's own job lines start with the title, and a dated ' · ' line is one whatever its
     # title says ('Education Aide · Contoso   2019 – 2021'). A word in capitals before other text is a side label run
-    # into the first line beside it ('EXPERIENCE Senior Data Engineer'), so it still starts a section.
+    # into the first line beside it ('EXPERIENCE Senior Data Engineer'), so it still starts a section; one in title case
+    # ('Experience Senior Data Engineer') does only without `title_check` (see parse_resume_text).
     if _DOT.search(bare) and (DATE_RANGE_RE.search(bare) or _LONE_DATE.search(bare)):
         return None
     side_label = bool(bare) and bare.split()[0].isupper() and not bare.isupper()
-    if not side_label and _reads_as_title(SEPARATOR_RE.split(DATE_RANGE_RE.sub(" ", bare), maxsplit=1)[0]):
+    if title_check and not side_label and _reads_as_title(
+            SEPARATOR_RE.split(DATE_RANGE_RE.sub(" ", bare), maxsplit=1)[0]):
         return None
     if CERT_HEAD.match(bare):
         return "certifications"
@@ -235,7 +243,7 @@ def _reads_as_credential(line: str) -> bool:
     return bool(_CREDENTIAL_LINE.search(line) or _ACRONYM.search(line))
 
 
-def _split_sections(lines: list[str]) -> tuple[list[str], dict[str, list[str]]]:
+def _split_sections(lines: list[str], title_check: bool = True) -> tuple[list[str], dict[str, list[str]]]:
     head: list[str] = []
     sections: dict[str, list[str]] = {"experience": [], "education": [], "certifications": [], "other": []}
     current: str | None = None
@@ -244,7 +252,7 @@ def _split_sections(lines: list[str]) -> tuple[list[str], dict[str, list[str]]]:
         if inline:  # a list on the heading's own line belongs to it; the section around it goes on
             sections["certifications"] += [part for part in re.split(r"\s*[,;]\s*", inline.group(1)) if part]
             continue
-        kind = _is_header(line)
+        kind = _is_header(line, title_check)
         if kind is None and current in ("certifications", "certifications_and_more", "education_and_certifications") \
                 and OTHER_FULL.match(line.strip(" :").strip()):
             kind = "other"  # the section after the certifications
@@ -272,10 +280,14 @@ def _titled_job_line(text: str) -> bool:
 def _job_dates(line: str) -> tuple[str, str, str] | None:
     """(the line without its dates, start, end) for a job's dated line: a range with any dash ('Mar 2022 – Present',
     '2019 - 2021'), or one date ending a job line whose start or end is not known ('Data Engineer · Northwind Labs ·
-    Remote   Present': the end). None for any other line."""
+    Remote   Present': the end). None for any other line, such as a bullet whose words around the range read as a
+    sentence ('• Led the 2019 – 2021 move to AWS.', '• Scaled the API from 2000 to 9000 requests per second.'), not as
+    a job ('• Northwind Labs — Data Engineer (2019 – 2021)')."""
     match = DATE_RANGE_RE.search(line)
     if match:
         rest = (line[: match.start()] + " " + line[match.end() :]).strip(" ,;|-–—•·()")
+        if _LIST_MARK.match(line) and not _capitalized(SEPARATOR_RE.sub(" ", rest)):
+            return None
         start, end = match.group(1).strip(), match.group(2).strip()
     else:
         lone = _LONE_DATE.search(line)
@@ -362,34 +374,109 @@ def _take_rest(company: Company, rest: tuple[str, str, str]) -> bool:
     return taken
 
 
-def _parse_company_line(line: str, previous: str | None, below: list[str],
-                        company_above: bool = False) -> tuple[Company | None, bool]:
-    """(the employer on a dated experience line or None, True when the line under it was read as the rest of it).
+def _plain_order(first: str, second: str) -> int:
+    """How a job line's first two parts plainly read: 1 the title first ('Data Engineer · Northwind Labs', 'Barista ·
+    Fabrikam Inc.'), -1 the company first ('Northwind Labs · Data Engineer', 'Fabrikam Inc. · Barista'), 0 when no
+    part has a company mark and both or neither read as a title ('Scrum Master · Northwind Labs')."""
+    if COMPANY_MARK_RE.search(first):
+        return -1
+    if COMPANY_MARK_RE.search(second):
+        return 1
+    return int(_reads_as_title(first)) - int(_reads_as_title(second))
+
+
+def _stacked_order(part: str, under: str) -> int:
+    """How a dated line holding one part and the line under it plainly read: 1 a title over its company ('Senior Data
+    Engineer   2019 – 2021' over 'Northwind Labs'), -1 a company over its title ('Northwind Labs   2019 – 2021' over
+    'Senior Data Engineer'), 0 when neither reads as a title."""
+    if _reads_as_title(part):
+        rest = _rest_of_job_line(under, need_company=True)
+        return 1 if rest and rest[0] else 0
+    if _job_dates(under) is None and not _LIST_MARK.match(under):
+        return -1 if _reads_as_title(SEPARATOR_RE.split(under, maxsplit=1)[0]) else 0
+    return 0
+
+
+class _Layout(NamedTuple):
+    """How the Experience section lays its jobs out, by votes of the lines that show it plainly (_section_layout)."""
+    dots: int  # its ' · ' job lines: > 0 the title first, < 0 the company first, 0 when no line decides or tied
+    dotted: bool  # True when it has a dated ' · ' line
+    stacks: int  # its dated lines holding one part: > 0 a title over its company, < 0 a company over its title
+
+
+def _broken_app_line(kept: list[str], dotted: bool, under: str) -> bool:
+    """True when a dated line holding only `kept` (a title, or a title and company joined by ' · ': `dotted`) is the
+    app's line too long for the page: what did not fit beside the dates is under it, two of the company, its place and
+    its work mode joined by ' · ' ('Lead Barista and Coffee Program Mentor for the Flagship Store   2016 – 2019' over
+    'Fourth Coffee · Seattle, WA · Onsite', or the title and company over 'Seattle, WA · Onsite'), and the parts make
+    45 characters or more (shorter ones would have fitted on one line)."""
+    if not (len(kept) == 1 or (len(kept) == 2 and dotted)) or not _DOT.search(under):
+        return False
+    rest = _rest_of_job_line(under, need_company=len(kept) == 1)
+    if not rest or (len(kept) == 1 and not rest[0]) or sum(map(bool, rest)) < 2:
+        return False
+    return len("".join(kept)) + len(rest[0] or rest[1]) >= 45
+
+
+def _section_layout(lines: list[str]) -> _Layout:
+    """How the Experience section lays its jobs out. Its dated ' · ' lines (see _plain_order) hold the title first, as
+    the app writes them, or the company first, as a person may ('Northwind Labs · Data Engineer · Austin, TX   2021 –
+    Present'). The app's lines too long for the page vote for the title first too (see _broken_app_line), so one line
+    whose employer reads as a title ('Principal · Bluefin Coach') does not turn the app's other lines around. Its dated
+    lines holding a title or a company alone (see _stacked_order) have the other under them."""
+    dots, dotted, stacks = 0, False, 0
+    for line, under in zip(lines, [*lines[1:], ""]):
+        dates = _job_dates(line)
+        kept, location, mode = _job_parts(dates[0]) if dates and dates[0] else ([], "", "")
+        dotted_line = bool(dates and _DOT.search(dates[0]))
+        if dotted_line:
+            dotted = True
+            dots += _plain_order(kept[0], kept[1]) if len(kept) > 1 else 0
+        if len(kept) == 1 and under:
+            stacks += _stacked_order(kept[0], under)
+        if kept and not (location or mode) and _broken_app_line(kept, dotted_line, under):
+            dots += 1
+    return _Layout(dots, dotted, stacks)
+
+
+def _parse_company_line(line: str, previous: str | None, below: list[str], company_above: bool,
+                        layout: _Layout) -> tuple[Company | None, int]:
+    """(the employer on a dated experience line or None, how many of the lines under it were read as the rest of it).
 
     The company comes first in older layouts ('Northwind Labs | Data Engineer | Remote   Mar 2022 - Present') and
     second after a title in an upload's 'Title | Company'. The app's own line joins its parts with ' · ', the title
-    first ('Scrum Master · Northwind Labs · Austin, TX · Remote   Mar 2022 – Present'), so such a line is read by
-    position, whatever the title says, unless its first part is plainly a company ('Fabrikam Inc.') or only its second
-    reads as a title (an upload's 'Northwind Labs · Data Engineer'). A line of dates alone takes the line above it
-    (`previous`) as its text. A title alone takes its company from the lines around it (`below`: the next two lines;
-    `previous` too when `company_above`, in a layout with each company over its titles), see _company_of_title."""
+    first ('Scrum Master · Northwind Labs · Austin, TX · Remote   Mar 2022 – Present'); a person's may join them so
+    too, the company first. A section's ' · ' lines are all read in the order they vote for (`layout.dots`): by
+    position (the title first) when no line decides or the vote ties, whatever the titles say, unless a part has a
+    company mark ('Fabrikam Inc.'). A line of dates alone takes the line above it (`previous`) as its text: never the
+    app's line, it is read by what its parts say (see _plain_order). A title alone takes its company from the lines
+    around it (`below`: the next two lines; `previous` too when `company_above`, in a layout with each company over its
+    titles), see _company_of_title."""
     dates = _job_dates(line)
     if dates is None:
-        return None, False
+        return None, 0
     remainder, start, end = dates
-    if not remainder and previous:  # the date sits on its own line under the company name
+    own_line = not remainder and bool(previous)
+    if own_line:  # the date sits on its own line under the company name
         remainder, previous = previous.strip(" ,|-–—•·"), None
     kept, location, mode = _job_parts(remainder)
     if not kept:
-        return None, False
+        return None, 0
     following = below[0] if below else None
     dotted = bool(_DOT.search(remainder))
     if dotted and len(kept) == 1 and location:
         under = _rest_of_job_line(following, need_company=False)
-        if under and under[1]:  # a job has one place: with it under the line, the part read as one is the company
-            kept, location = [kept[0], location], ""  # ('Barista · Rivera, Quinn' over 'New York, NY · Onsite')
+        # a job has one place: with it under the line, or in a section of the app's lines, the part read as one is the
+        # company ('Barista · Rivera, Quinn' over 'New York, NY · Onsite', or with only a work mode: 'Barista · Rivera,
+        # Quinn · Onsite'), unless it is a town and its state
+        if (under and under[1]) or (layout.dots > 0 and not own_line and not _TOWN_AND_STATE.search(location)):
+            kept, location = [kept[0], location], ""
     if dotted and len(kept) > 1:
-        title_first = not COMPANY_MARK_RE.search(kept[0]) and (_reads_as_title(kept[0]) or not _reads_as_title(kept[1]))
+        # the section's order, unless a company mark tells the parts apart; a line of dates alone is never the app's
+        if own_line or COMPANY_MARK_RE.search(kept[0]) or COMPANY_MARK_RE.search(kept[1]):
+            title_first = _plain_order(kept[0], kept[1]) > 0
+        else:
+            title_first = layout.dots >= 0
         name = kept[1] if title_first else kept[0]
     else:
         title_first = _reads_as_title(kept[0])
@@ -397,18 +484,35 @@ def _parse_company_line(line: str, previous: str | None, below: list[str],
     company = Company(name=name, start=start, end=end, mode=mode, location=location)
     if len(kept) > 1:
         rest = _rest_of_job_line(following, need_company=False) if title_first else None
-        return company, rest is not None and _take_rest(company, rest)
-    rest = _rest_of_job_line(following, need_company=True)
-    # The app breaks a line too long for the page before the company, whatever the title says: 'Principal Agile
-    # Delivery and Release Train Scrum Master   Mar 2022 – Present' over 'Northwind Labs · Austin, TX · Remote'. A title
-    # and company under 45 characters together (well under a line beside the dates) would have fitted on one line, so
-    # a person's company over a title the rules do not know stays the company ('Northwind Labs   2019 – 2021' over
-    # 'Scrum Master').
+        return company, int(rest is not None and _take_rest(company, rest))
+    taken, rest = 1, _rest_of_job_line(following, need_company=True)
+    # A title too long for a line of its own wraps by words where the app draws it, before the rest of its job line (a
+    # company and its place or work mode): 'Senior Software Engineer, Payments Infrastructure and Fraud Detection   Jan
+    # 2020 – 11/2021' over 'Systems' over 'Fourth Coffee · Seattle, WA · Onsite'. The two lines are read as its rest.
+    tail = following if len(below) > 1 and not (location or mode or company_above) else None
+    if tail and _reads_as_name(tail) and not _job_dates(tail) and _DOT.search(below[1]):
+        wrapped = _rest_of_job_line(below[1], need_company=True)
+        if wrapped and wrapped[0] and (wrapped[1] or wrapped[2]):
+            taken, rest = 2, wrapped
+    # A part the rules do not know as a title ('Scrum Master') alone on the line is a title over its company in a
+    # section whose lines like it hold a title over its company (`layout.stacks`). With none, only where the app breaks
+    # a line too long for the page before the company, whatever the title says ('Principal Agile Delivery and Release
+    # Train Scrum Master   Mar 2022 – Present' over 'Northwind Labs · Austin, TX · Remote'): in a section with the app's
+    # ' · ' lines (a dated one, or the one holding the company), for a title and company of 45 characters or more
+    # together (shorter ones would have fitted beside the dates). Otherwise it is a person's company over a title
+    # ('Lakeside Unified School District   Aug 2016 – Present' over 'Special Education Paraprofessional'), as always in
+    # a section whose ' · ' lines put the company first.
+    if layout.stacks:
+        title_over = layout.stacks > 0
+    else:
+        app_lines = layout.dotted or bool(_DOT.search(below[taken - 1] if below else ""))
+        title_over = app_lines and len(kept[0]) + len(rest[0] if rest else "") >= 45
     if not title_first and not (
-            rest and rest[0] and len(kept[0]) + len(rest[0]) >= 45 and not (location or mode)
-            and _capitalized(kept[0]) and not COMPANY_MARK_RE.search(kept[0])):
-        return company, False
-    return company, _company_of_title(company, rest, dotted, previous if company_above else None, below)
+            title_over and layout.dots >= 0 and rest and rest[0] and not (location or mode) and _capitalized(kept[0])
+            and not COMPANY_MARK_RE.search(kept[0])):
+        return company, 0
+    return company, taken if _company_of_title(
+        company, rest, dotted, previous if company_above else None, below) else 0
 
 
 def _company_of_title(company: Company, rest: tuple[str, str, str] | None, dotted: bool, previous: str | None,
@@ -426,7 +530,7 @@ def _company_of_title(company: Company, rest: tuple[str, str, str] | None, dotte
     if above and above[0] and (not rest or not rest[0] or next_job):
         _take_rest(company, above)
         return bool(rest and not rest[0]) and _take_rest(company, rest)
-    if (not rest or not rest[0]) and dotted and company.location and not re.search(r",\s*[A-Z]{2}$", company.location):
+    if (not rest or not rest[0]) and dotted and company.location and not _TOWN_AND_STATE.search(company.location):
         company.name, company.location = company.location, ""
     return rest is not None and _take_rest(company, rest)
 
@@ -434,17 +538,19 @@ def _company_of_title(company: Company, rest: tuple[str, str, str] | None, dotte
 def _read_companies(lines: list[str]) -> list[Company]:
     """The employers in the Experience section, each from its dated line, in the resume's order. A layout with each
     company on the line over its titles shows at the first job: a company's name over the first dated line. The app's
-    own resumes start with a job line."""
+    own resumes start with a job line. Which part of a line is the title, where the line does not say, the section's
+    other lines tell (see _section_layout)."""
     first = next((index for index, line in enumerate(lines) if _job_dates(line)), 0)
     above = _rest_of_job_line(lines[first - 1], need_company=True) if first else None
     company_above = bool(above and above[0])
+    layout = _section_layout(lines)
     companies: list[Company] = []
     previous: str | None = None  # the line above, unless it belongs to a job line read already
     index = 0
     while index < len(lines):
         line = lines[index]
-        company, took_next = _parse_company_line(line, previous, lines[index + 1 : index + 3], company_above)
-        index += 2 if took_next else 1
+        company, taken = _parse_company_line(line, previous, lines[index + 1 : index + 3], company_above, layout)
+        index += 1 + taken
         if company:
             companies.append(company)
             previous = None
@@ -530,11 +636,13 @@ def _balanced(part: str) -> str:
 
 def _row_dates(line: str, found: re.Match[str]) -> bool:
     """True when the dates ending a certification row (`found`, from _TRAILING_DATES) are its own dates: after a ' · '
-    or ' | ' separator ('Name · Issuer   2020'), or dates no name ends with: a month and year or a range ('Name   Mar
-    2024', a row without an issuer). A bare year right after the name is part of it ('MCSA: Windows Server 2016')."""
-    if not line[: found.start()].strip():
+    or ' | ' separator ('Name · Issuer   2020') or a gap of three spaces or more (a tab's: the app's Word copy has
+    'Name<TAB>2020'), or dates no name ends with: a month and year or a range ('Name Mar 2024', a row without an
+    issuer). A bare year right after the name is part of it ('MCSA: Windows Server 2016')."""
+    before = line[: found.start() + 1]  # with the space before the date, which closes a separator
+    if not before.strip():
         return False
-    if _ROW_SEPARATOR.search(line[: found.start() + 1]):  # the space before the date closes the separator
+    if _ROW_SEPARATOR.search(before) or before.endswith("   "):
         return True
     return found.group(2) is not None or not _BARE_YEAR.fullmatch(found.group(1))
 
@@ -669,11 +777,31 @@ def read_certification_list(text: str) -> list[Certification]:
     return unique
 
 
+def _header_items(line: str) -> list[str]:
+    """A header line's items: the parts between its separators and gaps. Three spaces or more (a tab, by now) part two
+    items ('Senior Data Engineer<TAB>Austin, TX': a headline, then a place), and so do two spaces, as in
+    'Austin, TX  78701', but not inside one place ('New  York, NY'), unless a job title comes before them ('Senior Data
+    Engineer  Austin, TX')."""
+    items: list[str] = []
+    for part in SEPARATOR_RE.split(line):
+        for piece in _WIDE_GAP.split(part):
+            words = _GAP.split(piece)
+            one_place = LOCATION_RE.fullmatch(piece.strip(" ,")) and not _reads_as_title(words[0])
+            items += [piece] if one_place else words
+    return items
+
+
 def parse_resume_text(text: str) -> Profile:
     # A tab is a gap like the spaces before right-aligned dates: Word files (the app's own too) put dates on a tab stop.
     # A run of tabs or spaces is one gap.
     lines = [_GAPS.sub("   ", ln).strip() for ln in text.replace("\r", "").splitlines() if ln.strip()]
     head, sections = _split_sections(lines)
+    if not sections["experience"]:
+        # the only Experience heading may be a side label in title case run into the job title beside it, as a
+        # two-column template gives it ('Experience Senior Data Engineer'): the job-title check takes it for a title
+        without_check = _split_sections(lines, title_check=False)
+        if without_check[1]["experience"]:
+            head, sections = without_check
     top = head[:10] if head else lines[:10]
 
     email_match = EMAIL_RE.search(text)
@@ -694,8 +822,7 @@ def parse_resume_text(text: str) -> Profile:
     location = ""
     for line in top:
         cleaned = EMAIL_RE.sub("", PHONE_RE.sub("", LINKEDIN_RE.sub("", line)))
-        # a gap parts two items as a separator does: 'Senior Data Engineer<TAB>Austin, TX' is a headline, then a place
-        for chunk in (piece for part in SEPARATOR_RE.split(cleaned) for piece in _GAP.split(part)):
+        for chunk in _header_items(cleaned):
             chunk = chunk.strip(" ,")
             if chunk != name and LOCATION_RE.fullmatch(chunk):
                 location = chunk

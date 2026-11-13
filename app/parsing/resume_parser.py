@@ -12,6 +12,7 @@ import zipfile
 
 import pdfplumber
 from docx import Document
+from docx.text.paragraph import Paragraph
 
 from ..llm.base import CostCapError
 from ..llm.router import Router
@@ -26,6 +27,14 @@ MAX_BYTES = 5 * 1024 * 1024
 MAX_CHARS = 24_000
 MAX_PDF_PAGES = 10
 MAX_UNZIPPED_BYTES = 50 * 1024 * 1024  # a DOCX is a zip: refuse ones that expand into something huge
+
+
+def _paragraph_text(paragraph: Paragraph) -> str:
+    """A Word paragraph's text, with '• ' before it in a list style ('List Bullet', 'List Paragraph'): Word draws the
+    bullet itself, so the text has none, and the reader knows a bullet by its mark."""
+    style = paragraph.style
+    listed = style is not None and (style.name or "").startswith("List") and paragraph.text.strip()
+    return f"• {paragraph.text}" if listed else paragraph.text
 
 
 def extract_text(data: bytes, filename: str) -> str:
@@ -48,7 +57,7 @@ def extract_text(data: bytes, filename: str) -> str:
             raise
         except Exception as exc:
             raise ValueError(f"Could not read the DOCX: {exc}") from exc
-        lines = [p.text for p in doc.paragraphs]
+        lines = [_paragraph_text(p) for p in doc.paragraphs]
         for table in doc.tables:  # some resumes keep contact info or dates in tables
             for row in table.rows:
                 lines.extend(cell.text for cell in row.cells)

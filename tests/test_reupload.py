@@ -238,3 +238,55 @@ def test_job_titles_the_rules_do_not_know_read_back_from_the_apps_files(jobs):
     for label, text in texts.items():
         assert [c.model_dump() for c in parse_resume_text(text).companies] == [
             company.model_dump() for _title, company in jobs], label
+
+
+# ---------------------------------------------------------------- the reader's second review
+def test_a_bullet_holding_a_range_is_no_employer_in_the_apps_files():
+    """A bullet with a range of numbers or years ('from 2000 to 9000', 'the 2019 – 2021 move') reads as a sentence, so
+    it is no job line: in the PDF, and in the Word copy, whose bullets get their mark from their List style."""
+    base = app_made_resume()
+    bullets = ["Scaled the order API from 2000 to 9000 requests per second.",
+               "Led the 2019 – 2021 move of 40 services to AWS."]
+    experience = [base.experience[0].model_copy(update={"bullets": bullets}), *base.experience[1:]]
+    resume = base.model_copy(update={"experience": experience})
+    pdf = extract_text(render_resume_pdf(resume, styles("Letter")[0])[0], "resume.pdf")
+    word = extract_text(resume_docx(resume, styles("Letter")[0]), "resume.docx")
+    for label, text in (("PDF", pdf), ("Word", word)):
+        assert "\n• Led the 2019 – 2021 move of 40 services to AWS.\n" in text, label
+        assert [c.model_dump() for c in parse_resume_text(text).companies] == [
+            c.model_dump() for c in COMPANIES], label
+
+
+def test_a_job_title_that_wraps_reads_back():
+    """A title too long for the line beside its dates (77 characters on A4 at the design's sizes) wraps by words where
+    it is drawn: its last word comes on a line of its own, over the rest of the job line. The employer is that rest's,
+    never the end of the title."""
+    title = "Senior Software Engineer, Payments Infrastructure and Fraud Detection Systems"
+    fourth = Company(name="Fourth Coffee", start="Jan 2020", end="11/2021", mode="Onsite", location="Seattle, WA")
+    base = app_made_resume()
+    profile = base.profile.model_copy(update={"companies": [fourth, *COMPANIES[1:]]})
+    experience = [base.experience[0].model_copy(update={"job_title": title}), *base.experience[1:]]
+    resume = base.model_copy(update={"profile": profile, "experience": experience})
+    texts = {f"{paper} step {step}": extract_text(render_resume_pdf(resume, styles(paper)[step])[0], "resume.pdf")
+             for paper in ("Letter", "A4") for step in (0, len(LADDER), len(LADDER) + 1)}
+    texts["Word"] = extract_text(resume_docx(resume, styles("Letter")[0]), "resume.docx")
+    assert "\nSystems\nFourth Coffee · Seattle, WA · Onsite\n" in texts["A4 step 0"]
+    for label, text in texts.items():
+        assert [c.model_dump() for c in parse_resume_text(text).companies] == [
+            c.model_dump() for c in profile.companies], label
+
+
+def test_a_certification_with_a_year_and_no_issuer_reads_back_from_the_word_copy():
+    """The Word copy puts a certification's dates on a tab stop: in 'Six Sigma Green Belt<TAB>2020' the year after the
+    gap is the date it was earned. (The PDF's 'Six Sigma Green Belt 2020' keeps the year in the name, as a year one
+    space after a name may be part of it: 'MCSA: Windows Server 2016'.)"""
+    six_sigma = Certification(name="Six Sigma Green Belt", year="2020")
+    certifications = [six_sigma, *CERTIFICATIONS]
+    base = app_made_resume()
+    resume = base.model_copy(update={
+        "profile": base.profile.model_copy(update={"certifications": certifications}),
+        "certifications": certifications})
+    text = extract_text(resume_docx(resume, styles("Letter")[0]), "resume.docx")
+    assert "\nSix Sigma Green Belt\t2020\n" in text
+    assert [c.model_dump() for c in parse_resume_text(text).certifications] == [
+        c.model_dump() for c in certifications]

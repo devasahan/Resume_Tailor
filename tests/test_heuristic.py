@@ -259,8 +259,8 @@ def test_skills_rows_and_the_dotted_contact_line_read_as_before():
 def test_the_apps_job_line_is_read_by_position_whatever_the_title():
     """The app writes 'Title · Company · Place · Mode', the title first: a title the rules do not know ('Scrum
     Master', 'SDE II') is never the company, and the line is split only at ' · ' ('Engineer – Data Platform' stays
-    whole). A person's own 'Company · Title' line keeps its company when the title is one the rules know or the
-    company has a mark ('Inc.'); with an unknown title it now reads as the app's line."""
+    whole). A person's own 'Company · Title' lines keep their company when the lines that show the order plainly (a
+    title the rules know, a company mark) put it first; where no line shows it, they read as the app's lines."""
     assert experience(
         "Scrum Master · Northwind Labs · Austin, TX · Remote   Mar 2022 – Present", "• Ran the sprints.",
         "SDE II · Bluefin Commerce · Dallas, TX · Onsite   Jun 2019 – Feb 2022", "• Built the order services.",
@@ -288,7 +288,7 @@ def test_the_apps_job_line_is_read_by_position_whatever_the_title():
         "• Ran the night shift.",
     ) == [("Northwind Labs", "Mar 2022", "Present", "Remote", "Austin, TX"),
           ("Rivera, Quinn", "2016", "2019", "Hybrid", "New York, NY"), ("Contoso Systems", "2014", "2016", "", "")]
-    # a person's own lines: the company first, or a title and company short enough for one line
+    # a person's own lines: the company first, as the section's ' · ' lines show, over a title the rules do not know too
     assert experience(
         "Northwind Labs · Senior Data Engineer · Austin, TX   2019 – 2021", "• Built it.",
         "Fabrikam Inc. · Barista   2017 – 2019", "• Made coffee.",
@@ -405,3 +405,128 @@ def test_a_company_over_its_titles_keeps_its_own_dates():
                       "Contoso Systems") == [("Northwind Labs", "2019", "2021", "", ""),
                                              ("Bluefin Commerce", "2017", "2019", "", ""),
                                              ("Contoso Systems", "2015", "2017", "", "")]
+
+
+# ------------------------------------------------------------------ the reader's second review: people's layouts kept
+def test_a_side_label_in_title_case_run_into_a_job_title_starts_the_experience_section():
+    """A two-column template puts the section labels in a left column, and the text runs a label into the first line
+    beside it. In title case ('Experience Senior Data Engineer') the job-title check took the line for a title, so no
+    Experience section was found and the upload was refused for having no employer."""
+    for label, title in (("Experience", "Senior Data Engineer"), ("Work Experience", "Data Analyst")):
+        profile = parse_resume_text(f"""Jordan Rivera
+jordan.rivera@example.com | (555) 010-2233 | Austin, TX
+Summary Data engineer with ten years of pipelines for finance teams.
+{label} {title}
+Northwind Labs | Austin, TX | Jan 2020 – Present
+- Built the pipelines for the finance team.
+Data Engineer
+Bluefin Commerce | Dallas, TX | Jun 2016 – Dec 2019
+- Moved the reports to the new warehouse.
+Education B.S. in Computer Science
+State University | 2012 – 2016
+""")
+        assert [(c.name, c.start, c.end, c.location) for c in profile.companies] == [
+            ("Northwind Labs", "Jan 2020", "Present", "Austin, TX"),
+            ("Bluefin Commerce", "Jun 2016", "Dec 2019", "Dallas, TX")], label
+        assert (profile.name, profile.contact.location) == ("Jordan Rivera", "Austin, TX")
+        assert [e.school for e in profile.education] == ["State University"]
+
+
+def test_a_company_over_a_title_the_rules_do_not_know_stays_the_company():
+    """A person's 'Company   dates' over 'Title': the app's line broken before the company (a title the rules do not
+    know over 'Company · Place · Mode') is read only in a section that shows the app's ' · ' lines, so a long company
+    over such a title is no longer taken for a title, whatever the gap before the dates. A section whose titles stand
+    over their companies still reads such a title over its company, long or short."""
+    for gap in ("   ", "\t", " "):
+        assert experience(
+            f"Lakeside Unified School District{gap}Aug 2016 – Present", "Special Education Paraprofessional",
+            "• Supported 12 students.",
+            f"Woodgrove Bank of the Pacific Northwest{gap}2011 – 2014", "Bank Teller", "• Opened accounts.",
+            f"Wingtip Toys Distribution Center{gap}2009 – 2011", "Forklift Driver", "• Loaded the trucks.",
+        ) == [("Lakeside Unified School District", "Aug 2016", "Present", "", ""),
+              ("Woodgrove Bank of the Pacific Northwest", "2011", "2014", "", ""),
+              ("Wingtip Toys Distribution Center", "2009", "2011", "", "")], repr(gap)
+    assert experience("Senior Data Engineer   Jan 2020 – Present", "Bluefin Commerce – New York, NY", "• Built it.",
+                      "Clinical Social Worker   2017 – 2019", "Lakeside Unified School District – Onsite",
+                      "• Ran the intake.", "Cashier   2015 – 2017", "Woodgrove Bank", "• Ran the till.") == [
+        ("Bluefin Commerce", "Jan 2020", "Present", "", "New York, NY"),
+        ("Lakeside Unified School District", "2017", "2019", "Onsite", ""), ("Woodgrove Bank", "2015", "2017", "", "")]
+
+
+def test_company_first_dot_lines_keep_their_company_with_a_title_the_rules_do_not_know():
+    """A person's 'Company · Title' lines: a section's ' · ' lines are read in one order, the one its lines that show
+    it plainly vote for (a title the rules know, a company mark), so a title the rules do not know ('Scrum Master',
+    'Cashier') is not taken for the employer. Dates on a line of their own are never the app's: that line is read by
+    what its parts say."""
+    assert experience("Northwind Labs · Data Engineer · Austin, TX   2021 – Present", "• Built the pipelines.",
+                      "Bluefin Commerce · Scrum Master · Remote   2018 – 2021", "• Ran the release train.",
+                      "Contoso Systems · Cashier   2016 – 2018", "• Ran the till.") == [
+        ("Northwind Labs", "2021", "Present", "", "Austin, TX"), ("Bluefin Commerce", "2018", "2021", "Remote", ""),
+        ("Contoso Systems", "2016", "2018", "", "")]
+    assert experience("Northwind Labs · Scrum Master", "2019 – Present", "• Ran the sprints.") == [
+        ("Northwind Labs", "2019", "Present", "", "")]
+
+
+def test_the_apps_employer_named_like_a_place_reads_back_without_a_place():
+    """The app's 'Barista · Rivera, Quinn · Onsite' (a title the rules do not know, no place): in a section whose ' · '
+    lines read the title first, the part read as a place is the employer. A person's 'Northwind Labs · London,
+    England' keeps its company and its place."""
+    assert experience("Barista · Rivera, Quinn · Onsite 2014 – 2016", "• Made the coffee.",
+                      "Junior Analyst · Contoso Systems 2010 – 2013", "• Wrote the reports.") == [
+        ("Rivera, Quinn", "2014", "2016", "Onsite", ""), ("Contoso Systems", "2010", "2013", "", "")]
+    for lines in (["Northwind Labs · London, England   2019 – 2021", "• Built it."],
+                  ["Northwind Labs · London, England   2019 – 2021", "• Built it.",
+                   "Bluefin Commerce · Data Engineer · Dallas, TX   2016 – 2019", "• Moved the reports."]):
+        assert experience(*lines)[0] == ("Northwind Labs", "2019", "2021", "", "London, England")
+
+
+def test_the_apps_employer_named_like_a_role_reads_back():
+    """The app's 'Cashier · Bluefin Coach' (a title the rules do not know, an employer that reads as one): a line where
+    only the employer reads as a title cannot turn the section around. With a tie, or no line deciding, the section's
+    ' · ' lines are read by position. A line the app broke for the page votes for the title first too."""
+    junior = ["Junior Analyst · Contoso Systems 2010 – 2013", "• Wrote the reports."]
+    assert experience("Cashier · Bluefin Coach · New York, NY 2019 – Present", "• Ran the till.", *junior) == [
+        ("Bluefin Coach", "2019", "Present", "", "New York, NY"), ("Contoso Systems", "2010", "2013", "", "")]
+    assert experience("Scrum Master · Chief Tailspin Outfitters · Austin, TX · Hybrid 2016 – 2019", "• Ran it.",
+                      *junior)[0] == ("Chief Tailspin Outfitters", "2016", "2019", "Hybrid", "Austin, TX")
+    title = "Lead Barista and Coffee Program Mentor for the Downtown Flagship Store"
+    for broken in ([f"{title} Jul 2022 – 2023", "Fourth Coffee · Seattle, WA · Remote"],
+                   [f"{title} · Fourth Coffee Jul 2022 – 2023", "Seattle, WA · Remote"]):
+        assert experience(*broken, "• Trained the baristas.",
+                          "Translator · Northwind Traders · Toronto, ON · Remote Sep 2020 – Present", "• Wrote it.",
+                          "Principal · Bluefin Coach · Seattle, WA · Hybrid 2015 – 2017", "• Ran the school.") == [
+            ("Fourth Coffee", "Jul 2022", "2023", "Remote", "Seattle, WA"),
+            ("Northwind Traders", "Sep 2020", "Present", "Remote", "Toronto, ON"),
+            ("Bluefin Coach", "2015", "2017", "Hybrid", "Seattle, WA")], broken[0]
+
+
+def test_a_long_run_of_letters_after_a_month_is_read_quickly():
+    """'janjanjan...' under EXPERIENCE: a month's name takes at most six more letters ('September'), so the date
+    patterns stay quick on a text within the upload limit (it took seconds)."""
+    started = time.perf_counter()
+    assert parse_resume_text("Taylor Quinn\ntaylor@example.com\nEXPERIENCE\n" + "jan" * 7980).companies == []
+    assert time.perf_counter() - started < 1.0
+    assert experience("Data Engineer · Northwind Labs   September 2019 – February 2021") == [
+        ("Northwind Labs", "September 2019", "February 2021", "", "")]
+
+
+def test_a_bullet_holding_a_range_is_no_job_line():
+    """A bullet's sentence with a range of numbers or years is no employer; a job line with a list mark still is."""
+    assert experience("Northwind Labs | Data Engineer   2019 – 2021",
+                      "• Scaled the order API from 2000 to 9000 requests per second.",
+                      "• Led the 2019 – 2021 move of 40 services to AWS.", "- Cut costs 2020-2021 by a third.") == [
+        ("Northwind Labs", "2019", "2021", "", "")]
+    assert experience("• Northwind Labs — Data Engineer (2019 – 2021)", "   – Built the pipelines.",
+                      "• Bluefin Commerce — Analyst (2016 – 2019)") == [
+        ("Northwind Labs", "2019", "2021", "", ""), ("Bluefin Commerce", "2016", "2019", "", "")]
+
+
+def test_a_town_typed_with_two_spaces_keeps_its_name():
+    """Two spaces part two items of the header (a town and its ZIP code, a headline and a town), but not inside one
+    place: 'New  York, NY' is the town, not 'York, NY'."""
+    for line, town in (("New  York, NY | taylor@example.com", "New  York, NY"),
+                       ("taylor@example.com  |  San  Antonio, TX", "San  Antonio, TX"),
+                       ("Salt  Lake City, UT · (555) 010-4477", "Salt  Lake City, UT"),
+                       ("Austin, TX  78701 | taylor@example.com", "Austin, TX"),
+                       ("Senior Data Engineer  Austin, TX", "Austin, TX")):
+        assert parse_resume_text(f"Taylor Quinn\n{line}\n").contact.location == town, line
