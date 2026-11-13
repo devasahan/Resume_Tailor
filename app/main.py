@@ -263,6 +263,24 @@ def profile_problem(profile: Profile) -> str | None:
     return None
 
 
+def carry_project_notes(profile: Profile, earlier: list[Profile]) -> list[str]:
+    """A resume uploaded again keeps the project notes typed on the Profile page for the same employers (the name,
+    whatever its case and spacing), from the newest earlier upload that has some. Returns the employers given notes."""
+    def key(name: str) -> str:
+        return " ".join(name.lower().split())
+
+    kept = []
+    for company in profile.companies:
+        if company.projects.strip():
+            continue
+        found = next((c.projects for old in earlier for c in old.companies
+                      if key(c.name) == key(company.name) and c.projects.strip()), "")
+        if found:
+            company.projects = found
+            kept.append(company.name)
+    return kept
+
+
 def resume_entry(entry: dict, registry: Registry, admin: bool) -> dict:
     """An uploaded resume as the Profile and Tailor pages show it. Users do not see which model read it. `expired`
     names the certifications whose expiry date has passed: they are never printed."""
@@ -1016,6 +1034,9 @@ def create_app(db: Database | None = None, registry: Registry | None = None, rou
             tip = (" Try a PDF or DOCX with selectable text, or a different Base-resume reader in Settings."
                    if method == "rules" and user.is_admin else " Try a PDF or DOCX with selectable text.")
             raise PlainError(422, f"Could not find {missing} in {filename}, so it was not saved.{tip}")
+        kept = carry_project_notes(profile, [entry["profile"] for entry in db.list_profiles(user_id=user.id)])
+        if kept:
+            notes.append("Project notes kept from your earlier upload for: " + ", ".join(kept) + ".")
         profile_id = db.save_profile(profile, user_id=user.id, filename=filename, method=method, notes=notes)
         db.purge(db.get_settings()["retention_days"])
         entry = db.profile_entry(profile_id, user_id=user.id)

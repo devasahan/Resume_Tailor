@@ -1676,15 +1676,16 @@ def era_problems(resume: Resume) -> list[str]:
         company = resume.profile.companies[exp.company_index]
         text = "\n".join([exp.job_title, *exp.bullets])
         when = f"{company.name} ({company.start or '?'} - {company.end or 'Present'})"
+        notes = company.projects  # the person's own notes: a tool they name for this job is theirs there
         if index >= AI_RECENT_JOBS:
             for term in AI_TOOLS:
-                if _mentions_tool(text, term):
+                if _mentions_tool(text, term) and not _mentions_tool(notes, term):
                     problems.append(f"{when} mentions {term}: AI tools belong only to the most recent one or two jobs.")
         end = parse_point(company.end, is_end=True)
         if end is None or company.end.strip().lower() in _CURRENT:
             continue
         for term, year in {**COMMON_YEAR, **(AI_TOOLS if index < AI_RECENT_JOBS else {})}.items():
-            if year > end[0] and _mentions_tool(text, term):
+            if year > end[0] and _mentions_tool(text, term) and not _mentions_tool(notes, term):
                 problems.append(f"{when} mentions {term}, which only became common in {year}.")
     return problems
 

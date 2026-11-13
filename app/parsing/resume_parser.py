@@ -163,6 +163,8 @@ async def read_resume(
                 parse=lambda data: Profile.model_validate(data), context={"resume_text": text}, outcome=outcome,
             )
             profile, method = outcome.value, f"model:{model_id}"  # type: ignore[assignment]
+            for company in profile.companies:  # type: ignore[union-attr]
+                company.projects = ""  # only the person types these, on the Profile page
         except GenerationFailed as exc:
             outcome = exc.outcome
             notes.append(f"The model could not parse the resume ({str(exc)[:160]}). Used the rule-based parser instead.")

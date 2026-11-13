@@ -3,9 +3,20 @@ employer, and tailoring writes that employer's bullets about this work, as their
 invented."""
 import json
 
+from app.llm import fake_client
 from app.llm.schema import strict_json_schema
+from app.parsing.heuristic import parse_resume_text
+from app.pipeline import validate
 from app.prompts import projects_block, revise_user, tailor_user
-from app.schemas import MAX_PROJECT_CHARS, Company, JDAnalysis, Profile
+from app.schemas import (
+    MAX_PROJECT_CHARS,
+    Company,
+    Contact,
+    JDAnalysis,
+    Profile,
+    Resume,
+    ResumeExperience,
+)
 
 from .conftest import SAMPLE_JD
 from .test_api import save_profile, tailor
@@ -87,6 +98,59 @@ def test_a_run_writes_the_first_jobs_bullets_about_its_notes_and_trusts_their_fi
         return [json.dumps(flag) for flag in response.json()["flags"]]
 
     assert not any("450" in flag for flag in flags_after_edit(run))
-    plain = save_profile(client, name="plain.docx")
+    plain = save_profile(client, name="plain.docx")  # the same employers: it keeps their notes, so clear them
+    assert client.put(f"/api/resumes/{plain['id']}/projects", json=projects_body(plain)).status_code == 200
     other = tailor(client, profile_id=plain["id"]).json()
     assert any("450" in flag for flag in flags_after_edit(other))  # without the notes, the figure is an estimate
+
+
+def test_links_and_source_lists_stay_out_of_the_prompt():
+    """Notes pasted from research keep their links and 'Sources' lists on the Profile page; the model reads only the
+    projects (a Markdown link keeps its words)."""
+    notes = ("Order tracking app (2025): rebuilt its API, see https://example.com/orders\n"
+             "[Partner portal](https://example.com/portal) launch (Mar 2026)\n\nSources\n"
+             "- [Launch post](https://example.com/launch)\n- www.example.com/press")
+    block = projects_block([Company(name="Northwind Labs", projects=notes)])
+    assert "http" not in block and "www." not in block and "Sources" not in block
+    assert "Order tracking app (2025): rebuilt its API, see\nPartner portal launch (Mar 2026)" in block
+
+
+def test_the_ai_reader_never_brings_notes(client, monkeypatch):
+    """Even if a model's answer carries the field, an upload's employers start with no notes: only the person types
+    them."""
+    def noted(text):
+        profile = parse_resume_text(text)
+        for company in profile.companies:
+            company.projects = "Invented by the model"
+        return profile
+
+    monkeypatch.setattr(fake_client, "parse_resume_text", noted)
+    assert client.put("/api/settings", json={"parser_model": "demo-concise"}).status_code == 200
+    entry = save_profile(client)
+    assert entry["method"].startswith("model:") and all(c["projects"] == "" for c in entry["profile"]["companies"])
+
+
+def test_a_tool_the_notes_name_is_no_era_problem():
+    """A tool the notes say the person used at a job is theirs there, even before it was common at work."""
+    def resume(notes: str) -> Resume:
+        companies = [Company(name="Northwind Labs", start="Jan 2022", end="Present"),
+                     Company(name="Bluefin Commerce", start="Jan 2017", end="Dec 2019", projects=notes)]
+        bullet = "Set up GitHub Actions pipelines for the checkout service so every merge ran the full test suite."
+        return Resume(profile=Profile(name="Taylor Quinn", contact=Contact(), companies=companies),
+                      headline="Backend Engineer", summary="", skills=[],
+                      experience=[ResumeExperience(company_index=0, job_title="Backend Engineer", bullets=["Built it."]),
+                                  ResumeExperience(company_index=1, job_title="Software Engineer", bullets=[bullet])])
+
+    assert any("GitHub Actions" in problem for problem in validate.era_problems(resume("")))
+    assert validate.era_problems(resume("Checkout CI (2019): moved the builds to GitHub Actions")) == []
+
+
+def test_a_resume_uploaded_again_keeps_the_notes_of_the_same_employers(client):
+    entry = save_profile(client)
+    body = projects_body(entry, NOTES)
+    assert client.put(f"/api/resumes/{entry['id']}/projects", json=body).status_code == 200
+    again = save_profile(client, name="again.docx")
+    assert again["profile"]["companies"][0]["projects"] == NOTES
+    assert all(c["projects"] == "" for c in again["profile"]["companies"][1:])
+    first = again["profile"]["companies"][0]["name"]
+    assert f"Project notes kept from your earlier upload for: {first}." in again["warnings"]

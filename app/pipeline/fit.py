@@ -139,7 +139,8 @@ def bullet_budget(profile: Profile, paper: str = "Letter", today: date | None = 
     how the bullets look, never how many the model is asked for.
     Cached per profile, paper, page limit and day, because compare mode asks once per model for the same profile.
     """
-    return list(_budget(profile.model_dump_json(), paper, today or date.today(), max_pages))
+    key = profile.model_dump_json(exclude={"companies": {"__all__": {"projects"}}})  # notes take no room
+    return list(_budget(key, paper, today or date.today(), max_pages))
 
 
 @lru_cache(maxsize=64)

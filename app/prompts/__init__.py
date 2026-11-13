@@ -126,13 +126,30 @@ def tailor_system(metrics_mode: str = "estimate", spelling: str = "us", certific
                  spelling_rule=_spelling_rule(spelling), certifications_rule=_read(rule).strip())
 
 
+_LINK = re.compile(r"\[([^\]]*)\]\([^)]*\)|<?https?://\S+|\bwww\.\S+", re.IGNORECASE)
+_SOURCES_LINE = re.compile(r"^\W*(?:sources?|links?|references?)\W*$", re.IGNORECASE)
+
+
+def prompt_notes(text: str) -> str:
+    """One employer's notes as the model reads them: no links (a Markdown link keeps its words) and no 'Sources'
+    lines, at most one blank line in a row, and angle brackets as their single-quote kin, so a note can never close
+    the block or open another."""
+    lines = []
+    for line in text.strip().splitlines():
+        line = _LINK.sub(lambda m: m.group(1) or "", line).rstrip()
+        if _SOURCES_LINE.match(line) or (line.strip(" -*•") == "" and line.strip()):
+            continue
+        lines.append(line)
+    notes = re.sub(r"\n{3,}", "\n\n", "\n".join(lines)).strip()
+    return notes.replace("<", "‹").replace(">", "›")
+
+
 def projects_block(companies: list[Company]) -> str:
     """The person's own notes on the products and projects they worked on, per employer, numbered as in <employers>
-    ("" when no employer has any). Angle brackets become single quotes' kin so a note can never close the block."""
+    ("" when no employer has any; see prompt_notes)."""
     entries = []
     for index, company in enumerate(companies):
-        notes = "\n".join(line.rstrip() for line in company.projects.strip().splitlines())
-        notes = re.sub(r"\n{3,}", "\n\n", notes).replace("<", "‹").replace(">", "›")
+        notes = prompt_notes(company.projects)
         if notes:
             entries.append(f"{index}: {company.name}\n{notes}")
     return "<employer_projects>\n" + "\n\n".join(entries) + "\n</employer_projects>\n" if entries else ""
