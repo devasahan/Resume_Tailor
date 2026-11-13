@@ -52,7 +52,7 @@ def test_the_tailor_page_has_the_company_box_and_sends_company_name(client):
     page = client.get("/tailor").text
     assert 'id="company"' in page and 'maxlength="120"' in page
     assert "company_name: company" in page and "Copy the company name from the job post into the Company box" in page
-    assert "readOnly = box.readOnly = true" in page and "'pageshow'" in page  # the wait locks both boxes; Back
+    assert "$('#jd').readOnly = waitingForCompany = true" in page and "'pageshow'" in page  # the wait locks the post
 
 
 def test_any_logged_in_user_can_check_but_not_a_visitor(client, user_client):

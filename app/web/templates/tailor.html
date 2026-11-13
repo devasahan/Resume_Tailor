@@ -294,7 +294,12 @@ async function create(withLetter, keepResume = false) {
   const reuse = keepResume && current && current.jd === jd && current.profileId === chosenId()
     && current.spelling === spelling && current.company === company;  // a new style or company: made again
   if (!reuse) {
-    company = await companyFor(jd);
+    const found = await companyFor(jd);
+    if (found.typed) {  // typed while the page looked for the name: the person checks it first
+      $('#messages').replaceChildren(notice('warn', CHECK_COMPANY));
+      return;
+    }
+    company = found.company;
     if (!company) {
       $('#messages').replaceChildren(notice('warn', NO_COMPANY));
       $('#company').focus();
@@ -350,6 +355,7 @@ async function create(withLetter, keepResume = false) {
 // Who is hiring, where the pasted job is done and what it pays, read by the AI once the text stops changing
 const FACTS_MIN_CHARS = 200, FACTS_WAIT_MS = 1200, FACTS_MAX_WAIT_MS = 12000, HEAD_CHARS = 80;
 const NO_COMPANY = 'Copy the company name from the job post into the Company box, exactly as the company writes it, then press the button again.';
+const CHECK_COMPANY = 'Check the company name in the Company box, then press the button again.';
 let factsTimer = null, factsChecked = '', factsAsked = 0, factsPending = null;
 let postHead = '';  // the opening of the job post in the job box, as last seen
 // The Company box's name belongs to one job post: the opening of that post ('' when it was typed with no post yet,
@@ -414,23 +420,33 @@ function checkFacts() {
   return factsPending;
 }
 
-// The company the resume is made for: the box, or while it is empty, this post's check (started now if the short
-// wait after typing has not passed yet, and waited for at most FACTS_MAX_WAIT_MS). "" when the post names none.
-// While it waits, the job post and the Company box cannot change, so the name found is this post's.
+// The company the resume is made for: { company: the box, or while it is empty, this post's check (started now if
+// the short wait after typing has not passed yet, and waited for at most FACTS_MAX_WAIT_MS; "" when the post names
+// none), typed: whether the person typed in the Company box meanwhile (then they check the name and press again) }.
+// While it waits, the job post cannot change (read-only, and undo waits too), so the name found is this post's.
+let waitingForCompany = false;
 async function companyFor(jd) {
   const box = $('#company');
-  if (box.value.trim() || jd.length < FACTS_MIN_CHARS) return box.value.trim();
+  if (box.value.trim() || jd.length < FACTS_MIN_CHARS) return { company: box.value.trim(), typed: false };
   clearTimeout(factsTimer);
   busy(true, 'Finding the company name in the job post…');
-  $('#jd').readOnly = box.readOnly = true;
+  let typed = false;
+  const typing = () => { typed = true; };
+  box.addEventListener('input', typing);
+  $('#jd').readOnly = waitingForCompany = true;
   try {
     await Promise.race([checkFacts(), new Promise(resolve => setTimeout(resolve, FACTS_MAX_WAIT_MS))]);
   } finally {
-    $('#jd').readOnly = box.readOnly = false;
+    $('#jd').readOnly = waitingForCompany = false;
+    box.removeEventListener('input', typing);
     busy(false, '');
   }
-  return box.value.trim();
+  return { company: box.value.trim(), typed };
 }
+// Undo or redo while the job post is read-only would use up its step and change nothing: they wait with it
+document.addEventListener('beforeinput', event => {
+  if (waitingForCompany && /^history(Undo|Redo)$/.test(event.inputType)) event.preventDefault();
+}, true);
 
 function postChanged() {
   clearTimeout(factsTimer);
