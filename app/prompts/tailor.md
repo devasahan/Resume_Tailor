@@ -5,7 +5,7 @@
 <employers count="{{count}}">
 {{companies}}
 </employers>
-
+{{projects}}
 <candidate_facts>
 {{facts}}
 </candidate_facts>

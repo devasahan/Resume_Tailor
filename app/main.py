@@ -17,7 +17,7 @@ import time
 from collections import OrderedDict
 from datetime import timedelta
 from pathlib import Path
-from typing import Literal
+from typing import Annotated, Literal
 from urllib.parse import quote, urlsplit
 
 from fastapi import Depends, FastAPI, File, Form, HTTPException, Request, UploadFile
@@ -54,6 +54,7 @@ from .render.pdf import (
 )
 from .schemas import (
     MAX_CERTIFICATIONS,
+    MAX_PROJECT_CHARS,
     Certification,
     Company,
     ExperienceOut,
@@ -118,6 +119,13 @@ class CertificationList(BaseModel):
     text: str = Field(max_length=20000)  # one certification per line, as pasted on the Profile page
     # The list the page showed when it was opened: if it changed since (a tick on the Tailor page), nothing is saved
     loaded: list[Certification] | None = Field(default=None, max_length=500)
+
+
+class ProjectNotes(BaseModel):
+    # one text per employer, in the order the Profile page showed them, and their names then: a changed list (the
+    # resume uploaded again in another tab) is refused, never saved against the wrong employer
+    projects: list[Annotated[str, Field(max_length=MAX_PROJECT_CHARS)]] = Field(max_length=100)
+    names: list[str] = Field(max_length=100)
 
 
 class StaleList(Exception):
@@ -1041,6 +1049,28 @@ def create_app(db: Database | None = None, registry: Registry | None = None, rou
         except StaleList:
             raise HTTPException(409, "This list was changed in another tab (a tick on the Tailor page). Reload this "
                                      "page and save again.") from None
+        if changed is None:
+            raise HTTPException(404, "Resume not found.")
+        entry = db.profile_entry(profile_id, user_id=user.id)
+        assert entry is not None
+        return {"resume": resume_entry(entry, registry, user.is_admin)}
+
+    @app.put("/api/resumes/{profile_id}/projects")
+    def api_resume_projects(profile_id: int, body: ProjectNotes, user: auth.User = Depends(current_user)):
+        """Each employer's project notes, typed on the Profile page: the products and projects the person worked on
+        there. Tailoring writes that employer's bullets about this work; the notes themselves are never printed."""
+
+        def replace(profile: Profile) -> None:
+            if [c.name for c in profile.companies] != body.names or len(body.projects) != len(body.names):
+                raise StaleList
+            for company, text in zip(profile.companies, body.projects):
+                company.projects = text.strip()
+
+        try:
+            changed = db.change_profile(profile_id, user_id=user.id, change=replace)
+        except StaleList:
+            raise HTTPException(409, "The employers of this resume changed in another tab. Reload this page and "
+                                     "save again.") from None
         if changed is None:
             raise HTTPException(404, "Resume not found.")
         entry = db.profile_entry(profile_id, user_id=user.id)

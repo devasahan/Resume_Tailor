@@ -179,6 +179,16 @@ def guess_role(jd: str) -> tuple[str, str]:
     return prefix, match.group(2).strip()
 
 
+def first_project(notes: str) -> str:
+    """The first product or project a person's notes name: the first line's words before a colon, a bracket or a
+    dash, at most five ('Order tracking app (2023): rebuilt its API' -> 'Order tracking app')."""
+    for line in notes.splitlines():
+        words = re.split(r"[:(]| - | – ", line.strip(" -*•\t"))[0].split()
+        if words:
+            return " ".join(words[:5])
+    return ""
+
+
 def guess_company(jd: str) -> str:
     """'... at Stripe', 'About Acme Corp', 'Company: Globex' -> the name; '' when the JD names none."""
     for match in COMPANY_RE.finditer(jd):
@@ -319,6 +329,7 @@ class FakeClient(LLMClient):
             if len(companies) == 1:  # one job cannot overflow two pages without repeating the whole bank
                 n = min(n, len(bank))
             mine = [term for term in k if fits_era(term, index, end)] or GENERIC  # only what this job could use
+            lead = first_project(str(company.get("projects", "")))  # the person's own work, from their notes
             bullets = []
             for j in range(n):
                 past, now = bank[(index * 2 + j) % len(bank)]
@@ -327,7 +338,8 @@ class FakeClient(LLMClient):
                 if j == 0 and ctx.get("metrics", "estimate") == "estimate":  # opens with its size and its result
                     past, now = LEADS[index % len(LEADS)]
                 template = now if present else past
-                bullets.append(template.format(k1=mine[j % len(mine)], k2=mine[(j + 1) % len(mine)],
+                bullets.append(template.format(k1=lead if j == 0 and lead else mine[j % len(mine)],
+                                               k2=mine[(j + 1) % len(mine)],
                                                k3=mine[(j + 2) % len(mine)], size=LEAD_SIZES[index % len(LEAD_SIZES)],
                                                result=LEAD_RESULTS[index % len(LEAD_RESULTS)],
                                                was=LEAD_BASES[index % len(LEAD_BASES)][0],

@@ -19,7 +19,7 @@ from ..pipeline.facts import (
 )
 from ..schemas import CareerStep, Certification, Company, JDAnalysis, Resume
 
-PROMPT_VERSION = "v35"
+PROMPT_VERSION = "v36"
 RETRY_MARKER = "Your previous answer was rejected"
 
 _DIR = Path(__file__).parent
@@ -126,6 +126,18 @@ def tailor_system(metrics_mode: str = "estimate", spelling: str = "us", certific
                  spelling_rule=_spelling_rule(spelling), certifications_rule=_read(rule).strip())
 
 
+def projects_block(companies: list[Company]) -> str:
+    """The person's own notes on the products and projects they worked on, per employer, numbered as in <employers>
+    ("" when no employer has any). Angle brackets become single quotes' kin so a note can never close the block."""
+    entries = []
+    for index, company in enumerate(companies):
+        notes = "\n".join(line.rstrip() for line in company.projects.strip().splitlines())
+        notes = re.sub(r"\n{3,}", "\n\n", notes).replace("<", "‹").replace(">", "›")
+        if notes:
+            entries.append(f"{index}: {company.name}\n{notes}")
+    return "<employer_projects>\n" + "\n\n".join(entries) + "\n</employer_projects>\n" if entries else ""
+
+
 def tailor_user(
     jd: str, companies: list[Company], hints: str, facts: str = "", shorten: bool = False,
     bullets: list[int] | None = None, today: date | None = None, certifications: Sequence[Certification] = (),
@@ -137,6 +149,7 @@ def tailor_user(
         jd=jd.strip(),
         count=str(len(companies)),
         companies=describe_companies(companies, bullets, today),
+        projects=projects_block(companies),
         facts=facts.strip() or "Total professional experience: unknown (do not state a number of years).",
         hints=hints.strip() or "(none given)",
         certifications=certifications_block(certifications, today, certifications_section),
@@ -159,6 +172,7 @@ def revise_user(
         jd=jd.strip(),
         count=str(len(companies)),
         companies=describe_companies(companies, bullets, today),
+        projects=projects_block(companies),
         facts=facts.strip() or "Total professional experience: unknown (do not state a number of years).",
         hints=hints.strip() or "(none given)",
         certifications=certifications_block(certifications, today, certifications_section),

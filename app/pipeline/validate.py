@@ -2793,10 +2793,17 @@ def _name_forms(name: str) -> list[str]:
 _PERSON_TITLES = frozenset({"mr", "mrs", "ms", "mx", "dr", "prof", "sir", "dame"})
 
 
+def project_notes(profile: Profile) -> str:
+    """The person's own project notes, every employer's (Profile page): their figures, tools and names are the
+    person's own, like the hints."""
+    return "\n".join(c.projects.strip() for c in profile.companies if c.projects.strip())
+
+
 def known_names(resume: Resume, analysis: JDAnalysis | None = None, company: str = "", manager: str = "") -> list[str]:
-    """What keeps its own spelling: the employers, the schools, the hiring company (each also in its short form) and
-    the hiring manager, also by each part of their name ('Ms. Gray')."""
+    """What keeps its own spelling: the employers, the schools, the hiring company (each also in its short form), the
+    names in the person's project notes, and the hiring manager, also by each part of their name ('Ms. Gray')."""
     names = [c.name for c in resume.profile.companies] + [e.school for e in resume.profile.education]
+    names += re.findall(r"\b[A-Z][\w'\u2019&.]*(?:[ ][A-Z][\w'\u2019&.]*)*", project_notes(resume.profile))
     names += [cert.name for cert in resume.certifications]
     if analysis is not None:
         names.append(analysis.company)

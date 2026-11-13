@@ -475,7 +475,7 @@ def test_a_run_saved_with_responsibilities_still_loads_and_uses_them(router, db,
     run_id = db.save_run(old, None, "")
     assert db.get_run(run_id).analysis.key_responsibilities == ["Run the monthly payroll close"]
     new = tailored(router, db, profile)
-    assert new.analysis.key_responsibilities == [] and new.prompt_version == "v35"
+    assert new.analysis.key_responsibilities == [] and new.prompt_version == "v36"
 
 
 # ------------------------------------------------------------------ the fitted PDF reads like the preview

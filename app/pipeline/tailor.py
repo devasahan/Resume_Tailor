@@ -220,7 +220,8 @@ def run_checks(result: TailorResult, jd_text: str) -> None:
             "Required by the posting but not shown in the summary or a bullet: " + ", ".join(absent + listed_only)
             + ". An ATS and a recruiter look for these in your experience, not only in the skills list."
         )
-    allowed = f"{result.hints}\n{result.facts}"
+    own = validate.project_notes(result.resume.profile)  # the person's project notes: as true as the hints
+    allowed = f"{result.hints}\n{result.facts}\n{own}"
     flags = validate.claim_flags(result.resume, jd_text, allowed)
     # the names the run's checks kept out of the text, in either Settings mode: the rows (or, while the section was
     # off, the job post's certifications the model listed), the person's own and the job post's credential
@@ -234,7 +235,7 @@ def run_checks(result: TailorResult, jd_text: str) -> None:
                     "remove it from the text.")
         for where, term in validate.certification_mentions(result.resume, names)
     ]
-    posting = validate.posting_match_flags(result.resume, result.analysis, result.hints)
+    posting = validate.posting_match_flags(result.resume, result.analysis, f"{result.hints}\n{own}")
     result.flags = [f for f in flags if f.level == "verify"] + posting + [f for f in flags if f.level != "verify"]
     dense = validate.metric_density_problems(result.resume)
     if dense:
@@ -249,7 +250,7 @@ def run_checks(result: TailorResult, jd_text: str) -> None:
             + ". Replace them with your real numbers (specific values such as 23.4% or 21% read as measured)."
         )
     if result.cover_letter:
-        result.flags += validate.cover_flags(result.cover_letter, result.hints)
+        result.flags += validate.cover_flags(result.cover_letter, f"{result.hints}\n{own}")
 
 
 async def fit_report(resume: Resume, paper: str) -> tuple[FitStyle, int, bool, list[str]]:
@@ -350,6 +351,8 @@ async def run_tailor(
         steps.mark("bullet plan")
         context = {"profile": profile.model_dump(), "jd": jd, "hints": hints, "bullets": budget, "metrics": metrics_mode,
                    "spelling": spelling, "certifications_section": certifications_on}
+        # what the person gave as true: the hints, the facts and their project notes (their figures are their own)
+        own_text = f"{hints}\n{facts}\n{validate.project_notes(profile)}"
 
         def build(out: TailorOutput):
             """(output, resume, notes). The analysis keeps keywords only, the headline the role's short name,
@@ -367,7 +370,7 @@ async def run_tailor(
             validate.general_role_fixes(resume, out.jd_analysis)  # 'Voice AI Engineer' -> 'AI Engineer'
             notes = validate.fix_title_regressions(resume)
             notes += validate.role_level_fixes(resume, out.jd_analysis)
-            validate.vary_figures(resume, f"{hints}\n{facts}")  # the candidate's own figures are never dropped
+            validate.vary_figures(resume, own_text)  # the candidate's own figures are never dropped
             validate.spell_resume(resume, spelling, out.jd_analysis, (company_name, hiring_manager))
             return out, resume, notes
 
@@ -390,7 +393,7 @@ async def run_tailor(
             return out.jd_analysis.model_copy(update={
                 "keywords": [k for k in out.jd_analysis.keywords if not validate.names_certification(k, names)]})
 
-        allowed_figures = f"{hints}\n{facts}"
+        allowed_figures = own_text
 
         def refine(value) -> Ask | None:
             """Ask once to fix the draft if it uses too many figures, round guesses, thin text, leaves must-have
@@ -760,6 +763,7 @@ async def _write_letter(
     terms, roles = validate.skill_terms(resume, analysis), validate.role_terms(resume, analysis)
     exact = validate.posting_terms(analysis)
     posting = " ".join(sorted(validate.posting_figures(jd)))  # the post's own figures: a quote keeps its '38.0%'
+    notes = validate.project_notes(resume.profile)  # the person's project notes: their figures are their own
 
     def mark(name: str) -> None:
         """A step of the Add/Rewrite job; a letter written inside a tailoring job marks none (it runs alongside)."""
@@ -773,7 +777,7 @@ async def _write_letter(
             greeting=greeting, paragraphs=paragraphs, closing=closing,
             company_name=company_name, hiring_manager=hiring_manager,
         )
-        validate.vary_letter_figures(letter, f"{hints}\n{facts}\n{posting}")  # a base in brackets at most once
+        validate.vary_letter_figures(letter, f"{hints}\n{facts}\n{notes}\n{posting}")  # a base in brackets at most once
         validate.spell_letter(letter, style, keep, terms, exact, roles)  # the run's style, its sign-off, CV or resume
         return letter
 

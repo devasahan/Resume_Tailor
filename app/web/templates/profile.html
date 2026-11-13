@@ -58,6 +58,7 @@ function resumeCard(r) {
     p.education.length ? el('div', { class: 'small' }, el('strong', { text: 'Education: ' }),
       p.education.map(e => [[e.degree, e.field].filter(Boolean).join(', '), e.school, [e.start, e.end].filter(Boolean).join(' - ')]
         .filter(Boolean).join(' | ')).join('; ')) : null,
+    projectsBox(r),
     certificationsBox(r),
     r.warnings.length ? notice('warn', 'Check:', r.warnings) : null);
 }
@@ -122,11 +123,56 @@ function certificationsBox(r) {
     box, expiredNote, el('div', { class: 'row' }, save, status));
 }
 
+// The person's own notes on the products and projects they worked on at each employer. Tailoring writes that
+// employer's bullets about this work; the notes themselves are never printed.
+function projectsBox(r) {
+  const jobs = r.profile.companies || [];
+  if (!jobs.length) return null;
+  let names = jobs.map(job => job.name);  // as shown: the save is refused if the employers changed since (another tab)
+  const areas = jobs.map(job => {
+    const area = el('textarea', { rows: 3, maxlength: 2000, 'aria-label': `Projects you worked on at ${job.name}`,
+      placeholder: 'Products and projects you worked on here, one per line, with dates if you know them. For example:\nOrder tracking app (2023): rebuilt the API behind it' });
+    area.value = area.dataset.saved = job.projects || '';
+    return area;
+  });
+  const summary = el('summary');
+  const label = () => {
+    const filled = areas.filter(area => area.dataset.saved.trim()).length;
+    summary.textContent = `Projects you worked on (${filled} of ${jobs.length} employers)`;
+  };
+  label();
+  const status = el('span', { class: 'small muted' });
+  const save = el('button', { type: 'button', class: 'small primary', text: 'Save projects' });
+  save.addEventListener('click', async () => {
+    save.disabled = true;
+    status.textContent = 'Saving…';
+    try {
+      const data = await api(`/api/resumes/${r.id}/projects`, { method: 'PUT', body: { projects: areas.map(area => area.value), names } });
+      const saved = data.resume.profile.companies;
+      names = saved.map(job => job.name);
+      saved.forEach((job, i) => { if (areas[i]) areas[i].value = areas[i].dataset.saved = job.projects || ''; });
+      label();
+      status.textContent = 'Saved. Your next resumes write each of these jobs\' bullets about this work.';
+    } catch (err) { status.textContent = err.message; }
+    finally { save.disabled = false; }
+  });
+  return el('details', { class: 'project-list', 'data-resume': r.id }, summary,
+    el('p', { class: 'small muted', text: 'For each employer, list the products and projects you really worked on there; dates help. The AI writes that job\'s bullets about this work: what you built or ran for it, how, and what changed. The notes themselves are never printed.' }),
+    jobs.map((job, i) => el('label', { class: 'project' },
+      el('span', { class: 'small' }, el('strong', { text: job.name }), ` · ${job.start || '?'} - ${job.end || 'Present'}`),
+      areas[i])),
+    el('div', { class: 'row' }, save, status));
+}
+
 async function load() {
-  const unsaved = {};  // text typed in a certifications box but not saved yet survives the list being redrawn
+  const unsaved = {};  // text typed in a certifications or projects box but not saved yet survives a redraw
   for (const box of $$('.cert-list')) {
     const area = $('textarea', box);
     if (area.value !== area.dataset.saved) unsaved[box.dataset.resume] = { value: area.value, open: box.open };
+  }
+  for (const box of $$('.project-list')) {
+    const typed = $$('textarea', box).map(area => (area.value !== area.dataset.saved ? area.value : null));
+    if (typed.some(value => value !== null)) unsaved[`projects ${box.dataset.resume}`] = { typed, open: box.open };
   }
   resumes = (await api('/api/resumes')).resumes;
   $('#count').textContent = resumes.length ? `(${resumes.length})` : '';
@@ -135,6 +181,13 @@ async function load() {
   for (const box of $$('.cert-list')) {
     const kept = unsaved[box.dataset.resume];
     if (kept) { $('textarea', box).value = kept.value; box.open = kept.open; }
+  }
+  for (const box of $$('.project-list')) {
+    const kept = unsaved[`projects ${box.dataset.resume}`];
+    if (!kept) continue;
+    const areas = $$('textarea', box);
+    if (areas.length === kept.typed.length) kept.typed.forEach((value, i) => { if (value !== null) areas[i].value = value; });
+    box.open = kept.open;
   }
 }
 

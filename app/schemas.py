@@ -25,12 +25,19 @@ class Contact(BaseModel):
     website: str = ""
 
 
+MAX_PROJECT_CHARS = 2000  # one employer's project notes (Profile page)
+
+
 class Company(BaseModel):
     name: str
     start: str = ""  # e.g. "Jan 2021"
     end: str = ""  # e.g. "Mar 2023" or "Present"
     mode: str = ""  # "Remote" | "Onsite" | "Hybrid" (blank when the base resume does not say)
     location: str = ""
+    # The person's own notes on the products and projects they worked on there, typed on the Profile page: that
+    # employer's bullets are written about this work. Never printed. SkipJsonSchema keeps it out of the resume
+    # reader's schema (strict_json_schema makes every property it sees required); "" in profiles saved before.
+    projects: SkipJsonSchema[str] = ""
 
 
 class Education(BaseModel):
