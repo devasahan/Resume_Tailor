@@ -348,14 +348,21 @@ async function create(withLetter, keepResume = false) {
 }
 
 // Who is hiring, where the pasted job is done and what it pays, read by the AI once the text stops changing
-const FACTS_MIN_CHARS = 200, FACTS_WAIT_MS = 1200, FACTS_MAX_WAIT_MS = 12000;
+const FACTS_MIN_CHARS = 200, FACTS_WAIT_MS = 1200, FACTS_MAX_WAIT_MS = 12000, HEAD_CHARS = 80;
 const NO_COMPANY = 'Copy the company name from the job post into the Company box, exactly as the company writes it, then press the button again.';
 let factsTimer = null, factsChecked = '', factsAsked = 0, factsPending = null;
-let postHead = '';  // the opening of the job post the Company box belongs to
+let postHead = '';  // the opening of the job post in the job box, as last seen
+// The Company box's name belongs to one job post: the opening of that post ('' when it was typed with no post yet,
+// so it goes with the next one), and whether the check found it (a newer answer for the same post may replace it)
+let companyPost = '', companyFound = false;
 
 function factLine(label, value) {
   return el('p', { class: 'fact' }, el('strong', { text: `${label}: ` }), value);
 }
+
+function headOf(text) { return text.trim().slice(0, HEAD_CHARS); }
+// The same job post: one opening starts the other (the text grows or shrinks at its end); no text is no post
+function samePost(a, b) { return Boolean(a && b) && (a.startsWith(b) || b.startsWith(a)); }
 
 // Under the Company box while it is empty: `found` is the post's company ("" when the post names none, null when
 // the check failed, undefined before any check)
@@ -364,6 +371,15 @@ function companyNote(found) {
   $('#company-note').textContent = !empty || found === undefined ? ''
     : found === '' ? 'This job post does not name the company: copy its name into the box, exactly as the company writes it.'
       : 'Type the company name exactly as the job post writes it.';
+}
+
+// After the job box changed: a name typed with no post yet goes with this one; a name for another post is cleared
+function keepCompanyWithPost() {
+  const box = $('#company'), head = headOf($('#jd').value);
+  if (!box.value.trim()) { companyPost = ''; companyFound = false; return; }
+  if (!companyPost || samePost(head, companyPost)) { companyPost = head; return; }
+  box.value = ''; companyPost = ''; companyFound = false;
+  companyNote(undefined);
 }
 
 // The check of this job post; the same post again (or while it is on its way) gives the same answer
@@ -377,11 +393,16 @@ function checkFacts() {
   factsPending = (async () => {
     try {
       const facts = await api('/api/job-facts', { method: 'POST', body: { jd } });
-      if (asked !== factsAsked) return;
+      if (asked !== factsAsked || !samePost(headOf($('#jd').value), headOf(jd))) return;  // another post by now
       const mode = facts.work_mode + (facts.work_mode !== 'Not stated' && facts.work_mode_detail ? ` (${facts.work_mode_detail})` : '');
       $('#jd-facts').replaceChildren(factLine('Company', facts.company || 'Not named in the job post'),
         factLine('Work mode', mode), factLine('Salary', facts.salary || 'Not stated'));
-      if (!$('#company').value.trim()) $('#company').value = facts.company || '';  // what the person typed wins
+      const box = $('#company');
+      if (!box.value.trim() || companyFound) {  // what the person typed wins
+        box.value = facts.company || '';
+        companyPost = headOf(jd);
+        companyFound = Boolean(box.value);
+      }
       companyNote(facts.company || '');
     } catch (err) {
       if (asked !== factsAsked) return;
@@ -395,37 +416,47 @@ function checkFacts() {
 
 // The company the resume is made for: the box, or while it is empty, this post's check (started now if the short
 // wait after typing has not passed yet, and waited for at most FACTS_MAX_WAIT_MS). "" when the post names none.
+// While it waits, the job post and the Company box cannot change, so the name found is this post's.
 async function companyFor(jd) {
   const box = $('#company');
   if (box.value.trim() || jd.length < FACTS_MIN_CHARS) return box.value.trim();
   clearTimeout(factsTimer);
   busy(true, 'Finding the company name in the job post…');
+  $('#jd').readOnly = box.readOnly = true;
   try {
     await Promise.race([checkFacts(), new Promise(resolve => setTimeout(resolve, FACTS_MAX_WAIT_MS))]);
   } finally {
+    $('#jd').readOnly = box.readOnly = false;
     busy(false, '');
   }
   return box.value.trim();
 }
 
-$('#jd').addEventListener('input', () => {
+function postChanged() {
   clearTimeout(factsTimer);
-  const head = $('#jd').value.trim().slice(0, 80);
-  if (!head || !(head.startsWith(postHead) || postHead.startsWith(head))) {  // emptied, or another job post
-    $('#company').value = '';
-    companyNote(undefined);
+  const head = headOf($('#jd').value);
+  if (!samePost(head, postHead)) {  // emptied, or another job post: an answer on its way is for the old one
+    factsAsked += 1; factsChecked = ''; factsPending = null;
   }
   postHead = head;
-  if ($('#jd').value.trim().length < FACTS_MIN_CHARS) {  // emptied or too short: nothing to show
-    factsAsked += 1; factsChecked = '';
+  keepCompanyWithPost();
+  if ($('#jd').value.trim().length < FACTS_MIN_CHARS) {  // emptied or too short: nothing to show, nothing on its way
+    factsAsked += 1; factsChecked = ''; factsPending = null;
     $('#jd-facts').replaceChildren();
     return;
   }
   factsTimer = setTimeout(checkFacts, FACTS_WAIT_MS);
+}
+
+$('#jd').addEventListener('input', postChanged);
+$('#company').addEventListener('input', () => {  // a name typed here goes with the job post on screen
+  companyPost = $('#company').value.trim() ? headOf($('#jd').value) : '';
+  companyFound = false;
+  companyNote(undefined);
 });
-$('#company').addEventListener('input', () => companyNote(undefined));
-postHead = $('#jd').value.trim().slice(0, 80);  // text the browser restored, with its company
-if ($('#jd').value.trim()) factsTimer = setTimeout(checkFacts, FACTS_WAIT_MS);
+// A job post the browser put back (some browsers before this script runs, others only by 'pageshow', after Back)
+if (headOf($('#jd').value)) postChanged();
+window.addEventListener('pageshow', () => { if (headOf($('#jd').value) !== postHead) postChanged(); });
 
 $('#create').addEventListener('click', () => create(true));
 $('#resume-only').addEventListener('click', () => create(false));

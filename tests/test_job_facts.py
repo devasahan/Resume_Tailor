@@ -45,10 +45,14 @@ def test_the_hiring_company_is_read_from_the_post(client):
     assert JobFacts(company="x" * 121, work_mode="Remote", work_mode_detail="", salary="").company == ""
 
 
-def test_the_tailor_page_fills_the_company_box_and_sends_it(client):
+def test_the_tailor_page_has_the_company_box_and_sends_company_name(client):
+    """Only the page's markup and script text: how the box fills, clears and waits is checked in a browser (the repo
+    has no browser tests), with a post that names its company, one that does not, Back, a second post pasted while
+    the first one's check is on its way, and typing while Create waits."""
     page = client.get("/tailor").text
     assert 'id="company"' in page and 'maxlength="120"' in page
     assert "company_name: company" in page and "Copy the company name from the job post into the Company box" in page
+    assert "readOnly = box.readOnly = true" in page and "'pageshow'" in page  # the wait locks both boxes; Back
 
 
 def test_any_logged_in_user_can_check_but_not_a_visitor(client, user_client):
