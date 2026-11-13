@@ -154,7 +154,7 @@ function projectsBox(r) {
     save.disabled = true;
     status.textContent = 'Saving…';
     try {
-      const data = await api(`/api/resumes/${r.id}/projects`, { method: 'PUT', body: { projects: areas.map(area => area.value), names } });
+      const data = await api(`/api/resumes/${r.id}/projects`, { method: 'PUT', body: { projects: areas.map(area => area.value.trim()), names } });  // as counted above
       const saved = data.resume.profile.companies;
       names = saved.map(job => job.name);
       saved.forEach((job, i) => { if (areas[i]) areas[i].value = areas[i].dataset.saved = job.projects || ''; });

@@ -1830,8 +1830,8 @@ def figure_style_problems(resume: Resume, allowed_text: str, notes: str = "") ->
     for text in texts:
         for match in _APPROX.finditer(text):
             problems.append(match.group(0).strip())
-        for token in _numbers_in(text):
-            if token and token.lower() not in allowed and figure_key(token) not in own and is_round_figure(token):
+        for token, key in _figures_and_keys(text):
+            if token and token.lower() not in allowed and key not in own and is_round_figure(token):
                 problems.append(token)
     return list(dict.fromkeys(problems))
 
@@ -2710,8 +2710,8 @@ def claim_flags(resume: Resume, jd: str, hints: str, notes: str = "") -> list[Fl
 
     def check_numbers(section: str, text: str) -> None:
         """One flag naming every estimate in the text (a job's first bullet gives its size and its result)."""
-        tokens = list(dict.fromkeys(t for t in _numbers_in(text)
-                                    if t and t.lower() not in hints_l and figure_key(t) not in own))
+        tokens = list(dict.fromkeys(t for t, key in _figures_and_keys(text)
+                                    if t and t.lower() not in hints_l and key not in own))
         if not tokens:
             return
         if len(tokens) == 1:
@@ -2775,8 +2775,8 @@ def cover_flags(letter: CoverLetter, hints: str, notes: str = "") -> list[Flag]:
     flags: list[Flag] = []
     hints_l, own = hints.lower(), note_figures(notes)
     for paragraph in letter.paragraphs:
-        for token in _numbers_in(paragraph):
-            if token.lower() not in hints_l and figure_key(token) not in own:
+        for token, key in _figures_and_keys(paragraph):
+            if token.lower() not in hints_l and key not in own:
                 flags.append(
                     Flag(section="cover_letter", text=paragraph, level="verify",
                          reason=f"Contains '{token}', which is not in your hints. Only keep figures you can back up.")
@@ -2814,37 +2814,58 @@ def figure_key(token: str) -> str:
     return re.sub(r"[$€£,+~\s]", "", token.lower())
 
 
+_UNIT_WORD = re.compile(r"(\d)\s*(?:(million|mn)|(billion|bn)|(thousand)|(per\s?cent)|(times))\b", re.IGNORECASE)
+
+
+def _short_units(text: str) -> str:
+    """Unit words in their short forms, as the figures are compared: '$2 million' -> '$2M', '31 percent' -> '31%',
+    '3 times' -> '3x'."""
+    units = ("M", "B", "K", "%", "x")
+    return _UNIT_WORD.sub(lambda m: m.group(1) + next(u for u, g in zip(units, m.groups()[1:]) if g), text)
+
+
+def _figures_and_keys(text: str) -> list[tuple[str, str]]:
+    """The figures in a text as written (for the hints and the messages), each with its key for the notes' figures,
+    read with its unit word ('$2 million' -> ('$2', '2m'))."""
+    figures = _numbers_in(text)
+    short = _numbers_in(_short_units(text))
+    return list(zip(figures, map(figure_key, short if len(short) == len(figures) else figures)))
+
+
+_MONTH = r"(?:jan|feb|mar|apr|may|jun|jul|aug|sep|sept|oct|nov|dec)[a-z]*\.?"
+_NOT_FIGURES = re.compile(  # the digits of dates, year ranges, paths and links: none is a figure the person gave
+    r"\b\d{4}-\d{1,2}-\d{1,2}\b|\b\d{1,2}[/.]\d{1,2}[/.]\d{2,4}\b|\b\d{1,2}/(?:19|20)\d{2}\b"  # 2024-06-12, 12/03/2024
+    r"|\b(?:19|20)\d{2}\s*[-\u2013\u2014/]\s*(?:\d{4}|\d{2})\b"  # 2023-24, 2023-2025, 2024/25
+    rf"|\b\d{{1,2}}(?:st|nd|rd|th)?\s+(?:of\s+)?{_MONTH}|\b{_MONTH}\s+\d{{1,2}}(?:st|nd|rd|th)?\b"  # 3 March, March 3
+    r"|\S*/\S*/\S*|\b[\w-]+(?:\.[a-z][\w-]*)+/\S*",  # a path, or a link without https://
+    re.IGNORECASE)
+
+
 def note_figures(notes: str) -> frozenset[str]:
-    """The figures the person's notes give, each whole (figure_key): '450' there makes '450' or '450+' in a bullet the
-    person's own, never the '4' or the '20' that only sit inside a '450' or a '2024'."""
-    return frozenset(figure_key(token) for token in _numbers_in(notes) if token)
+    """The figures the person's notes give, each whole and read with its unit word (figure_key, _short_units): '450'
+    there makes '450' or '450+' in a bullet the person's own, and '$2M' makes '$2 million' theirs; never the '4' or
+    the '20' that only sit inside a '450' or a '2024', nor the digits of a date ('2023-24', '3 March', '12/03/2024')
+    or a path."""
+    return frozenset(figure_key(token) for token in _numbers_in(_short_units(_NOT_FIGURES.sub(" ", notes))) if token)
 
 
 _NOTE_NAME = re.compile(r"[A-Z][\w'\u2019&.]*(?:[ ][A-Z][\w'\u2019&.]*)*")
-
-
-def _clause_start(line: str, position: int) -> bool:
-    """True when nothing but list marks or Markdown comes before `position` in the line, or the words before it end
-    a sentence or a label ('.', '!', '?', ':' or ';', also inside bold: '**Role:** Optimized ...')."""
-    before = re.sub(r"[*_`~\s]+$", "", line[:position])
-    return not re.search(r"\w", before) or before[-1:] in ".!?:;"
+_VERB_FORM = re.compile(r"(?:ed|ing|[iy][sz]e[sd]?)$", re.IGNORECASE)  # optimized, organizing, analyse(s)
 
 
 def note_names(notes: str) -> list[str]:
-    """The product and project names in the person's notes, for the spelling keep-list: runs of capitalised words
-    ('Order Hub', 'Data Visualization Studio'), and a single capitalised word inside a sentence ('the Optimizer
-    service'). A capital at the start of a line, a sentence or the text after a colon is no sign of a name: a single
-    word there is left out ('Optimized the checkout API'), and so is the first word of a run there when it has a
-    spelling in the other style ('Modernized Partner Portal' -> 'Partner Portal')."""
+    """The product and project names in the person's notes, for the spelling keep-list: runs of two or more
+    capitalised words ('Order Hub', 'Color Studio'). A run that starts with a verb spelled differently in the other
+    style keeps only the rest ('Modernized Partner Portal' -> 'Partner Portal'). A single capitalised word is never
+    one: inside a sentence it keeps its spelling anyway, and at the start of one it is mostly a verb ('Optimized the
+    checkout API')."""
     names: list[str] = []
-    for line in notes.splitlines():
-        for match in _NOTE_NAME.finditer(line):
-            words = match.group(0).split(" ")
-            start = _clause_start(line, match.start())
-            if start and len(spelling.twins(words[0])) > 1:
-                words, start = words[1:], False
-            if len(words) > 1 or (words and not start):
-                names.append(" ".join(words))
+    for match in _NOTE_NAME.finditer(notes):
+        words = match.group(0).split(" ")
+        if len(spelling.twins(words[0])) > 1 and _VERB_FORM.search(words[0]):
+            words = words[1:]
+        if len(words) > 1:
+            names.append(" ".join(words))
     return names
 
 

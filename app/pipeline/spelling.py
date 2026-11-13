@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import re
 from collections.abc import Iterable
+from functools import lru_cache
 
 STYLES = ("us", "eu")
 
@@ -241,6 +242,7 @@ def us_text(text: str) -> str:
     return _WORD.sub(lambda match: us_word(match.group(0)), text.lower())
 
 
+@lru_cache(maxsize=8192)  # a long keep-list (project notes) would otherwise compile every pattern for every text
 def _phrase_regex(phrase: str) -> re.Pattern | None:
     words = _WORD.findall(phrase)
     if not words:

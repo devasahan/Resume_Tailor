@@ -250,8 +250,10 @@ def test_words_that_start_a_note_line_still_follow_the_spelling_style():
              "Visualization dashboard for store managers\nRebuilt the Optimizer service\nModernized Partner Portal\n"
              "**Role:** Optimized the payment flows")
     names = validate.note_names(clean_notes(notes))
-    assert {"Order Hub", "Optimizer", "Partner Portal"} <= set(names)
-    assert not {"Optimized", "Modernized", "Visualization"} & set(names)
+    assert {"Order Hub", "Partner Portal"} <= set(names)
+    assert not {"Optimized", "Modernized", "Visualization", "Optimizer"} & set(names)  # one word is never a name
+    assert validate.note_names("1) Optimized the Order Hub checkout API\nOrder Hub \u2013 Optimized the checkout\n"
+                               "a) Modernized it\nOrder Hub | Optimized payments") == ["Order Hub", "Order Hub", "Order Hub"]
     profile = Profile(name="Taylor Quinn", contact=Contact(), companies=[
         Company(name="Northwind Labs", start="Jan 2023", end="Present", projects=notes)])
     resume = Resume(profile=profile, headline="Backend Engineer", summary="Optimized checkout flows for partner stores.",
@@ -274,3 +276,76 @@ def test_notes_up_to_4000_characters_are_saved_and_the_page_says_when_they_are_l
     page = (Path(__file__).parents[1] / "app/web/templates/profile.html").read_text()
     assert f"const MAX_PROJECT_CHARS = {MAX_PROJECT_CHARS};" in page  # checked on Save: a long paste is never cut off
     assert "maxlength: 2000," not in page and "Save projects again" in page
+
+
+def test_product_names_led_by_a_word_with_two_spellings_keep_theirs():
+    """'Color Studio (2024): ...' is a product: its whole name keeps its spelling, also at the start of a sentence."""
+    notes = "Color Studio (2024): built the theme editor\nBehavior Insights (2022): ran the experiment platform"
+    assert validate.note_names(notes) == ["Color Studio", "Behavior Insights"]
+    profile = Profile(name="Taylor Quinn", contact=Contact(), companies=[
+        Company(name="Northwind Labs", start="Jan 2022", end="Present", projects=notes)])
+    resume = Resume(profile=profile, headline="Frontend Engineer", skills=[], experience=[
+        ResumeExperience(company_index=0, job_title="Frontend Engineer", bullets=["Built the theme editor in React."])],
+        summary="Color Studio was my main product. Behavior Insights then measured every change I shipped.")
+    validate.spell_resume(resume, "eu")
+    assert resume.summary == "Color Studio was my main product. Behavior Insights then measured every change I shipped."
+
+
+def test_own_projects_after_a_list_of_sources_still_reach_the_model():
+    """A source list nested under one project, a 'Links' item between bullets and sources placed first: only the
+    sources go; every project line stays."""
+    nested = ("- Order Hub (2023): rebuilt the order API\n  - Sources:\n    - [Retail Weekly](https://r.example/a)\n"
+              "- Partner Portal (Mar 2024): built the sign-up flow\n- Checkout rewrite (2025): moved payments to a queue")
+    assert clean_notes(nested) == ("- Order Hub (2023): rebuilt the order API\n- Partner Portal (Mar 2024): built the "
+                                   "sign-up flow\n- Checkout rewrite (2025): moved payments to a queue")
+    between = "- Rebuilt the order API\n- Links:\n  - https://n.example/a\n- [Launch post](https://n.example/b)\n- Cut checkout time"
+    assert clean_notes(between) == "- Rebuilt the order API\n- Cut checkout time"
+    first = "Sources:\n- https://n.example/about\n\n- Order Hub (2023): rebuilt the API\n- Partner Portal (Mar 2024)"
+    assert clean_notes(first) == "- Order Hub (2023): rebuilt the API\n- Partner Portal (Mar 2024)"
+
+
+def test_source_titles_in_other_layouts_stay_out_of_the_prompt():
+    """A title line over its link line, 'Works cited' with 'accessed' dates, and headings such as Resources, Useful
+    links, Press coverage or 'Sources (2)': the titles never reach the model, and their figures are not the person's."""
+    notes = ("Order Hub (2023): rebuilt the API\n\nSources\nNorthwind launches Order Hub - Retail Weekly\n"
+             "https://r.example/a\n\nHow Northwind cut checkout time by 31% | Blog\nhttps://b.example/b\n\n"
+             "Partner Portal (2024): built sign-up\n#### **Works cited**\n\n1. Northwind at 31%, accessed March 3, 2026, "
+             "https://w.example/c\n## Resources\n- [Press 31%](https://p.example)\nUseful links:\n- [A](https://a.example)\n"
+             "**Press coverage**\n- [B](https://b.example)\nSources (2)\n- [C](https://c.example)\n"
+             "Checkout rewrite (2025)\nNorthwind blog, accessed March 3, 2026, https://d.example")
+    assert clean_notes(notes) == ("Order Hub (2023): rebuilt the API\n\nPartner Portal (2024): built sign-up\n"
+                                  "Checkout rewrite (2025)")
+    profile = Profile(name="Taylor Quinn", contact=Contact(), companies=[Company(name="Northwind Labs", projects=notes)])
+    assert "31%" not in validate.note_figures(validate.project_notes(profile))
+
+
+def test_the_digits_of_dates_are_not_the_persons_figures_but_unit_words_are():
+    """'2023-24', '3 March 2024', '12/03/2024', '2024-06-12' and a link without https:// give no figures; the notes'
+    '$2M', '31%' and '3x' make '$2 million', '31 percent' and '3 times' in the text the person's own."""
+    for notes, invented in [("Order Hub (2023-24): rebuilt the API", "24"), ("launched 3 March 2024", "3"),
+                            ("launched 12/03/2024", "12"), ("launched 2024-06-12", "12"),
+                            ("see northwind.example/blog/2024/06/order-hub-38", "38")]:
+        assert invented not in validate.note_figures(clean_notes(notes)), notes
+    notes = "Order Hub (2023): saved $2M a year, cut checkout time by 31%, 3x faster syncs"
+    profile = Profile(name="Taylor Quinn", contact=Contact(), companies=[
+        Company(name="Northwind Labs", start="Jan 2023", end="Present", projects=notes)])
+    bullet = "Rebuilt Order Hub, saving $2 million a year and cutting checkout time by 31 percent with 3 times faster syncs."
+    resume = Resume(profile=profile, headline="Backend Engineer", summary="", skills=[], experience=[
+        ResumeExperience(company_index=0, job_title="Backend Engineer", bullets=[bullet])])
+    text = validate.project_notes(profile)
+    assert [f for f in validate.claim_flags(resume, "jd", "", text) if f.level == "verify"] == []
+    letter = CoverLetter(greeting="Dear Hiring Manager,", paragraphs=[bullet], closing="Sincerely,")
+    assert validate.cover_flags(letter, "", text) == []
+    assert any(f.level == "verify" for f in validate.claim_flags(resume, "jd", "", ""))  # without the notes: estimates
+
+
+def test_a_long_keep_list_compiles_each_name_once():
+    """Notes of many employers give hundreds of names; each name's pattern is made once, not once per text, so a
+    tailoring run does not stall the site."""
+    from app.pipeline import spelling
+    assert spelling._phrase_regex("Order Hub") is spelling._phrase_regex("Order Hub")
+
+
+def test_the_page_sends_the_notes_as_it_counts_them(client):
+    page = client.get("/profile").text
+    assert "projects: areas.map(area => area.value.trim())" in page  # trailing blank lines never cause a 422
