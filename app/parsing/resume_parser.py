@@ -8,10 +8,12 @@ it and uploading again (or choosing another reader in Settings).
 from __future__ import annotations
 
 import io
+import re
 import zipfile
 
 import pdfplumber
 from docx import Document
+from docx.oxml.ns import qn
 from docx.text.paragraph import Paragraph
 
 from ..llm.base import CostCapError
@@ -21,7 +23,7 @@ from ..pipeline.generate import GenerationFailed, Outcome, generate_validated
 from ..prompts import parse_system, parse_user
 from ..schemas import Profile, TailorResult
 from ..storage.db import Database
-from .heuristic import parse_resume_text
+from .heuristic import _is_header, parse_resume_text
 
 MAX_BYTES = 5 * 1024 * 1024
 MAX_CHARS = 24_000
@@ -29,12 +31,64 @@ MAX_PDF_PAGES = 10
 MAX_UNZIPPED_BYTES = 50 * 1024 * 1024  # a DOCX is a zip: refuse ones that expand into something huge
 
 
-def _paragraph_text(paragraph: Paragraph) -> str:
-    """A Word paragraph's text, with '• ' before it in a list style ('List Bullet', 'List Paragraph'): Word draws the
-    bullet itself, so the text has none, and the reader knows a bullet by its mark."""
-    style = paragraph.style
-    listed = style is not None and (style.name or "").startswith("List") and paragraph.text.strip()
-    return f"• {paragraph.text}" if listed else paragraph.text
+_NUM_ID = qn("w:pPr") + "/" + qn("w:numPr") + "/" + qn("w:numId")
+
+
+def _list_styles(doc) -> tuple[dict[str, tuple[bool, bool] | None], tuple[bool, bool]]:
+    """Each style id's (list style, drawn with a mark), read in one pass over the styles: a list style's name starts
+    with 'List' ('List Bullet', 'List Paragraph'); it is drawn with a mark when it or a style it is based on has
+    numbering (numId 0 is none). None for a style of another type. And the same for the default paragraph style."""
+    found: dict[str, tuple[bool, str | None, str | None, bool]] = {}
+    default_id = None
+    try:
+        elements = doc.styles.element.findall(qn("w:style"))
+    except (AttributeError, KeyError, ValueError):  # a styles part python-docx cannot read
+        elements = []
+    for element in elements:
+        style_id = element.get(qn("w:styleId"))
+        if style_id is None or style_id in found:  # the first style with an id counts, as in python-docx
+            continue
+        name = element.find(qn("w:name"))
+        num = element.find(_NUM_ID)
+        base = element.find(qn("w:basedOn"))
+        paragraph = element.get(qn("w:type")) == "paragraph"
+        found[style_id] = (name is not None and (name.get(qn("w:val")) or "").startswith("List"),
+                           None if num is None else num.get(qn("w:val")), None if base is None else base.get(qn("w:val")),
+                           paragraph)
+        if paragraph and element.get(qn("w:default")) in ("1", "true", "on"):
+            default_id = style_id
+
+    def drawn(style_id: str | None) -> bool:
+        for _ in range(20):  # a chain of styles each based on the next
+            entry = found.get(style_id) if style_id else None
+            if entry is None:
+                return False
+            if entry[1] is not None:
+                return entry[1] != "0"
+            style_id = entry[2]
+        return False
+
+    by_id = {sid: (entry[0], drawn(sid)) if entry[3] else None for sid, entry in found.items()}
+    return by_id, (by_id.get(default_id) or (False, False)) if default_id else (False, False)
+
+
+def _paragraph_text(paragraph: Paragraph, styles: tuple[dict, tuple[bool, bool]]) -> str:
+    """A Word paragraph's text, with '• ' before it when Word draws a bullet or number before it in a list style ('List
+    Bullet', 'List Paragraph' with numbering): the text has no mark, and the reader knows a bullet by its mark. A list
+    style without numbering (a bullet taken off) has none on the page, and a numbered section heading stays one."""
+    pstyle = paragraph._p.find(qn("w:pPr") + "/" + qn("w:pStyle"))
+    style_id = pstyle.get(qn("w:val")) if pstyle is not None else None
+    listed = styles[0].get(style_id) if style_id else None
+    if listed is None:  # no style, one not defined, or one of another type: the default paragraph style
+        listed = styles[1]
+    text = paragraph.text
+    if not (listed[0] and text.strip()):
+        return text
+    own = paragraph._p.find(_NUM_ID)
+    drawn = own.get(qn("w:val")) != "0" if own is not None else listed[1]
+    # a section heading Word numbers ("1. Experience"), the whole paragraph: not "Skills: Python, SQL"
+    heading = len(text.split()) <= 3 and not re.search(r"[:,;]", text.strip(" :")) and _is_header(text) is not None
+    return f"• {text}" if drawn and not heading else text
 
 
 def extract_text(data: bytes, filename: str) -> str:
@@ -57,7 +111,8 @@ def extract_text(data: bytes, filename: str) -> str:
             raise
         except Exception as exc:
             raise ValueError(f"Could not read the DOCX: {exc}") from exc
-        lines = [_paragraph_text(p) for p in doc.paragraphs]
+        styles = _list_styles(doc)
+        lines = [_paragraph_text(p, styles) for p in doc.paragraphs]
         for table in doc.tables:  # some resumes keep contact info or dates in tables
             for row in table.rows:
                 lines.extend(cell.text for cell in row.cells)

@@ -222,7 +222,9 @@ def _is_header(line: str, title_check: bool = True) -> str | None:
     if _DOT.search(bare) and (DATE_RANGE_RE.search(bare) or _LONE_DATE.search(bare)):
         return None
     side_label = bool(bare) and bare.split()[0].isupper() and not bare.isupper()
-    if title_check and not side_label and _reads_as_title(
+    # without `title_check`, only an Experience heading on a line with no dates may lead a title
+    relaxed = not title_check and EXPERIENCE_HEAD.match(bare) and not DATE_RANGE_RE.search(bare)
+    if not relaxed and not side_label and _reads_as_title(
             SEPARATOR_RE.split(DATE_RANGE_RE.sub(" ", bare), maxsplit=1)[0]):
         return None
     if CERT_HEAD.match(bare):
@@ -248,7 +250,7 @@ def _split_sections(lines: list[str], title_check: bool = True) -> tuple[list[st
     sections: dict[str, list[str]] = {"experience": [], "education": [], "certifications": [], "other": []}
     current: str | None = None
     for line in lines:
-        inline = CERT_INLINE.match(line.strip()) if current != "experience" else None
+        inline = CERT_INLINE.match(_LIST_MARK.sub("", line.strip())) if current != "experience" else None
         if inline:  # a list on the heading's own line belongs to it; the section around it goes on
             sections["certifications"] += [part for part in re.split(r"\s*[,;]\s*", inline.group(1)) if part]
             continue
@@ -286,12 +288,16 @@ def _job_dates(line: str) -> tuple[str, str, str] | None:
     match = DATE_RANGE_RE.search(line)
     if match:
         rest = (line[: match.start()] + " " + line[match.end() :]).strip(" ,;|-–—•·()")
-        if _LIST_MARK.match(line) and not _capitalized(SEPARATOR_RE.sub(" ", rest)):
+        text = re.sub(r"\([^()]*\)?", " ", SEPARATOR_RE.sub(" ", _LIST_MARK.sub("", rest)))
+        if _LIST_MARK.match(line) and not _capitalized(" ".join(w for w in text.split() if any(c.isalpha() for c in w))):
             return None
         start, end = match.group(1).strip(), match.group(2).strip()
     else:
         lone = _LONE_DATE.search(line)
-        if not lone or _LIST_MARK.match(line) or not _titled_job_line(line[: lone.start()]):
+        prefix = line[: lone.start()] if lone else ""
+        kept, place, mode = _job_parts(prefix) if _DOT.search(prefix) else ([], "", "")
+        app_line = len(kept) >= 2 and bool(place or mode)  # the app's 'Title · Company · Place · Mode   Feb 2022'
+        if not lone or _LIST_MARK.match(line) or not (_titled_job_line(prefix) or app_line):
             return None
         rest, start, end = line[: lone.start()].strip(" ,;|-–—•·()"), "", lone.group(1).strip()
     return rest, start, "Present" if end.lower() in _PRESENT else end
@@ -308,6 +314,9 @@ def _job_parts(text: str) -> tuple[list[str], str, str]:
     named: list[str] = []
     for part in (p.strip(" ,()") for p in (_DOT if dotted else SEPARATOR_RE).split(text)):
         found = MODE_RE.search(part)
+        if found and dotted and not named and _MODE_WORD.sub("", part).strip(" ,-()") and not re.search(
+                r"(?:\(|,)\s*(?:Remote|On-?site|Hybrid)\b", part, re.IGNORECASE):
+            found = None  # a title holding a mode word ('Hybrid Cloud Engineer'), not the job's mode
         if found:
             mode = _normalize_mode(found.group(1))
             part = _MODE_WORD.sub("", part).strip(" ,-()")
@@ -389,11 +398,17 @@ def _stacked_order(part: str, under: str) -> int:
     """How a dated line holding one part and the line under it plainly read: 1 a title over its company ('Senior Data
     Engineer   2019 – 2021' over 'Northwind Labs'), -1 a company over its title ('Northwind Labs   2019 – 2021' over
     'Senior Data Engineer'), 0 when neither reads as a title."""
+    if COMPANY_MARK_RE.search(part):
+        return -1
     if _reads_as_title(part):
         rest = _rest_of_job_line(under, need_company=True)
         return 1 if rest and rest[0] else 0
     if _job_dates(under) is None and not _LIST_MARK.match(under):
-        return -1 if _reads_as_title(SEPARATOR_RE.split(under, maxsplit=1)[0]) else 0
+        first = SEPARATOR_RE.split(under, maxsplit=1)[0]
+        if COMPANY_MARK_RE.search(first):  # a company under its title
+            return 1
+        app_break = len(part) + len(first) >= 45 and _DOT.search(under)  # the app's line broken before its company
+        return -1 if _reads_as_title(first) and not app_break else 0
     return 0
 
 
@@ -425,8 +440,12 @@ def _section_layout(lines: list[str]) -> _Layout:
     whose employer reads as a title ('Principal · Bluefin Coach') does not turn the app's other lines around. Its dated
     lines holding a title or a company alone (see _stacked_order) have the other under them."""
     dots, dotted, stacks = 0, False, 0
-    for line, under in zip(lines, [*lines[1:], ""]):
+    for index, (line, under) in enumerate(zip(lines, [*lines[1:], ""])):
         dates = _job_dates(line)
+        if dates and not dates[0] and index and _DOT.search(lines[index - 1]):  # dates alone under a ' · ' line
+            above = _job_parts(lines[index - 1].strip(" ,|-–—•·"))[0]
+            dots += _plain_order(above[0], above[1]) if len(above) > 1 else 0
+            continue
         kept, location, mode = _job_parts(dates[0]) if dates and dates[0] else ([], "", "")
         dotted_line = bool(dates and _DOT.search(dates[0]))
         if dotted_line:
@@ -474,7 +493,8 @@ def _parse_company_line(line: str, previous: str | None, below: list[str], compa
     if dotted and len(kept) > 1:
         # the section's order, unless a company mark tells the parts apart; a line of dates alone is never the app's
         if own_line or COMPANY_MARK_RE.search(kept[0]) or COMPANY_MARK_RE.search(kept[1]):
-            title_first = _plain_order(kept[0], kept[1]) > 0
+            order = _plain_order(kept[0], kept[1])
+            title_first = order > 0 if order else layout.dots > 0
         else:
             title_first = layout.dots >= 0
         name = kept[1] if title_first else kept[0]
@@ -490,7 +510,7 @@ def _parse_company_line(line: str, previous: str | None, below: list[str], compa
     # company and its place or work mode): 'Senior Software Engineer, Payments Infrastructure and Fraud Detection   Jan
     # 2020 – 11/2021' over 'Systems' over 'Fourth Coffee · Seattle, WA · Onsite'. The two lines are read as its rest.
     tail = following if len(below) > 1 and not (location or mode or company_above) else None
-    if tail and _reads_as_name(tail) and not _job_dates(tail) and _DOT.search(below[1]):
+    if tail and len(kept[0]) >= 45 and _reads_as_name(tail) and not _job_dates(tail) and _DOT.search(below[1]):
         wrapped = _rest_of_job_line(below[1], need_company=True)
         if wrapped and wrapped[0] and (wrapped[1] or wrapped[2]):
             taken, rest = 2, wrapped
@@ -505,7 +525,7 @@ def _parse_company_line(line: str, previous: str | None, below: list[str], compa
     if layout.stacks:
         title_over = layout.stacks > 0
     else:
-        app_lines = layout.dotted or bool(_DOT.search(below[taken - 1] if below else ""))
+        app_lines = layout.dotted or layout.dots > 0 or bool(_DOT.search(below[taken - 1] if below else ""))
         title_over = app_lines and len(kept[0]) + len(rest[0] if rest else "") >= 45
     if not title_first and not (
             title_over and layout.dots >= 0 and rest and rest[0] and not (location or mode) and _capitalized(kept[0])
@@ -601,7 +621,7 @@ def _school_and_degree(text: str) -> tuple[str, str]:
 def _parse_education(lines: list[str]) -> list[Education]:
     entries: list[Education] = []
     for line in lines:
-        text, start, end = _take_dates(line)
+        text, start, end = _take_dates(_LIST_MARK.sub("", line.strip()))
         if SCHOOL_RE.search(text):
             school, degree_part = _school_and_degree(text)
             entry = Education(school=school or text, start=start, end=end)
@@ -786,7 +806,8 @@ def _header_items(line: str) -> list[str]:
     for part in SEPARATOR_RE.split(line):
         for piece in _WIDE_GAP.split(part):
             words = _GAP.split(piece)
-            one_place = LOCATION_RE.fullmatch(piece.strip(" ,")) and not _reads_as_title(words[0])
+            one_place = (LOCATION_RE.fullmatch(piece.strip(" ,")) and len(words[0].split()) == 1
+                         and not _reads_as_title(words[0]))
             items += [piece] if one_place else words
     return items
 
