@@ -425,12 +425,12 @@ def test_a_long_career_of_short_bullets_keeps_its_two_pages():
     pages, with every bullet."""
     resume = short_jobs([3] + [2] * 24)
     assert fit.old_pages(resume, "Letter") == 2
-    plain, last = styles("Letter")[len(LADDER) - 1], styles("Letter")[-1]
+    plain, last = styles("Letter")[len(LADDER) - 1], styles("Letter")[len(LADDER)]
     assert (last.font_pt, last.margin_in, last.spacing) == (*LADDER[-1], COMPACT) and plain.spacing == 1
     assert resume_layout(resume, plain)[0] == 3
     style, pages, _pdf, notes = fit.try_styles(resume)
     assert (style, pages) == (last, 2)
-    assert notes == ["Font reduced to 8 pt, margins to 0.5 in and the spacing tightened to fit two pages."]
+    assert notes == ["Font reduced to 8 pt, side margins to 0.5 in and the spacing tightened to fit two pages."]
     fitted, _style, pages, fits, _notes, removed = asyncio.run(refit(resume, "Letter"))
     assert fits and pages == 2 and removed == {} and fitted == resume
 
@@ -442,7 +442,7 @@ def test_a_one_page_career_of_short_jobs_keeps_its_page():
     assert fit.old_pages(resume, "A4") == 1
     assert resume_layout(resume, styles("A4")[len(LADDER) - 1])[0] == 2
     style, pages, _pdf, notes = fit.try_styles(resume, "A4")
-    assert (style, pages) == (styles("A4")[-1], 1) and notes[0].endswith("spacing tightened to fit one page.")
+    assert (style, pages) == (styles("A4")[len(LADDER)], 1) and notes[0].endswith("spacing tightened to fit one page.")
 
 
 def test_trimming_a_long_career_removes_no_more_than_before():
@@ -454,7 +454,7 @@ def test_trimming_a_long_career_removes_no_more_than_before():
     before = next(k for k in range(len(order) + 1)
                   if old_layout.resume_layout(fit._without(resume, order, k), old_floor)[0] <= MAX_PAGES)
     fitted, style, pages, fits, _notes, removed = asyncio.run(refit(resume, "Letter"))
-    assert before == 1 and fits and pages == MAX_PAGES and removed == {} and style == styles("Letter")[-1]
+    assert before == 1 and fits and pages == MAX_PAGES and removed == {} and style == styles("Letter")[len(LADDER)]
     assert fitted == resume
     trimmed, _style, pages, _pdf, notes = fit.trim_to_fit(resume)
     assert trimmed == resume and pages == MAX_PAGES and not any(note.startswith("Removed") for note in notes)
@@ -465,19 +465,87 @@ def test_a_run_saved_before_the_restyle_steps_down_to_the_last_step():
     every bullet; its Word copy is made at that same step."""
     resume, saved = short_jobs([3] + [2] * 24), FitStyle(font_pt=9.5, margin_in=0.5)
     pdf, shown = fit.saved_resume_pdf(resume, saved, 2)
-    assert shown == styles("Letter")[-1] == fit.saved_style(resume, saved, 2)
+    assert shown == styles("Letter")[len(LADDER)] == fit.saved_style(resume, saved, 2)
     reader = PdfReader(io.BytesIO(pdf))
     text = " ".join(" ".join(page.extract_text() for page in reader.pages).split())
     assert len(reader.pages) == 2 and all(bullet in text for exp in resume.experience for bullet in exp.bullets)
 
 
 def test_a_runs_style_keeps_the_last_steps_spacing():
-    """A run's style keeps the last step's spacing; a style stored without it (before this step) is the design's,
-    and a spacing outside (0, 1] is refused."""
-    last = styles("A4")[-1]
-    assert FitStyle.model_validate_json(last.model_dump_json()) == last and last.spacing == COMPACT
+    """A run's style keeps the last steps' spacing and in-line skills; a style stored without them (before these steps)
+    is the design's, and a spacing outside (0, 1] is refused."""
+    compact, last = styles("A4")[len(LADDER):]
+    assert (compact.spacing, compact.inline_skills, last.spacing, last.inline_skills) == (COMPACT, False, COMPACT, True)
+    for step in (compact, last):
+        assert FitStyle.model_validate_json(step.model_dump_json()) == step and fit.current_style(step) is step
     old = FitStyle.model_validate({"font_pt": 9.5, "margin_in": 0.5, "paper": "A4", "stacked": True})
-    assert old.spacing == 1 and fit.current_style(last) is last
+    assert old.spacing == 1 and not old.inline_skills
     for wrong in (0, -0.5, 1.25):
         with pytest.raises(ValidationError):
             FitStyle(spacing=wrong)
+
+
+# ------------------------------------------------------------------ a very large skills section: the very last step
+SKILL_ITEMS = ["Python", "Go", "TypeScript", "JavaScript", "SQL", "Bash", "Java", "Kotlin", "Rust", "C++", "Scala",
+               "Ruby", "PHP", "Swift", "R", "MATLAB", "PostgreSQL", "MySQL", "Redis", "Kafka", "Airflow", "dbt",
+               "Snowflake", "BigQuery", "Spark", "Flink", "Docker", "Kubernetes", "Terraform", "Helm", "AWS", "GCP",
+               "Azure", "GitHub Actions", "Argo CD", "Datadog", "Grafana", "Prometheus", "Jenkins", "Ansible",
+               "Pandas", "NumPy", "scikit-learn", "PyTorch", "TensorFlow", "FastAPI", "Django", "Flask", "React",
+               "Next.js", "Node.js", "GraphQL", "REST APIs", "gRPC", "Elasticsearch", "MongoDB", "DynamoDB",
+               "Cassandra", "RabbitMQ", "Celery", "Linux", "Git", "Jira"]
+SKILL_LABELS = ["Languages", "Infrastructure as Code and Continuous Delivery", "Data Engineering", "Practices",
+                "Frameworks", "Databases", "Tools", "Cloud"]
+LONG_BULLETS = [
+    ("Rebuilt the checkout payment service for 41,000 daily orders in Go and PostgreSQL, adding idempotency keys and "
+     "retry queues so failed card captures dropped from 1.9% to 0.4%."),
+    ("Moved the nightly settlement batch from cron scripts to Airflow with typed Python tasks, cutting the run from 6 "
+     "hours to 47 minutes and ending missed morning reports."),
+    ("Cut p95 latency of the search API from 840 to 310 milliseconds by moving hot queries to Elasticsearch and caching "
+     "facet counts in Redis for the catalog team."),
+    ("Set up OpenTelemetry tracing and Grafana dashboards across the API gateway and eleven core services, which helped "
+     "on-call engineers find incident causes in minutes."),
+]
+
+
+def many_skills() -> Resume:
+    """Jordan Rivera's invented one-page resume with a very large skills section: eight rows of twelve items, one
+    with a long label, beside three jobs of four bullets and a 170-word summary. Before the restyle it filled one
+    page at 9.5 pt."""
+    words = "built reliable payment and scheduling systems for growing teams from the data model to the release pipeline"
+    profile = Profile(name="Jordan Rivera", contact=Contact(email="jordan.rivera@example.com", phone="(555) 014-2290",
+                                                            linkedin="linkedin.com/in/jordanrivera-example",
+                                                            location="Denver, CO"),
+                      companies=[Company(name=name, start=start, end=end, location="Denver, CO", mode="Hybrid")
+                                 for name, start, end in [("Northwind Labs", "Mar 2023", "Present"),
+                                                          ("Bluefin Commerce", "Jan 2020", "Feb 2023"),
+                                                          ("Contoso", "Jun 2017", "Dec 2019")]],
+                      education=[Education(school="State University", degree="B.S.", field="Computer Science",
+                                           start="2008", end="2012")])
+    summary = " ".join(words.split()[i % 17] for i in range(170)).capitalize() + "."
+    groups = [SkillGroup(category=label, skills=[SKILL_ITEMS[(k * 7 + j) % len(SKILL_ITEMS)] for j in range(12)])
+              for k, label in enumerate(SKILL_LABELS)]
+    return Resume(profile=profile, headline="Backend Engineer", summary=summary, skills=groups,
+                  experience=[ResumeExperience(company_index=i, job_title="Senior Software Engineer",
+                                               bullets=[LONG_BULLETS[(i + b) % 4] for b in range(4)])
+                              for i in range(3)])
+
+
+def test_a_very_large_skills_section_keeps_its_page():
+    """In the design's column the skills values wrap in less room than they had before the restyle, across the full
+    width: eight rows of twelve items take a second page at every step with the column, the compact one too. The very
+    last step puts the skills in line again and keeps the one page, with the note; a run saved before the restyle is
+    shown on its one page at that step, and its Word copy is made at it."""
+    resume = many_skills()
+    assert fit.old_pages(resume, "Letter") == 1
+    ladder = styles("Letter")
+    compact, last = ladder[len(LADDER)], ladder[-1]
+    assert last == compact.model_copy(update={"inline_skills": True}) and len(ladder) == len(LADDER) + 2
+    assert resume_layout(resume, compact)[0] == 2
+    style, pages, _pdf, notes = fit.try_styles(resume)
+    assert (style, pages) == (last, 1)
+    assert notes == ["Font reduced to 8 pt, side margins to 0.5 in and the spacing tightened to fit one page."]
+    fitted, _style, pages, fits, _notes, removed = asyncio.run(refit(resume, "Letter"))
+    assert fits and pages == 1 and removed == {} and fitted == resume
+    saved = FitStyle(font_pt=9.5, margin_in=0.5)  # what the run saved before the restyle holds
+    pdf, shown = fit.saved_resume_pdf(resume, saved, 1)
+    assert shown == last == fit.saved_style(resume, saved, 1) and len(PdfReader(io.BytesIO(pdf)).pages) == 1

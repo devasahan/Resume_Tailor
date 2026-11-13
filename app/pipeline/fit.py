@@ -2,18 +2,19 @@
 
   0. before the model writes anything, plan how many full-length bullets fit (bullet_budget), so the
      first draft fits and nothing has to be cut
-  1. pick the largest font and margins that fit (never below 8 pt / 0.5 in, the last step with the gaps between the
-     parts brought closer) on as many pages as the resume took before the restyle; the design's own sizes are used
-     when they need no more pages than that
+  1. pick the largest font and margins that fit (never below 8 pt with 0.5 in side margins; the last two steps bring
+     the gaps between the parts closer, and the very last also puts the skills in line with their labels) on as many
+     pages as the resume took before the restyle; the design's own sizes are used when they need no more pages than
+     that
   2. (done by the caller) ask the model once more with a smaller bullet budget
   3. drop the last bullet of the roles with the most bullets, oldest first, keeping 2 per role
 
 The restyle changes only the look. The bullet plan and the page count are still worked out on the layout from before
 it (old_layout: Carlito on five steps from 10.5 to 9.5 pt, measured without drawing), so every plan is the one made
 then and no resume takes more pages than it did. The size ladder starts with the design's own sizes; the steps after it
-hold about as much text per page as the old steps, and the last one (8 pt with the gaps brought closer, COMPACT) at
-least as much as the old 9.5 pt. Runs saved before the restyle hold an old step: current_style and saved_resume_pdf
-show them in the new look.
+hold about as much text per page as the old steps, and the last one (8 pt with the gaps brought closer, COMPACT, and
+the skills in line) at least as much as the old 9.5 pt. Runs saved before the restyle hold an old step: current_style
+and saved_resume_pdf show them in the new look.
 """
 from __future__ import annotations
 
@@ -60,6 +61,10 @@ LADDER = [
 # up to four schools and four certifications, long headers, Letter and A4): the plain floor added a page to 65, this
 # step kept every one's pages, and none needed the gaps closer than 0.81 (0.93 without the stress cases). Of 420
 # drafts past that limit, the old app trimmed 497 bullets; this step holds all of them.
+# The very last step is this one with each skills label in line with its values (FitStyle.inline_skills), which then
+# wrap across the full width as they did before the restyle, not in the design's narrower column: a very large skills
+# section (eight rows of a dozen items or more) takes more lines in the column than it did then. It comes last so the
+# column stays wherever it keeps the pages; in line never takes more lines than the column, so it holds as much.
 COMPACT = 0.75
 CALIBRATED = 1  # LADDER[CALIBRATED + i] holds about as much as OLD_LADDER[i]: only a step below it is noted
 OLD_LADDER = [(10.5, 0.65), (10.25, 0.6), (10.0, 0.55), (9.75, 0.5), (9.5, 0.5)]  # (pt, in) before the restyle
@@ -68,11 +73,12 @@ MIN_LAST_PAGE_FILL = 0.25  # a second page less full than this looks unfinished:
 
 
 def styles(paper: str) -> list[FitStyle]:
-    """The size ladder, largest first: the LADDER steps, then the compact step (the floor's sizes, closer gaps)."""
+    """The size ladder, largest first: the LADDER steps, then the compact step (the floor's sizes, closer gaps), then
+    the compact step with the skills in line."""
     plain = [FitStyle(font_pt=f, margin_in=m, paper=paper) for f, m in LADDER]  # type: ignore[arg-type]
     font_pt, margin_in = LADDER[-1]
-    last = FitStyle(font_pt=font_pt, margin_in=margin_in, paper=paper, spacing=COMPACT)  # type: ignore[arg-type]
-    return plain + [last]
+    compact = FitStyle(font_pt=font_pt, margin_in=margin_in, paper=paper, spacing=COMPACT)  # type: ignore[arg-type]
+    return plain + [compact, compact.model_copy(update={"inline_skills": True})]
 
 
 def old_styles(paper: str) -> list[FitStyle]:
@@ -192,8 +198,8 @@ def _reduced(style: FitStyle) -> str:
     """How a step below LADDER[CALIBRATED] is noted. The note always starts "Font reduced": app/main.py drops the notes
     that start so when a resume is fitted again."""
     if style.spacing < 1:
-        return f"Font reduced to {style.font_pt:g} pt, margins to {style.margin_in:g} in and the spacing tightened"
-    return f"Font reduced to {style.font_pt:g} pt and margins to {style.margin_in:g} in"
+        return f"Font reduced to {style.font_pt:g} pt, side margins to {style.margin_in:g} in and the spacing tightened"
+    return f"Font reduced to {style.font_pt:g} pt and side margins to {style.margin_in:g} in"
 
 
 def _well_fitted(pages: int, fill: float) -> bool:

@@ -287,7 +287,7 @@ def test_the_word_copy_at_the_last_step_has_its_closer_gaps(profile):
         return body, title.space_before.pt
 
     floor_gaps, floor_header = gaps(styles("Letter")[len(LADDER) - 1])
-    last_gaps, last_header = gaps(styles("Letter")[-1])
+    last_gaps, last_header = gaps(styles("Letter")[len(LADDER)])
     assert last_header == floor_header > 0
     assert all(last == pytest.approx(floor * COMPACT, abs=0.05) and last < floor
                for last, floor in zip(last_gaps, floor_gaps))

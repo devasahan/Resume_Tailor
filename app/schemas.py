@@ -273,11 +273,14 @@ class FitStyle(BaseModel):
     a plain FitStyle() keeps its page count. Runs saved before the restyle hold an old step (fit.current_style), and
     may hold `stacked` (each job's title under its company), which is no longer used: it is ignored when they load.
     `spacing` scales the gaps between the body's parts (sections, jobs, bullets, rows; not the header, not letter
-    spacing): 1 is the design, and only the ladder's last step brings them closer. Runs saved without it load with 1."""
+    spacing): 1 is the design, and only the ladder's last two steps bring them closer. `inline_skills` puts each skills
+    label in line with its values, which then wrap across the full width instead of in the design's column: only the
+    ladder's very last step does. Runs saved without these fields load with the design's (1 and False)."""
     font_pt: float = 9.1
     margin_in: float = 0.67
     paper: Literal["Letter", "A4"] = "Letter"
     spacing: float = Field(1.0, gt=0, le=1)
+    inline_skills: bool = False
 
 
 class CallTime(BaseModel):

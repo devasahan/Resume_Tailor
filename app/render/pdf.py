@@ -8,8 +8,9 @@ The look is the owner's design "standard" (a US Letter page drawn at 816 x 1056 
 capitals in navy for the section headings with a thin gray rule beside them, the job title first on each job line,
 gray bullet markers and a column for the skills labels. Every size and gap below is the design's px value as a share of
 its 13.5 px body text, so each step of the size ladder (app/pipeline/fit.py) is the same design, only larger or smaller.
-The ladder's last step also brings the gaps between the body's parts closer (FitStyle.spacing), so a long career of many
-short jobs keeps the pages it took before the restyle.
+The ladder's last two steps also bring the gaps between the body's parts closer (FitStyle.spacing), so a long career of
+many short jobs keeps the pages it took before the restyle, and the very last puts each skills label in line with its
+values (FitStyle.inline_skills), so a very large skills section does too.
 
 The code is a small typesetter: measure text, wrap it into lines, draw the lines top to bottom. Drawing in reading order
 also gives a clean text layer for ATS extraction. A page break never splits a bullet, and never leaves a section heading
@@ -105,7 +106,7 @@ MAX_TRACKING = 0.09
 assert HEADING_TRACKING <= MAX_TRACKING
 
 # Gaps, as shares of the body size. Those between the body's parts (sections, jobs, bullets, rows: not the header's) are
-# measured in Sheet.gap_unit, the body size times FitStyle.spacing (1, or less at the ladder's last step).
+# measured in Sheet.gap_unit, the body size times FitStyle.spacing (1, or less at the ladder's last two steps).
 SECTION_GAP = em(20)  # above a section heading (left out at the top of a page)
 HEADER_GAP = em(6)  # between the name, the title line and the contact line
 HEADING_GAP = em(8)  # from a heading to its first line
@@ -191,8 +192,11 @@ class _Drawable(dict):
     that the font before it had: the ligatures in text copied out of a PDF (ﬁ ﬂ ﬀ ﬃ ﬄ) and invisible marks such as a
     soft hyphen or a zero-width joiner. fpdf2 leaves a character the font lacks out of the page, while measuring counts
     it, so 'Certiﬁed' would print as 'Certied' with a gap after it. Such a character becomes its compatibility form
-    when the fonts have all of that (ﬁ -> fi, a full-width Ａ -> A); an invisible one is left out; any other stays as it
-    is, and fpdf2 leaves it out as before (as it did Chinese and emoji with the old font too)."""
+    when the fonts have all of that (ﬁ -> fi, a full-width Ａ -> A), or else its letter and accent apart (the few
+    symbols such as ≮ that Inter has only in parts); an invisible one is left out, and so is an accent or other mark
+    the fonts lack (the variation selector after ™ that an emoji keyboard types); any other stays as it is, and fpdf2
+    leaves it out as before (as it did Chinese and emoji with the old font too). Only the first DRAWABLE_LIMIT of those
+    are kept in the table: text made of many thousands of different such characters does not fill a worker's memory."""
 
     def __missing__(self, code: int) -> int | str | None:
         covered, char = _covered(), chr(code)
@@ -201,15 +205,27 @@ class _Drawable(dict):
             value: int | str | None = code
         elif all(ord(part) in covered for part in form):
             value = form
-        elif unicodedata.category(char) == "Cf":
+        elif all(ord(part) in covered for part in unicodedata.normalize("NFD", char)):
+            value = unicodedata.normalize("NFD", char)
+        elif unicodedata.category(char) in ("Cf", "Mn", "Me"):
             value = None
         else:
             value = code
+            if len(self) >= DRAWABLE_LIMIT:
+                return value
         self[code] = value
         return value
 
 
 DRAWABLE = _Drawable()
+DRAWABLE_LIMIT = 20_000  # far more than a resume in any script meets, and about 2 MB
+
+
+def drawable(text: str) -> str:
+    """`text` as the PDF draws it: each accent composed with its letter first (fpdf2 places no accents, so a decomposed
+    'é', an e and then U+0301 as some systems type it, would put the accent beside the letter), then translated by
+    DRAWABLE."""
+    return unicodedata.normalize("NFC", text).translate(DRAWABLE)
 
 
 def char_spacing(tracking: float, size: float) -> float:
@@ -221,7 +237,7 @@ def text_width(text: str, weight: str, size: float, tracking: float = 0.0) -> fl
     """The width of `text` in points as the PDF draws it (see _Drawable), the same as fpdf2's get_string_width of that.
     Letter spacing follows every character, the last one too, as in the PDF (and in CSS)."""
     widths, missing = advance_widths(weight)
-    text = text.translate(DRAWABLE)
+    text = drawable(text)
     return sum(widths.get(ord(ch), missing) for ch in text) * size * 0.001 + char_spacing(tracking, size) * len(text)
 
 
@@ -335,8 +351,8 @@ class Sheet:
 
     def _wrap(self, runs: list[Run], width: float, size: float) -> list[Line]:
         tokens: list[tuple[str, Run, bool]] = []
-        for run in runs:
-            for part in SPACES.split(run.text):
+        for run in runs:  # accents composed first, so a word split by characters never parts a letter from its accent
+            for part in SPACES.split(unicodedata.normalize("NFC", run.text)):
                 if part:
                     tokens.append((" " if part.isspace() else part, run, part.isspace()))
         lines: list[Line] = []
@@ -437,7 +453,7 @@ class Sheet:
             self.pdf.set_text_color(color)
             self.pdf.set_char_spacing(char_spacing(tracking, size))
             self.pdf.set_xy(x, y)
-            self.pdf.cell(w=width, h=height, text=text.translate(DRAWABLE), new_x=XPos.RIGHT, new_y=YPos.TOP)
+            self.pdf.cell(w=width, h=height, text=drawable(text), new_x=XPos.RIGHT, new_y=YPos.TOP)
             x += width
         self.pdf.set_char_spacing(0)  # written into the page only when it was set
 
@@ -677,9 +693,11 @@ def skills_column(groups: list[SkillGroup], size: float, width: float) -> float 
     return column + LABEL_GAP * size
 
 
-def draw_skills(sheet: Sheet, groups: list[SkillGroup]) -> None:
-    """Each skills group on its own row: its label in a column, the values beside it (or in line, see skills_column)."""
-    values_x = skills_column(groups, sheet.size, sheet.width)
+def draw_skills(sheet: Sheet, groups: list[SkillGroup], in_line: bool = False) -> None:
+    """Each skills group on its own row: its label in a column, the values beside it; in line, the label and then the
+    values across the full width, when `in_line` (FitStyle.inline_skills) or when the labels are too wide for a column
+    (skills_column)."""
+    values_x = None if in_line else skills_column(groups, sheet.size, sheet.width)
     for index, group in enumerate(groups):
         if index:
             sheet.space(SKILLS_ROW_GAP * sheet.gap_unit)
@@ -706,7 +724,7 @@ def resume_sheet(resume: Resume, style: FitStyle, document: str = "Resume") -> S
     sheet.para([Run(resume.summary)])
 
     sheet.heading("SKILLS")
-    draw_skills(sheet, resume.skills)
+    draw_skills(sheet, resume.skills, style.inline_skills)
 
     jobs = []  # (line beside the dates, line under it, dates, bullets, height kept together: the job line + 1st bullet)
     for exp in resume.experience:

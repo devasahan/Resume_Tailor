@@ -234,10 +234,11 @@ def _row(doc, left: list[Run], right: str, width: float, size: float, body: floa
     return paragraph
 
 
-def _skills(doc, resume: Resume, body: float, width: float, unit: float) -> None:
-    """'Label:' then a tab to the values' column, with a hanging indent so the values wrap inside it; labels too wide
-    for the column go in line with their values, as on the PDF (skills_column)."""
-    values_x = skills_column(resume.skills, body, width)
+def _skills(doc, resume: Resume, body: float, width: float, unit: float, in_line: bool) -> None:
+    """'Label:' then a tab to the values' column, with a hanging indent so the values wrap inside it; in line with their
+    values at the ladder's very last step (`in_line`) or when the labels are too wide for the column, as on the PDF
+    (draw_skills)."""
+    values_x = None if in_line else skills_column(resume.skills, body, width)
     for index, group in enumerate(resume.skills):
         paragraph = doc.add_paragraph()
         fmt = paragraph.paragraph_format
@@ -287,7 +288,7 @@ def resume_docx(resume: Resume, style: FitStyle, document: str = "Resume") -> by
     doc.add_paragraph().add_run(resume.summary)
 
     _heading(doc, "SKILLS", body, width, unit)
-    _skills(doc, resume, body, width, unit)
+    _skills(doc, resume, body, width, unit, style.inline_skills)
 
     _heading(doc, "EXPERIENCE", body, width, unit)
     for index, exp in enumerate(resume.experience):

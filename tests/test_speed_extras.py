@@ -272,6 +272,7 @@ def test_a_changed_resume_style_or_title_is_another_file(profile):
         (resume, FitStyle(font_pt=10.0, margin_in=0.55), "Resume"),
         (resume, FitStyle(paper="A4"), "Resume"),
         (resume, FitStyle(spacing=COMPACT), "Resume"),  # the same sizes with the last step's closer gaps
+        (resume, FitStyle(spacing=COMPACT, inline_skills=True), "Resume"),  # and with the skills in line
         (resume, style, "CV"),  # the same text in EU style: another title and language
     ]
     assert [recent_resume_pdf(*key) for key in changed] == [None] * len(changed)

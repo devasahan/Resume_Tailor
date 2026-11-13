@@ -2,6 +2,7 @@ import io
 import logging
 import random
 import re
+import unicodedata
 
 import pytest
 from docx import Document
@@ -13,7 +14,8 @@ from app.pipeline.fit import LADDER, MAX_PAGES, styles, trim_to_fit, try_styles
 from app.render import pdf as pdf_module
 from app.render.docx import cover_docx, resume_docx
 from app.render.pdf import (
-    CONTACT_SIZE, REGULAR, Run, Sheet, contact_line, fmt_dates, render_cover_pdf, render_resume_pdf, text_width,
+    CONTACT_SIZE, DRAWABLE, DRAWABLE_LIMIT, REGULAR, SEMIBOLD, Run, Sheet, advance_widths, contact_line, fmt_dates,
+    render_cover_pdf, render_resume_pdf, text_width,
 )
 from app.schemas import (
     Certification, Contact, CoverLetter, ExperienceOut, FitStyle, SkillGroup, TailoredSections, TailorOutput,
@@ -182,24 +184,47 @@ def test_page_breaks_never_split_a_bullet_or_leave_a_job_title_alone(profile, se
 
 @pytest.mark.parametrize("seed", range(4))
 def test_the_last_step_keeps_the_page_break_rules(profile, seed):
-    """The ladder's last step (closer gaps) keeps the same rules, on resumes long enough to break there too."""
+    """The ladder's last two steps (closer gaps, then the skills in line too) keep the same rules, on resumes long
+    enough to break there too."""
     rng = random.Random(seed)
     resume = long_resume(profile, bullets=rng.randint(18, 24))
     for exp in resume.experience:
         exp.bullets = [b + " Extra detail." * rng.randint(0, 4) for b in exp.bullets]
-    assert_page_breaks_keep_blocks_whole(resume, styles(rng.choice(["Letter", "A4"]))[-1])
+    assert_page_breaks_keep_blocks_whole(resume, styles(rng.choice(["Letter", "A4"]))[len(LADDER) + seed % 2])
 
 
 def test_the_last_step_draws_the_same_lines_closer_together(profile):
     """The last step is the floor's sizes with the gaps between the body's parts brought closer: the same lines at the
     same places across the page and the same header, every line at most as low as at the plain floor."""
     resume = long_resume(profile, bullets=6)
-    plain, last = styles("Letter")[len(LADDER) - 1], styles("Letter")[-1]
+    plain, last = styles("Letter")[len(LADDER) - 1], styles("Letter")[len(LADDER)]
     _pages, at_floor, _indents = _lines_by_page(resume, plain)
     _pages, closer, _indents = _lines_by_page(resume, last)
     assert [(x, text) for _page, _y, x, text in closer] == [(x, text) for _page, _y, x, text in at_floor]
     assert closer[:3] == at_floor[:3]  # the name, the title line and the contact line
     assert all(a[:2] <= b[:2] for a, b in zip(closer, at_floor)) and closer[-1][:2] < at_floor[-1][:2]
+
+
+def test_the_very_last_step_puts_the_skills_in_line(profile):
+    """The very last step is the compact one with each skills row in line: its label, then the values across the full
+    width (as a label too wide for the column already gets). Every other line is drawn where the compact step draws it,
+    and the Word copy puts the values right after their labels too, with no tab to a column."""
+    resume = long_resume(profile, bullets=6)
+    resume.skills = [SkillGroup(category="Core", skills=["Python", "SQL", "Airflow"]),
+                     SkillGroup(category="Cloud and Infrastructure", skills=["AWS", "Docker", "Terraform"])]
+    texts = ["Core: Python, SQL, Airflow", "Cloud and Infrastructure: AWS, Docker, Terraform"]
+    compact, last = styles("Letter")[len(LADDER):]
+    _pages, column, _indents = _lines_by_page(resume, compact)
+    _pages, in_line, _indents = _lines_by_page(resume, last)
+    rows = [line for line in in_line if line[3] in texts]
+    assert [(x, text) for _page, _y, x, text in rows] == [(0.0, text) for text in texts]
+    at_rows = {line[:2] for line in rows}  # (page, y) of the skills rows: the column draws a label and its values there
+    assert len(column) == len(in_line) + len(rows)
+    assert [line for line in in_line if line[:2] not in at_rows] == [line for line in column if line[:2] not in at_rows]
+    for style, shown in ((compact, ["Core:\tPython, SQL, Airflow", "Cloud and Infrastructure:\tAWS, Docker, Terraform"]),
+                         (last, texts)):
+        paragraphs = Document(io.BytesIO(resume_docx(resume, style))).paragraphs
+        assert [p.text for p in paragraphs if p.text.startswith(("Core:", "Cloud and"))] == shown
 
 
 def assert_page_breaks_keep_blocks_whole(resume, style):
@@ -387,6 +412,59 @@ def test_ligatures_and_invisible_marks_print_as_plain_letters(profile, caplog):
     assert text_width("Certiﬁed", REGULAR, 10) == text_width("Certified", REGULAR, 10)  # measured as drawn
 
 
+def test_accents_typed_apart_print_on_their_letters(profile):
+    """Some systems type an accented letter as the letter and then the accent (Unicode's decomposed form: e + U+0301).
+    fpdf2 places no accents, so each would print beside its letter ('Jose´'); the PDF composes them first and draws
+    exactly what the composed text draws, and readers get the composed letters back."""
+    pdfplumber = pytest.importorskip("pdfplumber")
+    composed = ["José Müller · Nguyễn Thị Hạnh", "Café Société", "Mérida, Yucatán",
+                "Created a résumé reader for the café's Zürich team."]
+
+    def render(texts):
+        person = profile.model_copy(deep=True)
+        person.name, person.companies[0].name, person.contact.location = texts[:3]
+        resume = validate.build_resume(person, make_output())
+        resume.experience[0].bullets[0] = texts[3]
+        pdf = render_resume_pdf(resume, styles("A4")[2])[0]
+        return pdf, [page.get_contents().get_data() for page in PdfReader(io.BytesIO(pdf)).pages]
+
+    decomposed = [unicodedata.normalize("NFD", text) for text in composed]
+    assert decomposed != composed
+    pdf, pages = render(decomposed)
+    assert pages == render(composed)[1]  # the same drawing, letter for letter
+    with pdfplumber.open(io.BytesIO(pdf)) as document:
+        text = unicodedata.normalize("NFC", document.pages[0].extract_text())
+    assert all(part in text for part in composed)
+    assert text_width(decomposed[0], REGULAR, 10) == text_width(composed[0], REGULAR, 10)
+
+
+def test_a_mark_the_font_lacks_prints_nothing_and_leaves_no_gap(profile, caplog):
+    """An emoji keyboard types ™ and ® with a variation selector after them (U+FE0F), and a keycap mark (U+20E3) after a
+    digit: Inter has neither, so they are left out like the invisible marks, with no gap where they were measured and
+    no missing glyph for fpdf2."""
+    resume = validate.build_resume(profile, make_output())
+    resume.certifications = [Certification(name="Fabrikam Sheets™️ Specialist", issuer="Fabrikam", year="2021"),
+                             Certification(name="Contoso Cloud®️ Level 2⃣", issuer="Contoso", year="2022")]
+    with caplog.at_level(logging.WARNING):
+        pdf = render_resume_pdf(resume, FitStyle())[0]
+    assert not [record for record in caplog.records if "missing" in record.getMessage()]
+    flat = " ".join(text_of(pdf).split())
+    assert "Fabrikam Sheets™ Specialist · Fabrikam" in flat and "Contoso Cloud® Level 2 · Contoso" in flat
+    assert text_width("Sheets™️", SEMIBOLD, 10) == text_width("Sheets™", SEMIBOLD, 10)
+
+
+def test_the_character_table_stays_small_whatever_text_it_meets():
+    """The table of how each character is drawn keeps what the fonts have and the characters it rewrites, but stops
+    keeping characters it leaves as they are (Chinese, emoji) once it is large: crafted text of many thousands of
+    different characters does not fill a worker's memory, and is still measured the same."""
+    text = "".join(map(chr, [*range(0x3400, 0x4DC0), *range(0x4E00, 0xA000)]))  # 27,584 Chinese characters
+    assert len(text) > DRAWABLE_LIMIT
+    missing = advance_widths(REGULAR)[1]
+    assert text_width(text, REGULAR, 10) == pytest.approx(len(text) * missing * 0.01)
+    assert len(DRAWABLE) <= DRAWABLE_LIMIT
+    assert text_width("Certiﬁed", REGULAR, 10) == text_width("Certified", REGULAR, 10)  # what it rewrites still works
+
+
 # ------------------------------------------------------------------ skills rows that wrap
 def test_a_wrapped_skills_row_is_read_before_the_next_row(profile):
     """A label wider than the design's column widens it, and a long row wraps inside the values' column. Filler spaces
@@ -400,8 +478,8 @@ def test_a_wrapped_skills_row_is_read_before_the_next_row(profile):
     resume.skills = [SkillGroup(category="Machine Learning", skills=["PyTorch", "scikit-learn", "XGBoost", "MLflow"]),
                      SkillGroup(category="Data", skills=data),
                      SkillGroup(category="Frameworks", skills=["FastAPI", "Django", "Flask", "React"])]
-    for step in (0, 1, len(LADDER) - 1, len(LADDER)):  # the design, the first calibrated step, the floor, the last
-        pdf = render_resume_pdf(resume, styles("Letter")[step])[0]
+    for step in (0, 1, len(LADDER) - 1, len(LADDER), len(LADDER) + 1):  # the design, the first calibrated step, the
+        pdf = render_resume_pdf(resume, styles("Letter")[step])[0]  # floor, closer gaps, and the skills in line too
         with pdfplumber.open(io.BytesIO(pdf)) as document:
             plumbed = document.pages[0].extract_text()
         for text in (pdfminer.extract_text(io.BytesIO(pdf)), text_of(pdf), plumbed):
