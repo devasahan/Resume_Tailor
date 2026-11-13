@@ -2,16 +2,18 @@
 
   0. before the model writes anything, plan how many full-length bullets fit (bullet_budget), so the
      first draft fits and nothing has to be cut
-  1. pick the largest font and margins that fit (never below 8 pt / 0.5 in) on as many pages as the resume took
-     before the restyle; the design's own sizes are used when they need no more pages than that
+  1. pick the largest font and margins that fit (never below 8 pt / 0.5 in, the last step with the gaps between the
+     parts brought closer) on as many pages as the resume took before the restyle; the design's own sizes are used
+     when they need no more pages than that
   2. (done by the caller) ask the model once more with a smaller bullet budget
   3. drop the last bullet of the roles with the most bullets, oldest first, keeping 2 per role
 
 The restyle changes only the look. The bullet plan and the page count are still worked out on the layout from before
 it (old_layout: Carlito on five steps from 10.5 to 9.5 pt, measured without drawing), so every plan is the one made
 then and no resume takes more pages than it did. The size ladder starts with the design's own sizes; the steps after it
-hold about as much text per page as the old steps, and the last one at least as much as the old 9.5 pt. Runs saved
-before the restyle hold an old step: current_style and saved_resume_pdf show them in the new look.
+hold about as much text per page as the old steps, and the last one (8 pt with the gaps brought closer, COMPACT) at
+least as much as the old 9.5 pt. Runs saved before the restyle hold an old step: current_style and saved_resume_pdf
+show them in the new look.
 """
 from __future__ import annotations
 
@@ -43,13 +45,22 @@ LADDER = [
     # (its taller small letters make 9 pt look like 10.5 pt Calibri): within about 2-4% on realistic resumes. The page
     # count comes from the old layout (try_styles), so these steps only set the size.
     (9.1, 0.67), (9.05, 0.6), (8.8, 0.55), (8.45, 0.5),
-    # The floor holds at least what the old 9.5 pt floor held, also for a long career of many short jobs with
-    # certifications and education details (the design gives each job and row more room than the old layout did), so
-    # nothing that fitted before is cut now and a run saved before keeps its pages. Of the resumes filled right up to
-    # the old floor's limit, the hardest kept its pages only at 8.08 pt or less, so 8 pt leaves some room. Inter's
-    # small letters at 8 pt are about 4% shorter than Carlito's at 9.5 pt (x-height 0.546 em against 0.478 em).
+    # The floor's sizes. Inter's small letters at 8 pt are about 4% shorter than Carlito's at 9.5 pt (x-height 0.546 em
+    # against 0.478 em). Of resumes of a few jobs filled right up to the old 9.5 pt floor's limit, the hardest kept its
+    # pages only at 8.08 pt or less. A long career of many short jobs needs more than this step: the design gives each
+    # job and row more room than the old layout did, so the ladder ends with these sizes and closer gaps (COMPACT).
     (8.0, 0.5),
 ]
+# The ladder's last step: the floor's sizes with the gaps between the body's parts (sections, jobs, bullets, rows; not
+# the header) brought closer by this factor, so a long career of many short jobs keeps the pages it took before the
+# restyle. At 8 pt, with s this factor, a job line and its gaps take 11.36 + 9.48 s pt (17.57 in the old layout at
+# 9.5 pt), a heading 8.18 + 16.59 s (25.45) and a row after a section's first 11.36 + 2.37 s (12.07), while the
+# header is 2.9 pt shorter than before: at 0.75 every job and every section of up to 6 rows takes no more room.
+# Measured on 745 invented resumes filled right up to the old 9.5 pt limit (10 to 30 jobs of one to four short bullets,
+# up to four schools and four certifications, long headers, Letter and A4): the plain floor added a page to 65, this
+# step kept every one's pages, and none needed the gaps closer than 0.81 (0.93 without the stress cases). Of 420
+# drafts past that limit, the old app trimmed 497 bullets; this step holds all of them.
+COMPACT = 0.75
 CALIBRATED = 1  # LADDER[CALIBRATED + i] holds about as much as OLD_LADDER[i]: only a step below it is noted
 OLD_LADDER = [(10.5, 0.65), (10.25, 0.6), (10.0, 0.55), (9.75, 0.5), (9.5, 0.5)]  # (pt, in) before the restyle
 MAX_PAGES = 2
@@ -57,7 +68,11 @@ MIN_LAST_PAGE_FILL = 0.25  # a second page less full than this looks unfinished:
 
 
 def styles(paper: str) -> list[FitStyle]:
-    return [FitStyle(font_pt=f, margin_in=m, paper=paper) for f, m in LADDER]  # type: ignore[arg-type]
+    """The size ladder, largest first: the LADDER steps, then the compact step (the floor's sizes, closer gaps)."""
+    plain = [FitStyle(font_pt=f, margin_in=m, paper=paper) for f, m in LADDER]  # type: ignore[arg-type]
+    font_pt, margin_in = LADDER[-1]
+    last = FitStyle(font_pt=font_pt, margin_in=margin_in, paper=paper, spacing=COMPACT)  # type: ignore[arg-type]
+    return plain + [last]
 
 
 def old_styles(paper: str) -> list[FitStyle]:
@@ -173,6 +188,14 @@ def _pages_note(pages: int) -> str:
     return {1: "one page", 2: "two pages"}.get(pages, f"{pages} pages")
 
 
+def _reduced(style: FitStyle) -> str:
+    """How a step below LADDER[CALIBRATED] is noted. The note always starts "Font reduced": app/main.py drops the notes
+    that start so when a resume is fitted again."""
+    if style.spacing < 1:
+        return f"Font reduced to {style.font_pt:g} pt, margins to {style.margin_in:g} in and the spacing tightened"
+    return f"Font reduced to {style.font_pt:g} pt and margins to {style.margin_in:g} in"
+
+
 def _well_fitted(pages: int, fill: float) -> bool:
     """The fitting rule's test, as before the restyle: one page, or two with the second well filled (a second page
     holding only a few lines is avoided by a smaller step that fits everything on one page)."""
@@ -233,8 +256,7 @@ def try_styles(resume: Resume, paper: str = "Letter",
     pdf, pages = sheet.finish()
     notes = []
     if index > CALIBRATED:
-        notes.append(f"Font reduced to {style.font_pt:g} pt and margins to {style.margin_in:g} in to fit "
-                     f"{_pages_note(pages)}.")
+        notes.append(f"{_reduced(style)} to fit {_pages_note(pages)}.")
     return style, pages, pdf, notes
 
 
@@ -303,7 +325,7 @@ def trim_to_fit(resume: Resume, paper: str = "Letter",
     else:
         style, pages, pdf = render_smallest(work, paper, document)
     reduced = styles(paper).index(style) > CALIBRATED  # smaller than before the restyle's largest step
-    notes = [f"Font reduced to {style.font_pt:g} pt and margins to {style.margin_in:g} in."] if reduced else []
+    notes = [f"{_reduced(style)}."] if reduced else []
     if removed:
         shown = " / ".join(r[:60] + "..." for r in removed[:MAX_REMOVED_IN_NOTE])
         more = f" and {len(removed) - MAX_REMOVED_IN_NOTE} more" if len(removed) > MAX_REMOVED_IN_NOTE else ""

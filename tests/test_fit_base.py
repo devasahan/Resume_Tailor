@@ -3,14 +3,19 @@ it (app/pipeline/old_layout.py: Carlito, measured without drawing), so every pla
 more pages than it did, and the new floor holds what the old one held. The numbers below were recorded with the app as
 it was before the restyle (commit aa88a1a: fpdf2 and the Carlito files). Every person and employer here is invented."""
 import asyncio
+import io
 import random
 from datetime import date
 
 import pytest
+from pydantic import ValidationError
+from pypdf import PdfReader
 
 from app.pipeline import fit, old_layout
 from app.pipeline.fit import (
     CALIBRATED,
+    COMPACT,
+    LADDER,
     MAX_PAGES,
     MIN_LAST_PAGE_FILL,
     OLD_LADDER,
@@ -347,8 +352,132 @@ def test_the_floor_holds_a_long_career_filled_to_the_old_limit():
     assert old_layout.resume_layout(resume, old_floor)[0] == 2
     assert old_layout.resume_layout(fit._plan_resume(profile, [3, 3, 3, 3] + [2] * 11), old_floor)[0] == 3
     assert resume_layout(resume, FitStyle(font_pt=8.2, margin_in=0.5))[0] == 3
-    assert resume_layout(resume, styles("Letter")[-1])[0] == MAX_PAGES
+    assert resume_layout(resume, styles("Letter")[len(LADDER) - 1])[0] == MAX_PAGES  # the plain floor
     fitted, _style, pages, fits, _notes, removed = asyncio.run(refit(resume, "Letter"))
     assert fits and pages == MAX_PAGES and removed == {} and fitted == resume
     trimmed, _style, pages, _pdf, notes = fit.trim_to_fit(resume)
     assert pages == MAX_PAGES and trimmed == resume and not any(note.startswith("Removed") for note in notes)
+
+
+# ------------------------------------------------------------------ a long career of short jobs: the last step
+SHORT_BULLETS = [  # one line each, as a person who shortened them writes
+    "Cut cloud spend 23% by rightsizing compute fleets and moving batch jobs to spot capacity.",
+    "Led a team of 6 engineers across 3 time zones through the billing platform rewrite.",
+    "Built CI/CD pipelines with GitHub Actions and Argo CD for 14 services and 3 environments.",
+    "Shipped the React Native app to 1.2M users with offline sync and push notifications.",
+    "Owned on-call for the payments API and kept it at 99.95% uptime for two years.",
+    "Cut p95 latency from 840 to 310 ms by caching hot product queries in Redis.",
+    "Designed the multi-tenant PostgreSQL schema with row-level security for 300 clinics.",
+    "Wrote the incident runbooks and alert rules that cut pages per week from 31 to 9.",
+    "Migrated 14 services to Kubernetes with Helm charts and shared Terraform modules.",
+    "Reduced flaky tests by 62% with deterministic fixtures and seeded test containers.",
+]
+TINY_BULLETS = [  # a few words each
+    "Cut cloud costs 23% by rightsizing compute fleets.", "Led a team of 6 engineers across 3 time zones.",
+    "Shipped the mobile app to 1.2M users.", "Kept the payments API at 99.95% uptime.",
+    "Cut p95 latency from 840 to 310 ms with Redis.", "Built CI/CD for 14 services.",
+    "Wrote runbooks that cut weekly pages from 31 to 9.", "Moved 14 services to Kubernetes.",
+    "Cut flaky tests by 62% with seeded fixtures.", "Designed a multi-tenant PostgreSQL schema.",
+]
+MORE_EMPLOYERS = EMPLOYERS + ["Fourth Coffee", "Margie's Travel", "Wide World Importers", "Graphic Design Institute",
+                              "Humongous Insurance", "Blue Yonder Airlines", "Consolidated Messenger",
+                              "Southridge Video", "VanArsdel", "Relecloud"]
+SHORT_TITLES = ["Software Engineer", "Senior Software Engineer", "Contract Developer", "Backend Engineer",
+                "DevOps Engineer"]
+
+
+def short_jobs(counts: list[int], bullets: list[str] = SHORT_BULLETS, stay: int = 2, certifications: int = 3,
+               skills: bool = True) -> Resume:
+    """Riley Brooks's invented career of short jobs, the most recent first: `stay` months each, a month apart, with
+    `counts` one-line bullets taken in turn from `bullets`, two schools, the first `certifications` of CERTIFICATIONS
+    and three skills rows (or none)."""
+    companies, end = [], 2026 * 12 + 10  # Nov 2026, as a month number
+    for i in range(len(counts)):
+        start = end - stay
+        companies.append(Company(name=MORE_EMPLOYERS[i], start=month(start), end="Present" if i == 0 else month(end),
+                                 location=["Denver, CO", "Austin, TX", "", "Seattle, WA"][i % 4],
+                                 mode=["", "Onsite", "Remote", "Hybrid"][i * 3 % 4]))
+        end = start - 1
+    certs = [c.model_copy() for c in CERTIFICATIONS[:certifications]]
+    profile = Profile(name="Riley Brooks", contact=Contact(email="riley.brooks@example.com", phone="(555) 010-2290",
+                                                           linkedin="linkedin.com/in/rileybrooks-example",
+                                                           location="Denver, CO"),
+                      companies=companies, certifications=certs,
+                      education=[Education(school="State University", degree="B.S.", field="Computer Science",
+                                           start="2008", end="2012"),
+                                 Education(school="Lakeside Community College", degree="A.S.",
+                                           field="Computer Science", start="2006", end="2008")])
+    rows = [("Languages", "Python, Go, TypeScript, SQL, Bash"),
+            ("Cloud and Infrastructure", "Docker, Kubernetes, Terraform, Helm"),
+            ("Data", "PostgreSQL, Redis, Kafka, Airflow, dbt")]
+    groups = [SkillGroup(category=name, skills=items.split(", ")) for name, items in rows] if skills else []
+    return Resume(profile=profile, headline="Backend Engineer", summary=" ".join(bullets[:6]), skills=groups,
+                  experience=[ResumeExperience(company_index=i, job_title=SHORT_TITLES[i % 5],
+                                               bullets=[bullets[(i * 3 + b) % 10] for b in range(n)])
+                              for i, n in enumerate(counts)],
+                  certifications=certs)
+
+
+def test_a_long_career_of_short_bullets_keeps_its_two_pages():
+    """Twenty-five short contracts of two one-line bullets, filled right up to what the old 9.5 pt floor held on two
+    pages. The design gives each job more room than the old layout did, so the plain 8 pt floor needs a third page
+    (the run was redrafted and trimmed); the ladder's last step brings the gaps between the parts closer and keeps two
+    pages, with every bullet."""
+    resume = short_jobs([3] + [2] * 24)
+    assert fit.old_pages(resume, "Letter") == 2
+    plain, last = styles("Letter")[len(LADDER) - 1], styles("Letter")[-1]
+    assert (last.font_pt, last.margin_in, last.spacing) == (*LADDER[-1], COMPACT) and plain.spacing == 1
+    assert resume_layout(resume, plain)[0] == 3
+    style, pages, _pdf, notes = fit.try_styles(resume)
+    assert (style, pages) == (last, 2)
+    assert notes == ["Font reduced to 8 pt, margins to 0.5 in and the spacing tightened to fit two pages."]
+    fitted, _style, pages, fits, _notes, removed = asyncio.run(refit(resume, "Letter"))
+    assert fits and pages == 2 and removed == {} and fitted == resume
+
+
+def test_a_one_page_career_of_short_jobs_keeps_its_page():
+    """Fourteen jobs of one or two very short bullets on A4, a full page before the restyle: the plain floor runs a
+    line onto a second page; the last step keeps one."""
+    resume = short_jobs([2] * 5 + [1] * 9, TINY_BULLETS, stay=11, certifications=4, skills=False)
+    assert fit.old_pages(resume, "A4") == 1
+    assert resume_layout(resume, styles("A4")[len(LADDER) - 1])[0] == 2
+    style, pages, _pdf, notes = fit.try_styles(resume, "A4")
+    assert (style, pages) == (styles("A4")[-1], 1) and notes[0].endswith("spacing tightened to fit one page.")
+
+
+def test_trimming_a_long_career_removes_no_more_than_before():
+    """A draft past what the old floor held: the old app trimmed a bullet at 9.5 pt; the last step holds it whole, so
+    a refit (ticked certifications) or a trim removes nothing."""
+    resume = short_jobs([5] + [2] * 24)
+    old_floor, order = fit.old_styles("Letter")[-1], fit._removal_order(resume)
+    assert fit.old_pages(resume, "Letter") is None
+    before = next(k for k in range(len(order) + 1)
+                  if old_layout.resume_layout(fit._without(resume, order, k), old_floor)[0] <= MAX_PAGES)
+    fitted, style, pages, fits, _notes, removed = asyncio.run(refit(resume, "Letter"))
+    assert before == 1 and fits and pages == MAX_PAGES and removed == {} and style == styles("Letter")[-1]
+    assert fitted == resume
+    trimmed, _style, pages, _pdf, notes = fit.trim_to_fit(resume)
+    assert trimmed == resume and pages == MAX_PAGES and not any(note.startswith("Removed") for note in notes)
+
+
+def test_a_run_saved_before_the_restyle_steps_down_to_the_last_step():
+    """A run saved at the old 9.5 pt floor on two pages is shown in the new look on two pages, at the last step, with
+    every bullet; its Word copy is made at that same step."""
+    resume, saved = short_jobs([3] + [2] * 24), FitStyle(font_pt=9.5, margin_in=0.5)
+    pdf, shown = fit.saved_resume_pdf(resume, saved, 2)
+    assert shown == styles("Letter")[-1] == fit.saved_style(resume, saved, 2)
+    reader = PdfReader(io.BytesIO(pdf))
+    text = " ".join(" ".join(page.extract_text() for page in reader.pages).split())
+    assert len(reader.pages) == 2 and all(bullet in text for exp in resume.experience for bullet in exp.bullets)
+
+
+def test_a_runs_style_keeps_the_last_steps_spacing():
+    """A run's style keeps the last step's spacing; a style stored without it (before this step) is the design's,
+    and a spacing outside (0, 1] is refused."""
+    last = styles("A4")[-1]
+    assert FitStyle.model_validate_json(last.model_dump_json()) == last and last.spacing == COMPACT
+    old = FitStyle.model_validate({"font_pt": 9.5, "margin_in": 0.5, "paper": "A4", "stacked": True})
+    assert old.spacing == 1 and fit.current_style(last) is last
+    for wrong in (0, -0.5, 1.25):
+        with pytest.raises(ValidationError):
+            FitStyle(spacing=wrong)

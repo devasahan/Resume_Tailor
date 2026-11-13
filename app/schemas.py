@@ -268,13 +268,16 @@ class Coverage(BaseModel):
 
 
 class FitStyle(BaseModel):
-    """The size step a resume was fitted at (app/pipeline/fit.py LADDER). The default is the first calibrated step,
+    """The size step a resume was fitted at (app/pipeline/fit.py styles). The default is the first calibrated step,
     which holds as much text per page as the default before the restyle (10.5 pt, 0.65 in): whatever is laid out with
     a plain FitStyle() keeps its page count. Runs saved before the restyle hold an old step (fit.current_style), and
-    may hold `stacked` (each job's title under its company), which is no longer used: it is ignored when they load."""
+    may hold `stacked` (each job's title under its company), which is no longer used: it is ignored when they load.
+    `spacing` scales the gaps between the body's parts (sections, jobs, bullets, rows; not the header, not letter
+    spacing): 1 is the design, and only the ladder's last step brings them closer. Runs saved without it load with 1."""
     font_pt: float = 9.1
     margin_in: float = 0.67
     paper: Literal["Letter", "A4"] = "Letter"
+    spacing: float = Field(1.0, gt=0, le=1)
 
 
 class CallTime(BaseModel):

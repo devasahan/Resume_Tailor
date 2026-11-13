@@ -200,12 +200,13 @@ def _header(doc, name: str, headline: str, contact: Contact, body: float, width:
     return last
 
 
-def _heading(doc, text: str, body: float, width: float) -> None:
+def _heading(doc, text: str, body: float, width: float, unit: float) -> None:
     """A section heading as on the PDF: small spaced capitals in the accent colour, then a thin gray rule to the right
-    margin, drawn as the leader of a right tab. Kept with the paragraph after it."""
+    margin, drawn as the leader of a right tab. Kept with the paragraph after it. `unit`: the body's gaps (as the
+    PDF's Sheet.gap_unit)."""
     paragraph = doc.add_paragraph()
     fmt = paragraph.paragraph_format
-    fmt.space_before, fmt.space_after = Pt(SECTION_GAP * body), Pt(HEADING_GAP * body)
+    fmt.space_before, fmt.space_after = Pt(SECTION_GAP * unit), Pt(HEADING_GAP * unit)
     fmt.keep_with_next = True  # never alone at the bottom of a page
     fmt.tab_stops.add_tab_stop(Pt(width), WD_TAB_ALIGNMENT.RIGHT, WD_TAB_LEADER.LINES)
     size = HEADING_SIZE * body
@@ -233,14 +234,14 @@ def _row(doc, left: list[Run], right: str, width: float, size: float, body: floa
     return paragraph
 
 
-def _skills(doc, resume: Resume, body: float, width: float) -> None:
+def _skills(doc, resume: Resume, body: float, width: float, unit: float) -> None:
     """'Label:' then a tab to the values' column, with a hanging indent so the values wrap inside it; labels too wide
     for the column go in line with their values, as on the PDF (skills_column)."""
     values_x = skills_column(resume.skills, body, width)
     for index, group in enumerate(resume.skills):
         paragraph = doc.add_paragraph()
         fmt = paragraph.paragraph_format
-        fmt.space_before = Pt(SKILLS_ROW_GAP * body if index else 0.0)
+        fmt.space_before = Pt(SKILLS_ROW_GAP * unit if index else 0.0)
         fmt.keep_together = True
         _add_run(paragraph, Run(f"{group.category}:", weight=SEMIBOLD, color=INK), body)
         if values_x is None:
@@ -251,7 +252,7 @@ def _skills(doc, resume: Resume, body: float, width: float) -> None:
         _add_run(paragraph, Run("\t" + ", ".join(group.skills)), body)
 
 
-def _bullet(doc, text: str, body: float, last: bool) -> None:
+def _bullet(doc, text: str, body: float, last: bool, unit: float) -> None:
     """A bullet in the built-in List Bullet style, its marker gray and where the PDF draws it."""
     paragraph = doc.add_paragraph(style="List Bullet")
     _add_run(paragraph, Run(text), body)
@@ -259,7 +260,7 @@ def _bullet(doc, text: str, body: float, last: bool) -> None:
     text_x = TEXT_INDENT * body
     marker_x = MARKER_END * body - text_width("• ", REGULAR, body)
     fmt.left_indent, fmt.first_line_indent = Pt(text_x), Pt(marker_x - text_x)
-    fmt.space_after = Pt(0.0 if last else BULLET_GAP * body)
+    fmt.space_after = Pt(0.0 if last else BULLET_GAP * unit)
     fmt.keep_together = True
     mark = OxmlElement("w:rPr")  # the paragraph mark's colour, which Word gives the bullet
     color = OxmlElement("w:color")
@@ -271,6 +272,7 @@ def _bullet(doc, text: str, body: float, last: bool) -> None:
 def resume_docx(resume: Resume, style: FitStyle, document: str = "Resume") -> bytes:
     p = resume.profile
     body = style.font_pt
+    unit = body * style.spacing  # the gaps between the body's parts, as on the PDF (exactly `body` at spacing 1)
     doc = _setup(style, style.margin_in, body, author=p.name, title=f"{p.name} - {document}",
                  lang="en-GB" if document == "CV" else "en-US")
     width = _text_width(style, style.margin_in)
@@ -281,39 +283,39 @@ def resume_docx(resume: Resume, style: FitStyle, document: str = "Resume") -> by
 
     _header(doc, p.name, resume.headline, p.contact, body, width)
 
-    _heading(doc, "SUMMARY", body, width)
+    _heading(doc, "SUMMARY", body, width, unit)
     doc.add_paragraph().add_run(resume.summary)
 
-    _heading(doc, "SKILLS", body, width)
-    _skills(doc, resume, body, width)
+    _heading(doc, "SKILLS", body, width, unit)
+    _skills(doc, resume, body, width, unit)
 
-    _heading(doc, "EXPERIENCE", body, width)
+    _heading(doc, "EXPERIENCE", body, width, unit)
     for index, exp in enumerate(resume.experience):
         company = p.companies[exp.company_index]
         dates = fmt_dates(company.start, company.end)
         room = width - (text_width(dates, REGULAR, DATE_SIZE * body) + DATE_GAP * body if dates else 0.0)
         left, rest = split_job_line(company, exp.job_title, JOB_SIZE * body, room)
         row = _row(doc, left, dates, width, JOB_SIZE * body, body, rest)
-        row.paragraph_format.space_before = Pt(JOB_GAP * body if index else 0.0)
-        row.paragraph_format.space_after = Pt(BULLETS_GAP * body if exp.bullets else 0.0)
+        row.paragraph_format.space_before = Pt(JOB_GAP * unit if index else 0.0)
+        row.paragraph_format.space_after = Pt(BULLETS_GAP * unit if exp.bullets else 0.0)
         row.paragraph_format.keep_with_next = True  # a job's line stays with its first bullet
         for number, bullet in enumerate(exp.bullets):
-            _bullet(doc, bullet, body, last=number == len(exp.bullets) - 1)
+            _bullet(doc, bullet, body, last=number == len(exp.bullets) - 1, unit=unit)
 
     if p.education:
-        _heading(doc, "EDUCATION", body, width)
+        _heading(doc, "EDUCATION", body, width, unit)
         for index, edu in enumerate(p.education):
             row = _row(doc, education_runs(edu), fmt_dates(edu.start, edu.end), width, body, body)
-            row.paragraph_format.space_before = Pt(ENTRY_GAP * body if index else 0.0)
+            row.paragraph_format.space_before = Pt(ENTRY_GAP * unit if index else 0.0)
             row.paragraph_format.keep_with_next = bool(edu.details)
             if edu.details:
                 doc.add_paragraph().add_run(edu.details)
 
     if resume.certifications:  # only ones the person has, best for the job first
-        _heading(doc, "CERTIFICATIONS", body, width)
+        _heading(doc, "CERTIFICATIONS", body, width, unit)
         for index, cert in enumerate(resume.certifications):
             row = _row(doc, certification_runs(cert), certification_dates(cert), width, body, body)
-            row.paragraph_format.space_before = Pt(ENTRY_GAP * body if index else 0.0)
+            row.paragraph_format.space_before = Pt(ENTRY_GAP * unit if index else 0.0)
 
     buffer = BytesIO()
     doc.save(buffer)

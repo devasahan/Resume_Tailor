@@ -8,6 +8,8 @@ The look is the owner's design "standard" (a US Letter page drawn at 816 x 1056 
 capitals in navy for the section headings with a thin gray rule beside them, the job title first on each job line,
 gray bullet markers and a column for the skills labels. Every size and gap below is the design's px value as a share of
 its 13.5 px body text, so each step of the size ladder (app/pipeline/fit.py) is the same design, only larger or smaller.
+The ladder's last step also brings the gaps between the body's parts closer (FitStyle.spacing), so a long career of many
+short jobs keeps the pages it took before the restyle.
 
 The code is a small typesetter: measure text, wrap it into lines, draw the lines top to bottom. Drawing in reading order
 also gives a clean text layer for ATS extraction. A page break never splits a bullet, and never leaves a section heading
@@ -102,7 +104,8 @@ HEADING_TRACKING = 0.08
 MAX_TRACKING = 0.09
 assert HEADING_TRACKING <= MAX_TRACKING
 
-# Gaps, as shares of the body size
+# Gaps, as shares of the body size. Those between the body's parts (sections, jobs, bullets, rows: not the header's) are
+# measured in Sheet.gap_unit, the body size times FitStyle.spacing (1, or less at the ladder's last step).
 SECTION_GAP = em(20)  # above a section heading (left out at the top of a page)
 HEADER_GAP = em(6)  # between the name, the title line and the contact line
 HEADING_GAP = em(8)  # from a heading to its first line
@@ -279,10 +282,11 @@ def forget_glyph_caches() -> None:
 
 class Sheet:
     """A PDF being laid out. `y` is the current top of the next line, in points from the page top. `margin` is the left
-    and right margin (x = 0 is there), `top` the top and bottom one (the same as `margin` when not given)."""
+    and right margin (x = 0 is there), `top` the top and bottom one (the same as `margin` when not given). `spacing`
+    scales the gaps between the body's parts (FitStyle.spacing): they are measured in `gap_unit`."""
 
     def __init__(self, paper: str, margin: float, size: float, line: float, title: str, author: str,
-                 lang: str = "en-US", top: float | None = None):
+                 lang: str = "en-US", top: float | None = None, spacing: float = 1.0):
         forget_glyph_caches()  # the documents laid out before this one are let go
         top = margin if top is None else top
         pdf = FPDF(orientation="P", unit="pt", format=paper)
@@ -306,6 +310,7 @@ class Sheet:
         self.margin = margin
         self.top = top
         self.size = size
+        self.gap_unit = size * spacing  # exactly `size` at spacing 1: every gap as the design has it
         self.line = line
         self.width = pdf.w - 2 * margin
         self.bottom = pdf.h - top
@@ -534,8 +539,8 @@ class Sheet:
         size = HEADING_SIZE * self.size
         height = HEADING_LINE * size
         if self.y > self.top + 0.01:
-            self.y += SECTION_GAP * self.size
-        self.keep(height + HEADING_GAP * self.size + keep)  # a new page drops the gap added above
+            self.y += SECTION_GAP * self.gap_unit
+        self.keep(height + HEADING_GAP * self.gap_unit + keep)  # a new page drops the gap added above
         text = text.upper()
         width = text_width(text, BOLD, size, HEADING_TRACKING)
         self._draw([Piece(text, BOLD, width, ACCENT, HEADING_TRACKING)], self.margin, self.y, size, height)
@@ -544,7 +549,7 @@ class Sheet:
             middle = self.y + height / 2 + 0.3 * size - CAP_HEIGHT * size / 2  # the baseline, less half the capitals
             self.pdf.set_line_width(RULE_WIDTH)
             self.pdf.line(start, middle, end, middle)
-        self.y += height + HEADING_GAP * self.size
+        self.y += height + HEADING_GAP * self.gap_unit
 
     def last_page_fill(self) -> float:
         """How full the last page is, 0..1: a second page holding a few lines is worth avoiding."""
@@ -677,7 +682,7 @@ def draw_skills(sheet: Sheet, groups: list[SkillGroup]) -> None:
     values_x = skills_column(groups, sheet.size, sheet.width)
     for index, group in enumerate(groups):
         if index:
-            sheet.space(SKILLS_ROW_GAP * sheet.size)
+            sheet.space(SKILLS_ROW_GAP * sheet.gap_unit)
         label, values = f"{group.category}:", ", ".join(group.skills)
         if values_x is not None:
             sheet.label_row(label, values, values_x)
@@ -692,8 +697,8 @@ def resume_sheet(resume: Resume, style: FitStyle, document: str = "Resume") -> S
     p = resume.profile
     side = style.margin_in * 72
     sheet = Sheet(style.paper, side, style.font_pt, LINE, f"{p.name} - {document}", p.name,
-                  "en-GB" if document == "CV" else "en-US", top=TOP_MARGIN * side)
-    size = sheet.size
+                  "en-GB" if document == "CV" else "en-US", top=TOP_MARGIN * side, spacing=style.spacing)
+    size, unit = sheet.size, sheet.gap_unit  # unit: the gaps between the body's parts
 
     draw_header(sheet, p.name, resume.headline, p.contact, size)
 
@@ -710,17 +715,17 @@ def resume_sheet(resume: Resume, style: FitStyle, document: str = "Resume") -> S
         left, rest = sheet.job_line(company, exp.job_title, dates)
         start = sheet.row_height(left, dates, rest, JOB_SIZE * size)
         if exp.bullets:
-            start += BULLETS_GAP * size + sheet.bullet_height(exp.bullets[0])
+            start += BULLETS_GAP * unit + sheet.bullet_height(exp.bullets[0])
         jobs.append((left, rest, dates, exp.bullets, start))
     sheet.heading("EXPERIENCE", keep=jobs[0][4] if jobs else 0.0)
     for index, (left, rest, dates, bullets, start) in enumerate(jobs):
-        sheet.space(JOB_GAP * size if index else 0.0)
+        sheet.space(JOB_GAP * unit if index else 0.0)
         sheet.keep(start)  # a job line never sits alone at the bottom of a page
         sheet.row(left, dates, rest, JOB_SIZE * size)
         if bullets:
-            sheet.space(BULLETS_GAP * size)
+            sheet.space(BULLETS_GAP * unit)
         for number, bullet in enumerate(bullets):
-            sheet.bullet(bullet, after=BULLET_GAP * size if number < len(bullets) - 1 else 0.0)
+            sheet.bullet(bullet, after=BULLET_GAP * unit if number < len(bullets) - 1 else 0.0)
 
     if p.education:
         entries = []
@@ -731,7 +736,7 @@ def resume_sheet(resume: Resume, style: FitStyle, document: str = "Resume") -> S
             entries.append((left, dates, extra, height))
         sheet.heading("EDUCATION", keep=entries[0][3])
         for index, (left, dates, extra, height) in enumerate(entries):
-            sheet.space(ENTRY_GAP * size if index else 0.0)
+            sheet.space(ENTRY_GAP * unit if index else 0.0)
             sheet.keep(height)
             sheet.row(left, dates)
             if extra:
@@ -742,7 +747,7 @@ def resume_sheet(resume: Resume, style: FitStyle, document: str = "Resume") -> S
         heights = [sheet.row_height(left, dates) for left, dates in rows]
         sheet.heading("CERTIFICATIONS", keep=heights[0])
         for index, ((left, dates), height) in enumerate(zip(rows, heights)):
-            sheet.space(ENTRY_GAP * size if index else 0.0)
+            sheet.space(ENTRY_GAP * unit if index else 0.0)
             sheet.keep(height)
             sheet.row(left, dates)
     return sheet

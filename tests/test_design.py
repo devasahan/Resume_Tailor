@@ -22,6 +22,7 @@ from pypdf import PdfReader
 from app.pipeline import fit, validate
 from app.pipeline.fit import (
     CALIBRATED,
+    COMPACT,
     LADDER,
     OLD_LADDER,
     current_style,
@@ -270,6 +271,28 @@ def test_a_word_file_loads_no_pdf_fonts(profile):
     assert FONTS.count == loads  # sizes come from the font tables, never from a PDF laid out on the side
 
 
+def test_the_word_copy_at_the_last_step_has_its_closer_gaps(profile):
+    """At the ladder's last step the Word copy brings the body's gaps closer as the PDF does (headings, jobs, bullets)
+    and keeps the header's."""
+    resume = long_resume(profile, bullets=3)
+
+    def gaps(style):
+        paragraphs = Document(io.BytesIO(resume_docx(resume, style))).paragraphs
+        heading = next(p.paragraph_format for p in paragraphs if p.text.strip() == "EXPERIENCE")
+        jobs = [p.paragraph_format for p in paragraphs if p.text.startswith("Data Engineer · ")]
+        bullet = next(p.paragraph_format for p in paragraphs if p.style.name == "List Bullet")
+        title = next(p.paragraph_format for p in paragraphs if p.text == resume.headline)  # the line under the name
+        body = (heading.space_before.pt, heading.space_after.pt, jobs[1].space_before.pt, jobs[0].space_after.pt,
+                bullet.space_after.pt)
+        return body, title.space_before.pt
+
+    floor_gaps, floor_header = gaps(styles("Letter")[len(LADDER) - 1])
+    last_gaps, last_header = gaps(styles("Letter")[-1])
+    assert last_header == floor_header > 0
+    assert all(last == pytest.approx(floor * COMPACT, abs=0.05) and last < floor
+               for last, floor in zip(last_gaps, floor_gaps))
+
+
 # ------------------------------------------------------------------ the size steps
 def test_a_short_resume_has_the_design_sizes(profile):
     style, pages, _pdf, notes = fit.try_styles(long_resume(profile, bullets=3))
@@ -309,8 +332,8 @@ def many_short_jobs() -> Resume:
                                                bullets=[bullet] * 2) for i in range(10)])
 
 
-def test_the_smallest_step_holds_what_the_old_one_did_for_a_career_of_many_short_jobs():
-    assert resume_layout(many_short_jobs(), styles("Letter")[-1])[0] == 1
+def test_the_floor_holds_what_the_old_one_did_for_a_career_of_ten_short_jobs():
+    assert resume_layout(many_short_jobs(), styles("Letter")[len(LADDER) - 1])[0] == 1  # the plain floor already
 
 
 def test_laid_out_documents_are_let_go(profile):

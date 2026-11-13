@@ -25,6 +25,7 @@ from app.llm.base import ProviderError
 from app.llm.openai_compat_client import TIMEOUT, OpenAICompatClient
 from app.llm.registry import ModelSpec
 from app.main import document_word
+from app.pipeline.fit import COMPACT
 from app.pipeline.tailor import run_tailor
 from app.render import pdf as pdf_module
 from app.render.pdf import (
@@ -270,6 +271,7 @@ def test_a_changed_resume_style_or_title_is_another_file(profile):
         (ticked, style, "Resume"),  # a ticked certification
         (resume, FitStyle(font_pt=10.0, margin_in=0.55), "Resume"),
         (resume, FitStyle(paper="A4"), "Resume"),
+        (resume, FitStyle(spacing=COMPACT), "Resume"),  # the same sizes with the last step's closer gaps
         (resume, style, "CV"),  # the same text in EU style: another title and language
     ]
     assert [recent_resume_pdf(*key) for key in changed] == [None] * len(changed)

@@ -103,7 +103,7 @@ def long_resume(profile, bullets=12) -> "object":
 
 
 def test_trimming_reports_a_few_removed_bullets_and_how_many_more(profile):
-    _trimmed, _style, pages, _pdf, notes = trim_to_fit(long_resume(profile, bullets=30))
+    _trimmed, _style, pages, _pdf, notes = trim_to_fit(long_resume(profile, bullets=32))
     note = next(n for n in notes if n.startswith("Removed"))
     removed = int(note.split()[1])
     assert pages <= MAX_PAGES and removed > 5 and note.count("...") == 5 and note.endswith(f"and {removed - 5} more")
@@ -119,10 +119,10 @@ def test_a_bullet_that_fits_at_the_bottom_of_a_page_stays_there():
 
 
 def test_overflow_makes_more_pages_and_the_fit_steps_repair_it(profile):
-    resume = long_resume(profile, bullets=28)
+    resume = long_resume(profile, bullets=30)
     _, pages = render_resume_pdf(resume, FitStyle())
     assert pages == 4
-    assert try_styles(resume) is None  # shrinking alone cannot save this much text (8 pt holds 26 bullets a job)
+    assert try_styles(resume) is None  # shrinking alone cannot save this much text (the last step holds 28 a job)
     trimmed, style, pages, _pdf, notes = trim_to_fit(resume)
     assert pages <= MAX_PAGES and render_resume_pdf(trimmed, style)[1] == pages
     assert all(len(e.bullets) >= 2 for e in trimmed.experience)
@@ -177,7 +177,34 @@ def test_page_breaks_never_split_a_bullet_or_leave_a_job_title_alone(profile, se
     for exp in resume.experience:  # bullets of different lengths move the break around
         exp.bullets = [b + " Extra detail." * rng.randint(0, 4) for b in exp.bullets]
     font_pt, margin_in = rng.choice(LADDER)
-    pages, drawn, indents = _lines_by_page(resume, FitStyle(font_pt=font_pt, margin_in=margin_in))
+    assert_page_breaks_keep_blocks_whole(resume, FitStyle(font_pt=font_pt, margin_in=margin_in))
+
+
+@pytest.mark.parametrize("seed", range(4))
+def test_the_last_step_keeps_the_page_break_rules(profile, seed):
+    """The ladder's last step (closer gaps) keeps the same rules, on resumes long enough to break there too."""
+    rng = random.Random(seed)
+    resume = long_resume(profile, bullets=rng.randint(18, 24))
+    for exp in resume.experience:
+        exp.bullets = [b + " Extra detail." * rng.randint(0, 4) for b in exp.bullets]
+    assert_page_breaks_keep_blocks_whole(resume, styles(rng.choice(["Letter", "A4"]))[-1])
+
+
+def test_the_last_step_draws_the_same_lines_closer_together(profile):
+    """The last step is the floor's sizes with the gaps between the body's parts brought closer: the same lines at the
+    same places across the page and the same header, every line at most as low as at the plain floor."""
+    resume = long_resume(profile, bullets=6)
+    plain, last = styles("Letter")[len(LADDER) - 1], styles("Letter")[-1]
+    _pages, at_floor, _indents = _lines_by_page(resume, plain)
+    _pages, closer, _indents = _lines_by_page(resume, last)
+    assert [(x, text) for _page, _y, x, text in closer] == [(x, text) for _page, _y, x, text in at_floor]
+    assert closer[:3] == at_floor[:3]  # the name, the title line and the contact line
+    assert all(a[:2] <= b[:2] for a, b in zip(closer, at_floor)) and closer[-1][:2] < at_floor[-1][:2]
+
+
+def assert_page_breaks_keep_blocks_whole(resume, style):
+    """A page never ends with a job title or a section heading, and never starts in the middle of a bullet."""
+    pages, drawn, indents = _lines_by_page(resume, style)
     assert pages >= 2
     for page in range(1, pages):
         bottom_y = max(y for p, y, _x, _t in drawn if p == page)
@@ -373,7 +400,7 @@ def test_a_wrapped_skills_row_is_read_before_the_next_row(profile):
     resume.skills = [SkillGroup(category="Machine Learning", skills=["PyTorch", "scikit-learn", "XGBoost", "MLflow"]),
                      SkillGroup(category="Data", skills=data),
                      SkillGroup(category="Frameworks", skills=["FastAPI", "Django", "Flask", "React"])]
-    for step in (0, 1, len(LADDER) - 1):
+    for step in (0, 1, len(LADDER) - 1, len(LADDER)):  # the design, the first calibrated step, the floor, the last
         pdf = render_resume_pdf(resume, styles("Letter")[step])[0]
         with pdfplumber.open(io.BytesIO(pdf)) as document:
             plumbed = document.pages[0].extract_text()

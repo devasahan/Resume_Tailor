@@ -180,10 +180,10 @@ def assert_file_reads_back(text: str, resume: Resume) -> None:
 
 
 @pytest.mark.parametrize("paper", ["Letter", "A4"])
-@pytest.mark.parametrize("step", [0, len(LADDER) - 1])
+@pytest.mark.parametrize("step", [0, len(LADDER) - 1, len(LADDER)])
 def test_a_pdf_the_app_made_reads_back_as_an_upload(paper, step):
     """render -> extract_text (pdfplumber, as an upload is read) -> the rules: every fact comes back, at the design's
-    sizes and at the smallest step, where the lines break in other places."""
+    sizes, at the floor and at the last step (the floor with closer gaps), where the lines break in other places."""
     resume = app_made_resume()
     pdf, _pages = render_resume_pdf(resume, styles(paper)[step])
     text = extract_text(pdf, "resume.pdf")
@@ -222,14 +222,14 @@ UNKNOWN_TITLES = {
 
 @pytest.mark.parametrize("jobs", UNKNOWN_TITLES.values(), ids=UNKNOWN_TITLES.keys())
 def test_job_titles_the_rules_do_not_know_read_back_from_the_apps_files(jobs):
-    """Each employer comes back with its dates, place and work mode, from the PDF (both papers, the design's sizes
-    and the smallest step) and the Word copy, never a job title in its place."""
+    """Each employer comes back with its dates, place and work mode, from the PDF (both papers, the design's sizes,
+    the floor and the last step) and the Word copy, never a job title in its place."""
     base = app_made_resume()
     profile = base.profile.model_copy(update={"companies": [company for _title, company in jobs]})
     experience = [exp.model_copy(update={"job_title": title}) for exp, (title, _company) in zip(base.experience, jobs)]
     resume = base.model_copy(update={"profile": profile, "experience": experience})
     texts = {f"{paper} step {step}": extract_text(render_resume_pdf(resume, styles(paper)[step])[0], "resume.pdf")
-             for paper in ("Letter", "A4") for step in (0, len(LADDER) - 1)}
+             for paper in ("Letter", "A4") for step in (0, len(LADDER) - 1, len(LADDER))}
     texts["Word"] = extract_text(resume_docx(resume, styles("Letter")[0]), "resume.docx")
     if jobs is UNKNOWN_TITLES["long titles"]:  # at the design's sizes the long lines break
         assert "\nAustin, TX · Remote\n" in texts["Letter step 0"]
