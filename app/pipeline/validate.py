@@ -2814,7 +2814,9 @@ def figure_key(token: str) -> str:
     return re.sub(r"[$€£,+~\s]", "", token.lower())
 
 
-_UNIT_WORD = re.compile(r"(\d)\s*(?:(million|mn)|(billion|bn)|(thousand)|(per\s?cent)|(times))\b", re.IGNORECASE)
+_UNIT_WORD = re.compile(  # 'times' as a multiplier ('3 times faster'), never a frequency ('20 times a day')
+    r"(\d)\s*(?:(million|mn)|(billion|bn)|(thousand)|(per\s?cent)|(times)(?!\s*(?:/|(?:a|an|per|each|every)\b)))\b",
+    re.IGNORECASE)
 
 
 def _short_units(text: str) -> str:
@@ -2832,10 +2834,11 @@ def _figures_and_keys(text: str) -> list[tuple[str, str]]:
     return list(zip(figures, map(figure_key, short if len(short) == len(figures) else figures)))
 
 
-_MONTH = r"(?:jan|feb|mar|apr|may|jun|jul|aug|sep|sept|oct|nov|dec)[a-z]*\.?"
+_MONTH = (r"(?:jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|june?|july?|aug(?:ust)?|sep(?:t(?:ember)?)?"
+          r"|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?)\b\.?")  # whole names: never 'junior', 'markets', 'decreased'
 _NOT_FIGURES = re.compile(  # the digits of dates, year ranges, paths and links: none is a figure the person gave
     r"\b\d{4}-\d{1,2}-\d{1,2}\b|\b\d{1,2}[/.]\d{1,2}[/.]\d{2,4}\b|\b\d{1,2}/(?:19|20)\d{2}\b"  # 2024-06-12, 12/03/2024
-    r"|\b(?:19|20)\d{2}\s*[-\u2013\u2014/]\s*(?:\d{4}|\d{2})\b"  # 2023-24, 2023-2025, 2024/25
+    r"|\b(?:19|20)\d{2}\s*[-\u2013\u2014/]\s*(?:(?:19|20)\d{2}|\d{2})\b"  # 2023-24, 2023-2025, 2024/25; not 2000-3000
     rf"|\b\d{{1,2}}(?:st|nd|rd|th)?\s+(?:of\s+)?{_MONTH}|\b{_MONTH}\s+\d{{1,2}}(?:st|nd|rd|th)?\b"  # 3 March, March 3
     r"|\S*/\S*/\S*|\b[\w-]+(?:\.[a-z][\w-]*)+/\S*",  # a path, or a link without https://
     re.IGNORECASE)

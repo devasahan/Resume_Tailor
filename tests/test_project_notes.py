@@ -349,3 +349,38 @@ def test_a_long_keep_list_compiles_each_name_once():
 def test_the_page_sends_the_notes_as_it_counts_them(client):
     page = client.get("/profile").text
     assert "projects: areas.map(area => area.value.trim())" in page  # trailing blank lines never cause a 422
+
+
+def test_counts_next_to_words_like_junior_or_markets_stay_the_persons():
+    """Only whole month names make a date: '4 junior engineers', '20 markets', '8 marketing campaigns', 'decreased
+    40%' and '2000-3000 orders' are the person's figures; a frequency ('20 times a day') is not a multiplier."""
+    notes = ("Order Hub (2023): mentored 4 junior engineers, launched it in 20 markets, ran 8 marketing campaigns\n"
+             "Partner Portal (2024): p95 latency decreased 40%, 2000-3000 orders a minute\n"
+             "Release train (2023): we deployed 20 times a day")
+    assert {"4", "20", "8", "40%", "2000", "3000"} <= validate.note_figures(clean_notes(notes))
+    for date in ("launched 3 March 2024", "12 Jan", "Dec 5", "Order Hub (2023-24)"):
+        assert validate.note_figures(clean_notes(date)) <= {"2024"}, date
+    assert "3x" in validate.note_figures("3 times faster") and "20x" not in validate.note_figures(notes)
+
+
+def test_a_blank_line_under_the_sources_heading_still_ends_nothing():
+    """'Sources', a blank line, then plain or numbered titles (a title's address may sit on the next line): all
+    dropped; the person's projects after linked sources stay."""
+    assert clean_notes("Order Hub (2023)\n\nSources\n\n1. Northwind launches Order Hub - Retail Weekly\n"
+                       "2. How Northwind cut checkout time by 31% | Blog") == "Order Hub (2023)"
+    assert clean_notes("Order Hub (2023)\n\nSources:\n1. Title one\n   https://a.example\n\n"
+                       "- Partner Portal (2024): built sign-up") == "Order Hub (2023)\n\n- Partner Portal (2024): built sign-up"
+
+
+def test_only_real_citations_and_linked_resources_are_left_out():
+    """'accessed by 300 managers' and 'retrieved order history' are project lines (only their links go); a citation
+    needs a date or 'Retrieved from'. 'Resources' or 'Press coverage' is a source list only over links."""
+    notes = ("Reporting portal (2024): dashboards accessed by 300 store managers (https://reports.northwind.example)\n"
+             "Order API gateway (2023): retrieved order history in under 200 ms\n"
+             "Northwind blog, accessed March 3, 2026, https://d.example\nLaunch post. Retrieved from https://e.example\n"
+             "Resources: $350K budget, 2 contractors\n## Resources\n- [Guide](https://g.example)\n"
+             "Press coverage: featured in Retail Weekly's top 10 launches")
+    assert clean_notes(notes) == ("Reporting portal (2024): dashboards accessed by 300 store managers\n"
+                                  "Order API gateway (2023): retrieved order history in under 200 ms\n"
+                                  "Resources: $350K budget, 2 contractors\n"
+                                  "Press coverage: featured in Retail Weekly's top 10 launches")

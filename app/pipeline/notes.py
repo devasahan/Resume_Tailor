@@ -5,14 +5,21 @@ from __future__ import annotations
 
 import re
 
-_LINK = re.compile(r"\[([^\]]*)\]\([^)]*\)|<?https?://\S+|\bwww\.\S+", re.IGNORECASE)
+_LINK = re.compile(r"\[([^\]]*)\]\([^)]*\)|<?https?://[^\s<>)]+>?|\bwww\.[^\s<>)]+", re.IGNORECASE)
 _SOURCE_WORDS = (r"(?:sources?(?: list| used)?|links?|useful links|references?(?: used)?|citations?|works cited"
-                 r"|bibliography|further reading|reading list|resources|press coverage)")
+                 r"|bibliography|further reading|reading list)")
+_LINKED_WORDS = r"(?:resources|press coverage)"  # a list of sources only when it holds links ('Resources: $350K budget')
 # a heading over a list of sources: 'Sources', '**Sources**', '#### **Works cited**', 'Links and references:', 'Sources (2)'
 _SOURCES_HEADING = re.compile(rf"^\W*{_SOURCE_WORDS}(?:\s*(?:and|&)\s*{_SOURCE_WORDS})?(?:\s*\(\d+\))?\W*$",
                               re.IGNORECASE)
+_LINKS_HEADING = re.compile(rf"^\W*{_LINKED_WORDS}(?:\s*\(\d+\))?\W*$", re.IGNORECASE)
 _SOURCE_LINE = re.compile(rf"^\W*{_SOURCE_WORDS}\s*:\s*\S", re.IGNORECASE)  # 'Source: the company blog'
-_CITED = re.compile(r"\b(?:accessed|retrieved)\b", re.IGNORECASE)  # 'Title, accessed March 3, 2026, https://...'
+_MONTH = (r"(?:jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|june?|july?|aug(?:ust)?|sep(?:t(?:ember)?)?"
+          r"|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?)\b\.?")
+# a citation: 'Title, accessed March 3, 2026, https://...', '... Accessed 3 Mar. 2026', 'Retrieved from https://...'
+_CITED = re.compile(rf"\b(?:accessed|retrieved)(?:\s+on)?\s+(?:\d{{1,2}}(?:st|nd|rd|th)?\s+(?:of\s+)?{_MONTH}"
+                    rf"|{_MONTH}\s+\d|\d{{1,4}}[-/.]\d{{1,2}}[-/.]\d{{1,4}})|\bretrieved\s+from\s+(?:<?https?://|www\.)",
+                    re.IGNORECASE)
 _LIST_ITEM = re.compile(r"^\s*(?:[-*•+▪◦‣]|\(?(?:\d{1,3}|[a-z])[.)])\s")
 _MARKS_ONLY = re.compile(r"^\s*(?:[-*•+▪◦‣_=#>|:]+|\(?\d{1,3}[.)]?)\s*$")  # '-', '---', '3.', '(4)', '|---|'
 
@@ -40,13 +47,16 @@ def _sources_end(lines: list[str], start: int) -> int:
     def size(i: int, after_blank: bool) -> int:  # how many lines from i belong to the list (0: it has ended)
         line = lines[i]
         item, link, indent = bool(_LIST_ITEM.match(line)), bool(_LINK.search(line)), _indent(line)
+        over_link = i + 1 < len(lines) and _links_only(lines[i + 1])  # a title, its address on the next line
         if nested:
             return 1 if indent > level or (item and link and indent == level) else 0
         if item or link:
             if item and first is not None and indent < first:
                 return 0
-            return 0 if after_blank and item and not link and linked else 1
-        return 2 if i + 1 < len(lines) and _links_only(lines[i + 1]) else 0
+            if item and not link and over_link:
+                return 2
+            return 0 if after_blank and item and not link and linked and first is not None else 1
+        return 2 if over_link else 0
 
     i = start + 1
     while i < len(lines):
@@ -65,6 +75,13 @@ def _sources_end(lines: list[str], start: int) -> int:
     return i
 
 
+def _first_linked(lines: list[str], start: int) -> bool:
+    """Whether the first line under the heading at `start` holds a link, or is a title over its link line."""
+    rest = [i for i in range(start + 1, len(lines)) if lines[i].strip()]
+    return bool(rest) and (bool(_LINK.search(lines[rest[0]]))
+                           or (rest[0] + 1 < len(lines) and _links_only(lines[rest[0] + 1])))
+
+
 def clean_notes(text: str) -> str:
     """One employer's notes as the model reads them: no links (a Markdown link keeps its words), no list of sources
     (see _sources_end), no 'Source: ...' line or citation ('..., accessed March 3, 2026, https://...'), no line left
@@ -74,13 +91,13 @@ def clean_notes(text: str) -> str:
     i = 0
     while i < len(lines):
         line = lines[i]
-        if _SOURCES_HEADING.match(line):
+        if _SOURCES_HEADING.match(line) or (_LINKS_HEADING.match(line) and _first_linked(lines, i)):
             i = _sources_end(lines, i)
             continue
         i += 1
         if _SOURCE_LINE.match(line) or (_CITED.search(line) and _LINK.search(line)):
             continue
-        line = _LINK.sub(lambda match: match.group(1) or "", line).rstrip()
+        line = re.sub(r"\s*\(\s*\)", "", _LINK.sub(lambda match: match.group(1) or "", line)).rstrip()  # '(link)' too
         if line.strip() and _MARKS_ONLY.match(line):
             continue
         kept.append(line)
