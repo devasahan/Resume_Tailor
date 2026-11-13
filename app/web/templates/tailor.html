@@ -19,9 +19,12 @@
       <h2 class="card-title"><span class="step-num">2</span><label for="jd">Paste the job description</label></h2>
       <textarea id="jd" placeholder="Paste the full job description here: the title, the duties and the requirements."></textarea>
       <div class="jd-facts small" id="jd-facts" aria-live="polite"></div>
-      <label class="company-label" for="company"><strong>Company</strong> <span class="small muted">exactly as the job post writes it</span></label>
-      <input id="company" type="text" maxlength="120" autocomplete="off" placeholder="Found in the job post, or type it here">
+      <label class="company-label" for="company"><strong>Company</strong> <span class="req">required</span> <span class="small muted">exactly as the job post writes it</span></label>
+      <input id="company" type="text" maxlength="120" required aria-required="true" autocomplete="off" placeholder="Found in the job post, or type it here">
       <p class="small muted company-note" id="company-note" aria-live="polite"></p>
+      <label class="company-label" for="job-link"><strong>Job link</strong> <span class="req">required</span> <span class="small muted">the address of the job post's page</span></label>
+      <input id="job-link" type="text" inputmode="url" required aria-required="true" autocomplete="off" autocapitalize="off" spellcheck="false" placeholder="https://... (copy it from the job post's address bar)">
+      <p class="small muted company-note" id="job-link-note" aria-live="polite"></p>
     </section>
 
     <section class="panel">
@@ -260,10 +263,10 @@ function clearResult() {  // no usable result: do not leave the previous one's d
 }
 
 // A new resume, with its cover letter written in the same job when `withLetter` (one wait, one run).
-async function tailorNow(jd, withLetter, company) {
+async function tailorNow(jd, withLetter, company, link) {
   const profileId = chosenId();
   const began = Date.now();
-  const body = { jd, profile_id: profileId, spelling, company_name: company, ...(withLetter ? { cover_letter: true } : {}) };
+  const body = { jd, profile_id: profileId, spelling, company_name: company, job_link: link, ...(withLetter ? { cover_letter: true } : {}) };
   let run;
   try {
     run = await finished(await api('/api/tailor', { method: 'POST', body }),
@@ -285,17 +288,20 @@ function letterReason(run) {
 }
 
 // One click: a new resume, and (unless "Resume only") its cover letter, written in the same job. "Add cover letter"
-// and "Rewrite cover letter" keep the resume made for this same job and base resume, and write only the letter.
+// and "Rewrite cover letter" keep the resume made for this same job and base resume, and write only the letter (a
+// changed job link is only recorded with the run: it is not in the resume or the letter).
 async function create(withLetter, keepResume = false) {
   const jd = readJd();
   if (!jd) return;
   $('#messages').replaceChildren();
+  const link = readLink();  // every button needs the job post's link, checked before any wait
+  if (!link) return;
   let company = $('#company').value.trim();
   const reuse = keepResume && current && current.jd === jd && current.profileId === chosenId()
     && current.spelling === spelling && current.company === company;  // a new style or company: made again
   if (!reuse) {
     const found = await companyFor(jd);
-    if (found.typed) {  // typed while the page looked for the name: the person checks it first
+    if (found.typed) {  // typed while the page looked for the name: the person checks the boxes first
       $('#messages').replaceChildren(notice('warn', CHECK_COMPANY));
       return;
     }
@@ -319,13 +325,13 @@ async function create(withLetter, keepResume = false) {
     if (!reuse) {
       startStep('resume');
       busy(true, stillWorking(0, null));
-      await tailorNow(jd, together, company);
+      await tailorNow(jd, together, company, link);
       endStep('resume', 'done');
     } else if (withLetter) {
       now = 'cover';
       startStep('cover');
       busy(true, stillWorking(0, null));
-      const run = await finished(await api(`/api/runs/${current.run.run_id}/cover-letter`, { method: 'POST', body: {} }),
+      const run = await finished(await api(`/api/runs/${current.run.run_id}/cover-letter`, { method: 'POST', body: { job_link: link } }),
         (waited, error) => busy(true, stillWorking(waited, error)));
       endStep('cover', 'done');
       timed = null;  // the run's saved timing is the tailoring's, not this letter's
@@ -355,12 +361,16 @@ async function create(withLetter, keepResume = false) {
 // Who is hiring, where the pasted job is done and what it pays, read by the AI once the text stops changing
 const FACTS_MIN_CHARS = 200, FACTS_WAIT_MS = 1200, FACTS_MAX_WAIT_MS = 12000, HEAD_CHARS = 80;
 const NO_COMPANY = 'Copy the company name from the job post into the Company box, exactly as the company writes it, then press the button again.';
-const CHECK_COMPANY = 'Check the company name in the Company box, then press the button again.';
+const CHECK_COMPANY = 'Check the Company and Job link boxes, then press the button again.';
+const MAX_LINK = 2000;  // as app/main.py MAX_JOB_LINK
+const NO_LINK = 'Paste the link of the job post into the Job link box (copy it from the address bar of the job post\'s page), then press the button again.';
+const BAD_LINK = 'The Job link box needs the web address of the job post, starting with https:// and up to 2,000 characters. Copy it from the address bar of the job post\'s page, then press the button again.';
 let factsTimer = null, factsChecked = '', factsAsked = 0, factsPending = null;
 let postHead = '';  // the opening of the job post in the job box, as last seen
 // The Company box's name belongs to one job post: the opening of that post ('' when it was typed with no post yet,
 // so it goes with the next one), and whether the check found it (a newer answer for the same post may replace it)
 let companyPost = '', companyFound = false;
+let linkPost = '';  // the same for the Job link box (only the person fills it)
 
 function factLine(label, value) {
   return el('p', { class: 'fact' }, el('strong', { text: `${label}: ` }), value);
@@ -386,6 +396,37 @@ function keepCompanyWithPost() {
   if (!companyPost || samePost(head, companyPost)) { companyPost = head; return; }
   box.value = ''; companyPost = ''; companyFound = false;
   companyNote(undefined);
+}
+
+// The job post's link as it is sent, checked as app/main.py checked_job_link does: '' when the box is empty, null when
+// it is no web address. https:// is added when it has none ('www.example.com/jobs/1').
+function linkOf(text) {
+  let link = text.trim();
+  if (!link) return '';
+  if (link.length > MAX_LINK || /[\s\\\p{C}]/u.test(link)) return null;
+  if (!link.split('/', 1)[0].includes(':')) link = 'https://' + link;
+  if (!/^https?:\/\//i.test(link)) return null;
+  let url;
+  try { url = new URL(link); } catch (err) { return null; }
+  return url.hostname.includes('.') ? link : null;
+}
+
+function readLink() {  // the link, or null after saying what is missing (the box gets the focus)
+  const link = linkOf($('#job-link').value);
+  if (link) return link;
+  $('#messages').replaceChildren(notice('warn', link === '' ? NO_LINK : BAD_LINK));
+  $('#job-link').focus();
+  return null;
+}
+
+// After the job box changed: a link entered with no post yet goes with this one; a link entered while another post
+// was there is cleared (nothing refills it, so the note says why), so an old job's link is never sent with this one
+function keepLinkWithPost() {
+  const box = $('#job-link'), head = headOf($('#jd').value);
+  if (!box.value.trim()) { linkPost = ''; return; }
+  if (!linkPost || samePost(head, linkPost)) { linkPost = head; return; }
+  box.value = ''; linkPost = '';
+  $('#job-link-note').textContent = 'The job post changed, so the Job link box was emptied: paste the link of this job post.';
 }
 
 // The check of this job post; the same post again (or while it is on its way) gives the same answer
@@ -422,7 +463,8 @@ function checkFacts() {
 
 // The company the resume is made for: { company: the box, or while it is empty, this post's check (started now if
 // the short wait after typing has not passed yet, and waited for at most FACTS_MAX_WAIT_MS; "" when the post names
-// none), typed: whether the person typed in the Company box meanwhile (then they check the name and press again) }.
+// none), typed: whether the person typed in the Company or Job link box meanwhile (then they check both and press
+// again) }.
 // While it waits, the job post cannot change (read-only, and undo waits too), so the name found is this post's.
 let waitingForCompany = false;
 async function companyFor(jd) {
@@ -432,13 +474,14 @@ async function companyFor(jd) {
   busy(true, 'Finding the company name in the job post…');
   let typed = false;
   const typing = () => { typed = true; };
-  box.addEventListener('input', typing);
+  const watched = [box, $('#job-link')];
+  for (const field of watched) field.addEventListener('input', typing);
   $('#jd').readOnly = waitingForCompany = true;
   try {
     await Promise.race([checkFacts(), new Promise(resolve => setTimeout(resolve, FACTS_MAX_WAIT_MS))]);
   } finally {
     $('#jd').readOnly = waitingForCompany = false;
-    box.removeEventListener('input', typing);
+    for (const field of watched) field.removeEventListener('input', typing);
     busy(false, '');
   }
   return { company: box.value.trim(), typed };
@@ -456,6 +499,7 @@ function postChanged() {
   }
   postHead = head;
   keepCompanyWithPost();
+  keepLinkWithPost();
   if ($('#jd').value.trim().length < FACTS_MIN_CHARS) {  // emptied or too short: nothing to show, nothing on its way
     factsAsked += 1; factsChecked = ''; factsPending = null;
     $('#jd-facts').replaceChildren();
@@ -469,6 +513,10 @@ $('#company').addEventListener('input', () => {  // a name typed here goes with 
   companyPost = $('#company').value.trim() ? headOf($('#jd').value) : '';
   companyFound = false;
   companyNote(undefined);
+});
+$('#job-link').addEventListener('input', () => {  // so does a link
+  linkPost = $('#job-link').value.trim() ? headOf($('#jd').value) : '';
+  $('#job-link-note').textContent = '';
 });
 // A job post the browser put back (some browsers before this script runs, others only by 'pageshow', after Back)
 if (headOf($('#jd').value)) postChanged();

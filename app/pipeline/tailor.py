@@ -294,6 +294,7 @@ async def run_tailor(
     cover_model_id: str | None = None,
     company_name: str = "",
     hiring_manager: str = "",
+    job_link: str = "",
     save: bool = True,
     user_id: int | None = None,
     spelling: str = "us",
@@ -321,9 +322,9 @@ async def run_tailor(
     document = "CV" if spelling == "eu" else "Resume"  # names the PDF in its title and language, as the preview does
     today = date.today()  # one date for the facts, the bullet budget and the stay lengths in the prompt
     facts = candidate_facts(profile, today)
-    result = TailorResult(
+    result = TailorResult(  # job_link (the post's address) is kept for History only: no prompt ever holds it
         requested_model=model_id, prompt_version=PROMPT_VERSION, hints=hints, facts=facts, company_name=company_name,
-        jd=jd, metrics_mode=metrics_mode, spelling=spelling,
+        job_link=job_link, jd=jd, metrics_mode=metrics_mode, spelling=spelling,
     )
     outcome: Outcome = Outcome()
     notes: list[str] = []
@@ -829,7 +830,7 @@ async def _write_letter(
 
 async def write_cover_letter(
     router: Router, db: Database, run_id: int, *, jd: str, model_id: str, user_id: int | None = None,
-    steps: Steps | None = None,
+    steps: Steps | None = None, job_link: str = "",
 ) -> tuple[TailorResult, str | None]:
     """Write (or rewrite) the cover letter of a saved run.
 
@@ -838,7 +839,8 @@ async def write_cover_letter(
     when the run itself is from an earlier day; the run only shows it in cover_cost_usd. The run is read again
     before saving so that edits made on the Review page in the meantime are kept. `steps` (optional) gets a mark at
     the end of each step, for the job's timing line in the server log. With the time limit on (Settings), a model is
-    waited for as long as for a resume.
+    waited for as long as for a resume. `job_link` (checked by the caller): the job post's link the page sent with
+    the request, recorded on the run (a corrected link); "" keeps the run's own.
     """
     steps = steps or Steps()
     base = db.get_run(run_id)
@@ -863,6 +865,8 @@ async def write_cover_letter(
     steps.mark("cost record")
     fresh = db.get_run(run_id) or base
     steps.mark("reading the run again")
+    if job_link:
+        fresh.job_link = job_link
     if letter is not None:
         fresh.cover_letter = letter  # replaces any earlier letter
     fresh.cover_cost_usd = round(fresh.cover_cost_usd + outcome.cost_usd, 6)

@@ -346,6 +346,9 @@ class TailorResult(BaseModel):
     hints: str = ""  # the user's own facts, kept so claim checks can be re-run after manual edits
     facts: str = ""  # facts computed from the profile (years of experience) that were given to the model
     company_name: str = ""  # company the user typed on the tailor form (wins over the one read from the JD)
+    # the job post's web address from the Tailor page (checked by the API: http or https only; "" for older runs and
+    # for API calls without one): kept for History and the job description file, never sent to the AI
+    job_link: str = ""
     jd: str = ""  # the job description this run was made for (a cover letter can be written later from it)
     metrics_mode: str = ""  # the "Numbers in bullets" setting the run was made with ("" for older runs)
     spelling: Literal["", "us", "eu"] = ""  # the Tailor page's US/EU style button ("" for older runs: US)

@@ -89,7 +89,8 @@ CREATE TABLE IF NOT EXISTS downloads (
     company TEXT NOT NULL DEFAULT '',
     role TEXT NOT NULL DEFAULT '',
     model TEXT NOT NULL DEFAULT '',
-    cost_usd REAL NOT NULL DEFAULT 0
+    cost_usd REAL NOT NULL DEFAULT 0,
+    job_link TEXT NOT NULL DEFAULT ''
 );
 CREATE INDEX IF NOT EXISTS downloads_created ON downloads(created_at);
 CREATE INDEX IF NOT EXISTS downloads_user ON downloads(user_id);
@@ -117,6 +118,7 @@ _PROFILE_COLUMNS = [
 ]
 _RUN_COLUMNS = [("user_id", "INTEGER")]
 _JOB_COLUMNS = [("beat_at", "TEXT NOT NULL DEFAULT ''")]
+_DOWNLOAD_COLUMNS = [("job_link", "TEXT NOT NULL DEFAULT ''")]
 
 
 def _add_column(conn: sqlite3.Connection, table: str, name: str, ddl: str) -> bool:
@@ -147,6 +149,8 @@ def _migrate(conn: sqlite3.Connection) -> None:
         _add_column(conn, "runs", name, ddl)
     for name, ddl in _JOB_COLUMNS:
         _add_column(conn, "jobs", name, ddl)
+    for name, ddl in _DOWNLOAD_COLUMNS:
+        _add_column(conn, "downloads", name, ddl)
     # only now that the columns exist on an older database too
     conn.execute("CREATE INDEX IF NOT EXISTS profiles_user ON profiles(user_id)")
     conn.execute("CREATE INDEX IF NOT EXISTS runs_user ON runs(user_id)")
@@ -563,16 +567,16 @@ class Database:
     # ------------------------------------------------------------------ download history
     def record_download(
         self, *, user_id: int, email: str, run_id: int, kind: str, format: str, filename: str, candidate: str,
-        company: str, role: str, model: str, cost_usd: float,
+        company: str, role: str, model: str, cost_usd: float, job_link: str = "",
     ) -> int:
-        """One row per click on a Download button. It copies what History shows, so the row stays readable
-        after its run passes the retention period."""
+        """One row per click on a Download button. It copies what History shows (the job post's link too), so the
+        row stays readable after its run passes the retention period."""
         with self._conn() as conn:
             cur = conn.execute(
                 "INSERT INTO downloads(created_at, user_id, email, run_id, kind, format, filename, candidate,"
-                " company, role, model, cost_usd) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)",
+                " company, role, model, cost_usd, job_link) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)",
                 (now_iso(), user_id, email, run_id, kind, format, filename, candidate, company, role, model,
-                 round(cost_usd, 6)),
+                 round(cost_usd, 6), job_link),
             )
             return int(cur.lastrowid)
 
@@ -592,7 +596,7 @@ class Database:
         with self._conn() as conn:
             rows = conn.execute(
                 "SELECT d.id, d.created_at, d.user_id, d.email, d.run_id, d.kind, d.format, d.filename, d.candidate,"
-                " d.company, d.role, d.model, d.cost_usd, r.id IS NOT NULL AS run_kept,"
+                " d.company, d.role, d.job_link, d.model, d.cost_usd, r.id IS NOT NULL AS run_kept,"
                 " CASE WHEN r.id IS NULL THEN 0 WHEN d.kind = 'cover_letter' THEN 1"
                 " ELSE instr(r.result, ?) > 0 END AS has_cover,"
                 " COALESCE(u.status, 'removed') AS account_status"

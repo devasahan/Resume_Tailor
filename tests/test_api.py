@@ -251,9 +251,10 @@ def test_runs_saved_before_the_company_field_still_load():
 
     old = _result().model_dump()
     del old["company_name"]
+    del old["job_link"]
     del old["analysis"]["company"]
     loaded = TailorResult.model_validate(old)
-    assert loaded.company_name == "" and loaded.analysis.company == ""
+    assert loaded.company_name == "" and loaded.analysis.company == "" and loaded.job_link == ""
 
 
 def test_download_headers(client):

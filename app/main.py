@@ -103,6 +103,7 @@ class TailorRequest(BaseModel):
     company_name: str = Field(default="", max_length=120)
     hiring_manager: str = Field(default="", max_length=120)
     spelling: Literal["us", "eu"] = "us"  # the US style / EU style (British spelling) buttons
+    job_link: str = Field(default="", max_length=2 * 2000)  # the job post's address (checked_job_link); optional here
 
 
 class EditRequest(BaseModel):
@@ -139,6 +140,7 @@ class CertificationTicks(BaseModel):
 class CoverRequest(BaseModel):
     # Only needed for runs saved before job descriptions were kept with the run.
     jd: str = Field(default="", max_length=20000)
+    job_link: str = Field(default="", max_length=2 * 2000)  # a corrected link for the run's History; "" keeps its own
 
 
 class CheckRequest(BaseModel):
@@ -252,6 +254,36 @@ def safe_next(target: str | None) -> str:
     if parts.scheme or parts.netloc or target.startswith(("/api/", "/static/", "/login", "/signup")):
         return ""
     return target
+
+
+MAX_JOB_LINK = 2000
+JOB_LINK_RULE = ("The job link must be the web address of the job post, starting with https:// (or http://), with no "
+                 f"spaces, up to {MAX_JOB_LINK:,} characters. Copy it from the address bar of the job post's page.")
+
+
+def checked_job_link(text: str) -> str:
+    """The job post's link as it is kept: trimmed, with https:// added when it has no scheme ('www.example.com/jobs/1')
+    and its scheme in small letters; '' when empty. Anything but an http or https address with a host name (a dot in
+    it) is refused (PlainError 422, JOB_LINK_RULE), because History shows it as a link: 'javascript:' and the like are
+    never stored. Spaces, backslashes and control or invisible characters are refused first, since a browser drops
+    some of them while it reads an address ('java', a tab, then 'script:' is javascript: to a browser)."""
+    link = text.strip()
+    if not link:
+        return ""
+    if len(link) > MAX_JOB_LINK or any(ch in " \\" or not ch.isprintable() for ch in link):
+        raise PlainError(422, JOB_LINK_RULE)
+    if ":" not in link.split("/", 1)[0]:  # no scheme: 'www.example.com/jobs/1', 'jobs.example.com/1'
+        link = "https://" + link
+    if not re.match(r"https?://", link, re.IGNORECASE):  # javascript:, data:, file:, ftp:, mailto:, 'https:host'
+        raise PlainError(422, JOB_LINK_RULE)
+    try:
+        parts = urlsplit(link)
+        _ = parts.port  # a port that is no number, or out of range
+    except ValueError:
+        raise PlainError(422, JOB_LINK_RULE) from None
+    if "." not in (parts.hostname or ""):
+        raise PlainError(422, JOB_LINK_RULE)
+    return parts.scheme + link[len(parts.scheme):]
 
 
 def profile_problem(profile: Profile) -> str | None:
@@ -495,9 +527,11 @@ def job_names(result: TailorResult) -> tuple[str, str]:
 
 
 def jd_text(result: TailorResult) -> str:
-    """A run's job description as plain text: one header line, then the text as it was pasted, or NO_JD."""
+    """A run's job description as plain text: a header line (and a 'Job link:' line when the run has one), then the
+    text as it was pasted, or NO_JD."""
     company, role = (" ".join(name.split()) or "-" for name in job_names(result))
-    return f"Company: {company} | Job title: {role}\n\n{result.jd.strip() or NO_JD}\n"
+    link = f"Job link: {result.job_link}\n" if result.job_link else ""
+    return f"Company: {company} | Job title: {role}\n{link}\n{result.jd.strip() or NO_JD}\n"
 
 
 def download_name(result: TailorResult, ext: str, cover: bool = False) -> str:
@@ -738,7 +772,7 @@ def create_app(db: Database | None = None, registry: Registry | None = None, rou
         db.record_download(
             user_id=user.id, email=user.email, run_id=run_id, kind=kind, format=fmt, filename=filename,
             candidate=result.resume.profile.name if result.resume else "",
-            company=company, role=role,
+            company=company, role=role, job_link=result.job_link,
             model=result.served_model or result.requested_model,
             cost_usd=result.cost_usd + result.cover_cost_usd,
         )
@@ -1158,6 +1192,7 @@ def create_app(db: Database | None = None, registry: Registry | None = None, rou
     # ------------------------------------------------------------------ tailor
     @app.post("/api/tailor")
     async def api_tailor(body: TailorRequest, user: auth.User = Depends(current_user)):
+        job_link = checked_job_link(body.job_link)  # before any work: a bad link changes nothing
         if body.profile_id is not None:
             chosen_profile = db.get_profile(body.profile_id, user_id=user.id)
             if chosen_profile is None:
@@ -1189,7 +1224,7 @@ def create_app(db: Database | None = None, registry: Registry | None = None, rou
             router, db, profile=profile, profile_id=profile_id, jd=body.jd, hints=body.hints, model_id=model_id,
             allow_fallback=not compare, cover_letter=body.cover_letter, cover_model_id=cover_model,
             company_name=body.company_name.strip(), hiring_manager=body.hiring_manager.strip(), user_id=user.id,
-            spelling=body.spelling, steps=steps,
+            spelling=body.spelling, steps=steps, job_link=job_link,
         ))
 
     @app.get("/api/jobs/{job_id}")
@@ -1314,8 +1349,10 @@ def create_app(db: Database | None = None, registry: Registry | None = None, rou
     @app.post("/api/runs/{run_id}/cover-letter")
     async def api_make_cover_letter(run_id: int, body: CoverRequest, user: auth.User = Depends(current_user)):
         """Write (or rewrite) the cover letter for a tailored resume. The JSON body is required on purpose:
-        a cross-site form cannot send one, so another website cannot spend money through this endpoint."""
+        a cross-site form cannot send one, so another website cannot spend money through this endpoint. A job link
+        in the body (the Tailor page sends its box) is recorded on the run, for History."""
         result = load_run(run_id, user, write=True)
+        job_link = checked_job_link(body.job_link)
         if result.status != "ok" or result.resume is None or result.analysis is None:
             raise HTTPException(409, "This run has no resume to write a cover letter from.")
         jd = result.jd or body.jd.strip()
@@ -1333,7 +1370,7 @@ def create_app(db: Database | None = None, registry: Registry | None = None, rou
 
         async def work(steps: timing.Steps) -> TailorResult:
             fresh, error = await write_cover_letter(router, db, run_id, jd=jd, model_id=model_id, user_id=user.id,
-                                                    steps=steps)
+                                                    steps=steps, job_link=job_link)
             if error:
                 raise JobFailed(error)
             return fresh

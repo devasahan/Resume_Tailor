@@ -44,7 +44,8 @@ h3 { font-size: 15px; margin: 14px 0 6px; }
 .muted { color: var(--muted); } .small { font-size: 13px; }
 .jd-facts { margin-top: 8px; } .jd-facts:empty { display: none; } .jd-facts .fact { margin: 2px 0; }
 .company-label { display: block; margin-top: 12px; }
-#company { width: 100%; margin-top: 4px; }
+#company, #job-link { width: 100%; margin-top: 4px; }
+.req { font-size: 12px; font-weight: 600; color: var(--bad); }  /* a box that must be filled: Company, Job link */
 #jd[readonly] { background: var(--chip); color: var(--muted); cursor: progress; }  /* while the company is looked up */
 .company-note { margin: 4px 0 0; } .company-note:empty { display: none; }
 .hidden { display: none !important; }

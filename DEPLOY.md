@@ -98,7 +98,8 @@ from app.wsgi import application  # noqa: E402
 5. **Settings**: Resume model = Gemini 3.8 Flash, Cover letter model = Same as the resume model > **Save settings**.
 6. **Profile**: upload your base resumes. The server starts empty; your PC's resumes are not copied.
 7. Test a user: open a private browser window, **Sign up** with another email, approve it on **Users**, log in
-   as that user, tailor once and download. The download appears on **History**.
+   as that user, tailor once (any `https://` address works as the Job link for a try) and download. The download
+   appears on **History**, with its job link.
 
 ## Updating to a new version
 In a Bash console:

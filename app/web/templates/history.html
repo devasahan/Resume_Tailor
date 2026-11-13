@@ -3,7 +3,7 @@
 {% block content %}
 <div class="page-head">
   <h1>History</h1>
-  <p class="sub" id="sub">Every click on a Download button, by every account, grouped by day in Texas time (Arlington). Previews are not counted. Type part of a company or job title to find a job; each row opens its resume, cover letter and job description.</p>
+  <p class="sub" id="sub">Every click on a Download button, by every account, grouped by day in Texas time (Arlington). Previews are not counted. Type part of a company or job title to find a job; each row links to its job post (Job link) and opens its resume, cover letter and job description.</p>
 </div>
 <div class="panel">
   <div class="row">
@@ -69,6 +69,16 @@ function opener(d, path, text) {  // a new tab; like a preview, it is not counte
   return el('div', {}, el('a', { href: `/api/runs/${d.run_id}/${path}`, target: '_blank', rel: 'noopener', text }));
 }
 
+// The job post's link, kept on the row: only an address that reads as http or https becomes a link (the site's name,
+// the whole address on hover); rows from before the link was kept show '-'
+function postLink(link) {
+  let url = null;
+  try { url = new URL(link); } catch (err) { /* empty, or no address */ }
+  if (!url || (url.protocol !== 'https:' && url.protocol !== 'http:')) return '-';
+  return el('a', { href: url.href, target: '_blank', rel: 'noopener noreferrer', title: url.href,
+    text: url.hostname.replace(/^www\./, '') });
+}
+
 function row(d) {
   const when = new Date(d.created_at);
   // an account that is no longer active keeps its rows, tagged: 'disabled', or 'removed' once it is deleted
@@ -76,7 +86,7 @@ function row(d) {
   return el('tr', {},
     el('td', { class: 'nowrap', text: isNaN(when) ? d.created_at : timeName.format(when) }),
     el('td', {}, d.email, tag ? ' ' : null, tag), el('td', { text: d.candidate || '-' }), el('td', { text: d.company || '-' }),
-    el('td', { text: d.role || '-' }),
+    el('td', { text: d.role || '-' }), el('td', {}, postLink(d.job_link)),
     el('td', {}, chip(`${FILES[d.kind] || d.kind} ${d.format.toUpperCase()}`, d.kind === 'cover_letter' ? 'ok' : ''),
       el('div', { class: 'small muted', text: d.filename })),
     el('td', { text: d.model || '-' }), el('td', { text: money(d.cost_usd) }),
@@ -96,7 +106,7 @@ function day(group, open, today, partial) {  // partial: older downloads of this
         text: `${counted(count.resume, 'resume', more)} · ${counted(count.cover_letter, 'cover letter', more)} · ${money(dayCost(group.items))}`
           + (partial ? ' (older ones not shown)' : '') })),
     el('div', { class: 'table-wrap' }, el('table', { class: 'wide' },
-      el('thead', {}, el('tr', {}, ['Time', 'Account', 'Resume of', 'Company', 'Job title', 'File', 'Model', 'Cost', 'Open'].map(h => el('th', { text: h })))),
+      el('thead', {}, el('tr', {}, ['Time', 'Account', 'Resume of', 'Company', 'Job title', 'Job link', 'File', 'Model', 'Cost', 'Open'].map(h => el('th', { text: h })))),
       el('tbody', {}, group.items.map(row)))));
 }
 
