@@ -620,21 +620,6 @@ def test_a_headline_before_two_spaces_is_no_part_of_the_town():
         assert parse_resume_text(f"Taylor Quinn\n{line}\n").contact.location == "Austin, TX", line
 
 
-def test_a_company_mark_under_a_title_shows_the_sections_order():
-    """'Title   dates' over 'Company | Place', every title one the rules do not know: a company mark under a title
-    (Inc., Ltd) shows that the titles stand over their companies, so each company is the employer, with its place."""
-    assert experience("Flight Attendant        11/2022 — 01/2024", "Proseware, Inc. | Seattle, WA", "Led a crew of 8.",
-                      "Special Education Paraprofessional        04/2020 — 09/2022",
-                      "Wingtip Toys Ltd | London, England", "Supported 12 students.",
-                      "Bank Teller        05/2014 — 01/2016", "Margie's Travel | London, England", "Opened accounts.",
-                      "Clinical Social Worker        01/2008 — 12/2010",
-                      "Lakeside Unified School District | Toronto, Ontario", "Ran the intake.") == [
-        ("Proseware, Inc.", "11/2022", "01/2024", "", "Seattle, WA"),
-        ("Wingtip Toys Ltd", "04/2020", "09/2022", "", "London, England"),
-        ("Margie's Travel", "05/2014", "01/2016", "", "London, England"),
-        ("Lakeside Unified School District", "01/2008", "12/2010", "", "Toronto, Ontario")]
-
-
 def test_a_bulleted_degree_or_certifications_line_is_read_without_its_mark():
     """A degree bulleted under its school, and 'Certifications: ...' bulleted in another section, as Word bullets and
     PDFs give them: the mark is no part of the degree, and the certifications are read."""
@@ -649,13 +634,66 @@ def test_a_bulleted_degree_or_certifications_line_is_read_without_its_mark():
         "AWS Certified Solutions Architect – Associate", "Certified ScrumMaster (CSM)"]
 
 
-def test_the_apps_job_line_with_one_date_and_a_title_holding_a_work_mode():
-    """The app's job line with one date ('Principal · Bluefin Analytics · Onsite   Feb 2022', two parts and a work mode
-    or place) is read even when the rules know neither part as a title; a line of one date without a place or mode
-    stays no job. A work-mode word inside the title ('Hybrid Cloud Engineer') is no work mode."""
-    assert experience("Data Analyst · Northwind Labs · Austin, TX   Mar 2022 – Present", "• Ran the reports.",
-                      "Principal · Bluefin Analytics · Onsite   Feb 2022", "• Ran the school.",
-                      "Hybrid Cloud Engineer · Contoso Systems · Seattle, WA   2016 – 2019", "• Moved it.") == [
-        ("Northwind Labs", "Mar 2022", "Present", "", "Austin, TX"), ("Bluefin Analytics", "", "Feb 2022", "Onsite", ""),
-        ("Contoso Systems", "2016", "2019", "", "Seattle, WA")]
-    assert experience("Award · Employee of the Year · 2021") == []
+def test_a_work_mode_after_a_dash_is_the_jobs_mode():
+    """'Northwind Labs - Remote · Senior Data Engineer', 'Senior Data Engineer - Remote · Northwind Labs': a work mode
+    joined to a part by a dash is the job's mode and no part of its employer, whichever part comes first and wherever
+    the dates are."""
+    for first, second in (("Northwind Labs - Remote · Senior Data Engineer", "Bluefin Commerce - Hybrid · Data Analyst"),
+                          ("Senior Data Engineer - Remote · Northwind Labs", "Data Analyst - Hybrid · Bluefin Commerce")):
+        for gap in ("   ", "\n"):
+            assert experience(f"{first}{gap}Jan 2021 – Present", "• Built the pipelines.",
+                              f"{second}{gap}Jun 2017 – Dec 2020", "• Wrote the reports.") == [
+                ("Northwind Labs", "Jan 2021", "Present", "Remote", ""),
+                ("Bluefin Commerce", "Jun 2017", "Dec 2020", "Hybrid", "")], (first, gap)
+
+
+def test_a_company_mark_outside_a_company_line_casts_no_vote():
+    """A company mark in an owner's line ('Owner, Rivera Landscaping LLC   dates', bullets under it) or in a title line
+    naming a client ('Data Analyst (client: Fabrikam Inc.)') shows nothing of the section's order, so the other jobs
+    keep their employers."""
+    assert [name for name, *_ in experience(
+        "Owner, Rivera Landscaping LLC   Jan 2021 – Present", "• Trained 12 new staff.",
+        "Special Education Instructional Aide   Jun 2017 – Dec 2020", "Lakeside Unified School District",
+        "• Trained 12 new staff.", "Store Manager   Jan 2014 – May 2017", "Wingtip Toys", "• Trained 12 new staff.")][1:] == [
+        "Lakeside Unified School District", "Wingtip Toys"]
+    assert [name for name, *_ in experience(
+        "Fourth Coffee   Jan 2021 – Present", "Barista", "• Trained 12 new staff.",
+        "Northwind Consulting   Jun 2017 – Dec 2020", "Data Analyst (client: Fabrikam Inc.)", "• Trained 12 new staff.",
+        "Contoso Bistro   Jan 2014 – May 2017", "Line Cook", "• Trained 12 new staff.")] == [
+        "Fourth Coffee", "Northwind Consulting", "Contoso Bistro"]
+
+
+def test_an_award_talk_or_tools_line_with_one_date_is_no_job():
+    """'Employee of the Year · Northwind Labs · Austin, TX   2022' under a job, a talk or a tools line: a line with one
+    date is a job line only when the rules know a title in it, so these add no employer."""
+    first = "Senior Data Engineer · Northwind Labs · Austin, TX   Jan 2021 – Present"
+    second = "Data Analyst · Bluefin Commerce · Dallas, TX   Jun 2017 – Dec 2020"
+    for line in ("Employee of the Year · Northwind Labs · Austin, TX   2022",
+                 "Hackathon Winner · Internal Data Week · Remote   2022", "Speaker · DataConf · Berlin, Germany   2022",
+                 "Tools · Python · SQL · Remote   2022"):
+        assert [name for name, *_ in experience(first, "• Built the pipelines.", line, second)] == [
+            "Northwind Labs", "Bluefin Commerce"], line
+
+
+def test_a_long_company_over_its_title_and_place_keeps_its_vote():
+    """A person's 'Lakeside Unified School District (Aug 2021 – Present)' over 'Staff Accountant · Austin, TX' (45
+    characters or more with ' · ' under it, like the app's line broken before its company) still shows a company over
+    its title, so the next long company over a title the rules do not know keeps its name."""
+    for dates in ("({})", "  {}", ", {}"):
+        assert [name for name, *_ in experience(
+            "Lakeside Unified School District " + dates.format("Aug 2021 – Present"), "Staff Accountant · Austin, TX",
+            "• Served 40 customers a day.",
+            "Contoso Children's Hospital Foundation " + dates.format("Jan 2019 – Jul 2021"),
+            "Clinical Social Worker · Seattle, WA", "• Served 40 customers a day.")] == [
+            "Lakeside Unified School District", "Contoso Children's Hospital Foundation"], dates
+
+
+def test_dot_lines_over_their_dates_do_not_make_a_section_the_apps():
+    """'Title · Company' lines over their dates vote the section's order, but they are a person's lines, not the app's:
+    a long company over a title the rules do not know in the same section keeps its name."""
+    assert [name for name, *_ in experience(
+        "Senior Data Engineer · Northwind Labs", "2021 – Present", "• Built the pipelines.",
+        "Data Analyst · Bluefin Commerce", "2019 – 2021", "• Built the reports.",
+        "Contoso Children's Hospital Foundation   2016 – 2019", "Clinical Social Worker",
+        "• Ran intake for 40 families a month.")] == [
+        "Northwind Labs", "Bluefin Commerce", "Contoso Children's Hospital Foundation"]

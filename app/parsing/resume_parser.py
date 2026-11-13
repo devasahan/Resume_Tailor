@@ -42,7 +42,7 @@ def _list_styles(doc) -> tuple[dict[str, tuple[bool, bool] | None], tuple[bool, 
     default_id = None
     try:
         elements = doc.styles.element.findall(qn("w:style"))
-    except (AttributeError, KeyError, ValueError):  # a styles part python-docx cannot read
+    except Exception:  # noqa: BLE001  any styles part python-docx cannot read: the text is still read, unmarked
         elements = []
     for element in elements:
         style_id = element.get(qn("w:styleId"))

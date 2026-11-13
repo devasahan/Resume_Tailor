@@ -8,7 +8,9 @@ the contact details, each employer (name, dates, work mode, place), each school 
 keeps no job titles (each run writes its own), so a title must never come back as an employer or a place.
 """
 import io
+import re
 import time
+import zipfile
 
 import pytest
 from docx import Document
@@ -418,24 +420,10 @@ def every_render(resume: Resume) -> dict[str, str]:
     return texts
 
 
-LONG_TITLE = ("Customer Experience Associate for Premium Accounts, Loyalty Programs and In-Store Events Across Three "
-              "Locations")
-
-
-def test_long_titles_over_their_companies_read_back():
-    """The app breaks a long title's line before its company. One such line over an employer named like a role
-    ('Chief Tailspin Outfitters', a known limit) no longer turns the section's other long titles into employers; and
-    a company with no place or work mode under a broken line keeps its name when the section's broken lines show the
-    app's layout. (At the design's sizes the 83-character title wraps, and its last word is read as the employer.)"""
-    lakeside = Company(name="Lakeside Unified School District", start="2016", end="2019", location="Paris, France")
-    fourth = Company(name="Fourth Coffee", start="2014", end="2016")
-    resume = small_resume([
-        ("Head of Platform Engineering, Developer Experience, Observability and Site Reliability",
-         Company(name="Chief Tailspin Outfitters", start="2019", end="Present", location="London, UK", mode="Remote")),
-        (LONG_TITLE, lakeside), ("Sales Associate", fourth)])
-    for label, text in every_render(resume).items():
-        assert [c.model_dump() for c in parse_resume_text(text).companies[1:]] == [
-            lakeside.model_dump(), fourth.model_dump()], label
+def test_a_company_with_no_place_under_a_broken_line_keeps_its_name():
+    """When every job line breaks before its company (titles too long for the line beside their dates), a company with
+    no place or work mode under the first title keeps its name: the section's broken lines show the app's layout. (At
+    the design's sizes the 83-character title wraps, and its last word is read as the employer.)"""
     northwind = Company(name="Northwind Labs", start="11/2022", end="Present")
     resume = small_resume([
         ("Lead Teacher for Early Childhood Literacy and Bilingual Family Engagement Programs", northwind),
@@ -446,14 +434,20 @@ def test_long_titles_over_their_companies_read_back():
             assert parse_resume_text(text).companies[0].model_dump() == northwind.model_dump(), label
 
 
-def test_the_apps_job_with_one_date_and_a_title_holding_a_work_mode_read_back():
-    """A job with only its end date ('Principal · Bluefin Analytics · Onsite   Feb 2022') is read back with that
-    date, although the rules know neither part as a title; 'Hybrid Cloud Engineer' gives a job with no work mode none."""
-    jobs = [("Data Analyst", Company(name="Northwind Labs", start="Mar 2022", end="Present", location="Austin, TX")),
-            ("Principal", Company(name="Bluefin Analytics", start="", end="Feb 2022", mode="Onsite")),
-            ("Hybrid Cloud Engineer", Company(name="Contoso Systems", start="2016", end="2019", location="Seattle, WA"))]
-    resume = small_resume(jobs)
-    for label, text in (("PDF", extract_text(render_resume_pdf(resume, styles("Letter")[0])[0], "resume.pdf")),
-                        ("Word", extract_text(resume_docx(resume, styles("Letter")[0]), "resume.docx"))):
-        assert [c.model_dump() for c in parse_resume_text(text).companies] == [
-            company.model_dump() for _title, company in jobs], label
+def test_a_word_file_whose_styles_link_points_at_the_document_is_still_read():
+    """A Word file whose styles relationship points at the document itself makes python-docx call itself without end:
+    the styles are then left unread (no marks), and the upload is read, not answered with a server error."""
+    document = word_resume(("EXPERIENCE", None, None), ("Northwind Labs | Data Engineer\t2019 – Present", None, None),
+                           ("Built the reporting pipeline.", "List Bullet", None))
+    data = io.BytesIO()
+    document.save(data)
+    source, edited = zipfile.ZipFile(io.BytesIO(data.getvalue())), io.BytesIO()
+    with zipfile.ZipFile(edited, "w", zipfile.ZIP_DEFLATED) as target:
+        for item in source.infolist():
+            body = source.read(item.filename)
+            if item.filename == "word/_rels/document.xml.rels":
+                body, count = re.subn(rb'Target="styles\.xml"', b'Target="document.xml"', body)
+                assert count == 1
+            target.writestr(item.filename, body)
+    text = extract_text(edited.getvalue(), "resume.docx")
+    assert [c.name for c in parse_resume_text(text).companies] == ["Northwind Labs"]

@@ -295,10 +295,7 @@ def _job_dates(line: str) -> tuple[str, str, str] | None:
         start, end = match.group(1).strip(), match.group(2).strip()
     else:
         lone = _LONE_DATE.search(line)
-        prefix = line[: lone.start()] if lone else ""
-        kept, place, mode = _job_parts(prefix) if _DOT.search(prefix) else ([], "", "")
-        app_line = len(kept) >= 2 and bool(place or mode)  # the app's 'Title · Company · Place · Mode   Feb 2022'
-        if not lone or _LIST_MARK.match(line) or not (_titled_job_line(prefix) or app_line):
+        if not lone or _LIST_MARK.match(line) or not _titled_job_line(line[: lone.start()]):
             return None
         rest, start, end = line[: lone.start()].strip(" ,;|-–—•·()"), "", lone.group(1).strip()
     return rest, start, "Present" if end.lower() in _PRESENT else end
@@ -315,9 +312,6 @@ def _job_parts(text: str) -> tuple[list[str], str, str]:
     named: list[str] = []
     for part in (p.strip(" ,()") for p in (_DOT if dotted else SEPARATOR_RE).split(text)):
         found = MODE_RE.search(part)
-        if found and dotted and not named and _MODE_WORD.sub("", part).strip(" ,-()") and not re.search(
-                r"(?:\(|,)\s*(?:Remote|On-?site|Hybrid)\b", part, re.IGNORECASE):
-            found = None  # a title holding a mode word ('Hybrid Cloud Engineer'), not the job's mode
         if found:
             mode = _normalize_mode(found.group(1))
             part = _MODE_WORD.sub("", part).strip(" ,-()")
@@ -399,17 +393,11 @@ def _stacked_order(part: str, under: str) -> int:
     """How a dated line holding one part and the line under it plainly read: 1 a title over its company ('Senior Data
     Engineer   2019 – 2021' over 'Northwind Labs'), -1 a company over its title ('Northwind Labs   2019 – 2021' over
     'Senior Data Engineer'), 0 when neither reads as a title."""
-    if COMPANY_MARK_RE.search(part):
-        return -1
     if _reads_as_title(part):
         rest = _rest_of_job_line(under, need_company=True)
         return 1 if rest and rest[0] else 0
     if _job_dates(under) is None and not _LIST_MARK.match(under):
-        first = SEPARATOR_RE.split(under, maxsplit=1)[0]
-        if COMPANY_MARK_RE.search(first):  # a company under its title
-            return 1
-        app_break = len(part) + len(first) >= 45 and _DOT.search(under)  # the app's line broken before its company
-        return -1 if _reads_as_title(first) and not app_break else 0
+        return -1 if _reads_as_title(SEPARATOR_RE.split(under, maxsplit=1)[0]) else 0
     return 0
 
 
@@ -418,6 +406,7 @@ class _Layout(NamedTuple):
     dots: int  # its ' · ' job lines: > 0 the title first, < 0 the company first, 0 when no line decides or tied
     dotted: bool  # True when it has a dated ' · ' line
     stacks: int  # its dated lines holding one part: > 0 a title over its company, < 0 a company over its title
+    own: int = 0  # the part of `dots` voted by ' · ' lines with their dates on the next line (never the app's)
 
 
 def _broken_app_line(kept: list[str], dotted: bool, under: str) -> bool:
@@ -440,12 +429,13 @@ def _section_layout(lines: list[str]) -> _Layout:
     Present'). The app's lines too long for the page vote for the title first too (see _broken_app_line), so one line
     whose employer reads as a title ('Principal · Bluefin Coach') does not turn the app's other lines around. Its dated
     lines holding a title or a company alone (see _stacked_order) have the other under them."""
-    dots, dotted, stacks = 0, False, 0
+    dots, dotted, stacks, own = 0, False, 0, 0
     for index, (line, under) in enumerate(zip(lines, [*lines[1:], ""])):
         dates = _job_dates(line)
         if dates and not dates[0] and index and _DOT.search(lines[index - 1]):  # dates alone under a ' · ' line
             above = _job_parts(lines[index - 1].strip(" ,|-–—•·"))[0]
-            dots += _plain_order(above[0], above[1]) if len(above) > 1 else 0
+            vote = _plain_order(above[0], above[1]) if len(above) > 1 else 0
+            dots, own = dots + vote, own + vote
             continue
         kept, location, mode = _job_parts(dates[0]) if dates and dates[0] else ([], "", "")
         dotted_line = bool(dates and _DOT.search(dates[0]))
@@ -456,7 +446,7 @@ def _section_layout(lines: list[str]) -> _Layout:
             stacks += _stacked_order(kept[0], under)
         if kept and not (location or mode) and _broken_app_line(kept, dotted_line, under):
             dots += 1
-    return _Layout(dots, dotted, stacks)
+    return _Layout(dots, dotted, stacks, own)
 
 
 def _parse_company_line(line: str, previous: str | None, below: list[str], company_above: bool,
@@ -526,7 +516,8 @@ def _parse_company_line(line: str, previous: str | None, below: list[str], compa
     if layout.stacks:
         title_over = layout.stacks > 0
     else:
-        app_lines = layout.dotted or layout.dots > 0 or bool(_DOT.search(below[taken - 1] if below else ""))
+        # the app's lines: its dated ' · ' lines, or its broken lines' votes (not a person's ' · ' lines over dates)
+        app_lines = layout.dotted or layout.dots - layout.own > 0 or bool(_DOT.search(below[taken - 1] if below else ""))
         title_over = app_lines and len(kept[0]) + len(rest[0] if rest else "") >= 45
     if not title_first and not (
             title_over and layout.dots >= 0 and rest and rest[0] and not (location or mode) and _capitalized(kept[0])
