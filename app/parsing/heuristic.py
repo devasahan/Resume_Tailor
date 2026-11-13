@@ -572,8 +572,8 @@ def _read_companies(lines: list[str]) -> list[Company]:
 
 
 def _take_dates(line: str) -> tuple[str, str, str]:
-    """(the line without its dates, start, end), months kept: 'Fontbonne University Aug 2016 – Aug 2020' ->
-    ('Fontbonne University', 'Aug 2016', 'Aug 2020'). One date is the end ('May 2020', graduation)."""
+    """(the line without its dates, start, end), months kept: 'Lakeside University Aug 2016 – Aug 2020' ->
+    ('Lakeside University', 'Aug 2016', 'Aug 2020'). One date is the end ('May 2020', graduation)."""
     match = DATE_RANGE_RE.search(line)
     if match:
         end = match.group(2).strip()

@@ -32,15 +32,15 @@ TODAY = date(2026, 10, 12)
 
 def five_jobs(n=5) -> Profile:
     companies = [
-        Company(name="Lindy", start="Feb 2025", end="Present", mode="Remote"),
-        Company(name="Acquire.com", start="Jul 2024", end="Feb 2025", mode="Remote"),
-        Company(name="Orbital Education", start="Jun 2021", end="Jun 2024", mode="Remote"),
-        Company(name="Q2 Holdings", start="May 2020", end="May 2021", mode="Onsite", location="Austin, TX"),
+        Company(name="Northwind Labs", start="Feb 2025", end="Present", mode="Remote"),
+        Company(name="Bluefin.com", start="Jul 2024", end="Feb 2025", mode="Remote"),
+        Company(name="Contoso Education", start="Jun 2021", end="Jun 2024", mode="Remote"),
+        Company(name="Fabrikam Holdings", start="May 2020", end="May 2021", mode="Onsite", location="Austin, TX"),
         Company(name="Earlier Co", start="Jun 2018", end="Apr 2020", mode="Onsite"),
     ][:n]
     return Profile(
-        name="JUAN DANIEL RAMIREZ",
-        contact=Contact(email="juan@example.com", phone="(555) 010-2030", linkedin="linkedin.com/in/juan-ramirez",
+        name="TAYLOR QUINN BROOKS",
+        contact=Contact(email="taylor@example.com", phone="(555) 010-2030", linkedin="linkedin.com/in/taylor-quinn",
                         location="Texas, United States"),
         companies=companies,
         education=[Education(school="University of Texas at Austin", degree="B.S.", field="Computer Science", end="2018")],
@@ -50,7 +50,8 @@ def five_jobs(n=5) -> Profile:
 # ------------------------------------------------------------------ bullet budget
 def test_caps_follow_recency_and_length_of_stay():
     profile = five_jobs()
-    # Lindy 1 yr 9 mo -> 5; Acquire.com 8 months -> 3; Orbital 3 years -> its recency cap 5; Q2 13 months -> 4
+    # Northwind Labs 1 yr 9 mo -> 5; Bluefin.com 8 months -> 3; Contoso Education 3 years -> its recency cap 5;
+    # Fabrikam Holdings 13 months -> 4
     assert bullet_caps(profile.companies, TODAY) == [5, 3, 5, 4, 3]
     short = [Company(name="A", start="Jun 2026", end="Present"), Company(name="B", start="", end="")]
     assert bullet_caps(short, TODAY) == [2, 6]  # 5 months -> 2; unreadable dates -> no reduction
@@ -108,9 +109,9 @@ def test_smaller_budget_takes_from_every_long_role_and_at_least_two():
 def test_prompt_states_the_bullet_count_per_employer():
     profile = five_jobs(3)
     text = tailor_user("A job description", profile.companies, "", bullets=[5, 3, 2], today=TODAY)
-    assert ("0: Lindy | Feb 2025 - Present (current role) | Remote | 1 yr 9 mo stay, 3 yrs 8 mo of experience "
+    assert ("0: Northwind Labs | Feb 2025 - Present (current role) | Remote | 1 yr 9 mo stay, 3 yrs 8 mo of experience "
             "before it | write exactly 5 bullets") in text
-    assert "2: Orbital Education | Jun 2021 - Jun 2024 | Remote | 3 yrs 1 mo stay, first job | write exactly 2 bullets" in text
+    assert "2: Contoso Education | Jun 2021 - Jun 2024 | Remote | 3 yrs 1 mo stay, first job | write exactly 2 bullets" in text
 
 
 def test_rules_ask_for_specific_bullets_and_a_full_summary():

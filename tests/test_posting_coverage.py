@@ -35,12 +35,12 @@ TODAY = date(2026, 10, 12)
 def test_long_stays_get_bullets_before_short_recent_ones():
     profile = five_jobs(5)
     order = extra_order(profile, bullet_caps(profile.companies, TODAY), TODAY)
-    assert order.index((2, 3)) < order.index((1, 3))  # Orbital Education (3 yrs 1 mo) before Acquire.com (8 mo)
+    assert order.index((2, 3)) < order.index((1, 3))  # Contoso Education (3 yrs 1 mo) before Bluefin.com (8 mo)
     assert bullet_budget(profile, today=TODAY) == [5, 3, 5, 4, 3]  # two pages hold every cap
     older = [Company(name=f"Old {i}", start=f"Jun {2016 - 2 * i}", end=f"May {2018 - 2 * i}") for i in range(10)]
     long = profile.model_copy(update={"companies": profile.companies + older})  # 15 jobs: two pages run out
     assert bullet_budget(long, today=TODAY) == [4, 2, 3, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2]
-    # the long stay at Orbital Education keeps more than the newer 8-month job at Acquire.com
+    # the long stay at Contoso Education keeps more than the newer 8-month job at Bluefin.com
 
 
 def test_stay_and_experience_before_are_computed_with_overlaps_counted_once():
@@ -194,13 +194,13 @@ def _with_titles(titles):
 
 
 def test_a_title_that_steps_down_is_raised_to_the_level_before_it():
-    # the reported case: Orbital 'Software Engineer II', then Acquire.com plain 'Software Engineer'
+    # the reported case: Contoso Education 'Software Engineer II', then Bluefin.com plain 'Software Engineer'
     resume = _with_titles(["Backend Engineer", "Software Engineer", "Software Engineer II", "Software Engineer",
                            "Junior Software Engineer"])
     notes = validate.fix_title_regressions(resume)
     assert [e.job_title for e in resume.experience] == [
         "Backend Engineer", "Software Engineer II", "Software Engineer II", "Software Engineer", "Junior Software Engineer"]
-    assert notes == [("Acquire.com: title changed from 'Software Engineer' to 'Software Engineer II' so the career "
+    assert notes == [("Bluefin.com: title changed from 'Software Engineer' to 'Software Engineer II' so the career "
                       "path never steps down.")]
     assert validate.title_growth_problems(resume) == [] or "step down" not in validate.title_growth_problems(resume)[0]
 
@@ -244,7 +244,7 @@ class TitlesOff(LLMClient):
 
 
 def test_step_down_titles_are_fixed_without_an_extra_call(router, db, registry, jd):
-    # the reported case: Orbital Education 'Software Engineer II', then Acquire.com (8 months) 'Software Engineer'
+    # the reported case: Contoso Education 'Software Engineer II', then Bluefin.com (8 months) 'Software Engineer'
     client = TitlesOff(FakeClient(registry.get("demo-concise")))
     router.overrides["demo-concise"] = client
     result = asyncio.run(run_tailor(router, db, profile=five_jobs(3), profile_id=None, jd=jd, model_id="demo-concise"))
@@ -288,33 +288,35 @@ def test_runs_keep_the_plan_and_old_runs_still_load(router, db, profile, jd):
 def test_tools_that_did_not_exist_yet_are_flagged():
     resume = _with_titles(["Backend Engineer", "Software Engineer II", "Software Engineer", "Software Engineer",
                            "Junior Software Engineer"])
-    # five_jobs: Lindy (current), Acquire.com (ends Feb 2025), Orbital (ends Jun 2024), Q2 (ends May 2021), Earlier Co (ends Apr 2020)
+    # five_jobs: Northwind Labs (current), Bluefin.com (ends Feb 2025), Contoso Education (ends Jun 2024),
+    # Fabrikam Holdings (ends May 2021), Earlier Co (ends Apr 2020)
     resume.experience[0].bullets = ["Use agentic development and OpenTofu for every release of the platform"]
     resume.experience[2].bullets = ["Moved the infrastructure to OpenTofu and Helm charts on Amazon EKS"]
     resume.experience[3].bullets = ["Managed AWS with OpenTofu and took the helm of the release process"]
     resume.experience[4].bullets = ["Explored agentic development and GitHub Actions for the mobile team"]
     problems = validate.era_problems(resume)
     assert problems == [
-        "Q2 Holdings (May 2020 - May 2021) mentions OpenTofu, which only became common in 2024.",
+        "Fabrikam Holdings (May 2020 - May 2021) mentions OpenTofu, which only became common in 2024.",
         "Earlier Co (Jun 2018 - Apr 2020) mentions agentic: AI tools belong only to the most recent one or two jobs.",
-    ]  # fine: the current job, OpenTofu at Orbital (ends 2024), 'took the helm', GitHub Actions at a job ending 2020
+    ]  # fine: the current job, OpenTofu at Contoso Education (ends 2024), 'took the helm', GitHub Actions at a job ending 2020
 
 
 def test_ai_tools_only_at_the_latest_one_or_two_jobs_and_once_they_were_popular():
     titles = ["Backend Engineer", "Software Engineer II", "Software Engineer", "Software Engineer",
               "Junior Software Engineer"]
-    # five_jobs: Lindy (current), Acquire.com (ends Feb 2025), Orbital (ends Jun 2024), Q2 (ends May 2021), Earlier Co
+    # five_jobs: Northwind Labs (current), Bluefin.com (ends Feb 2025), Contoso Education (ends Jun 2024),
+    # Fabrikam Holdings (ends May 2021), Earlier Co
     resume = _with_titles(titles)
     resume.experience[0].bullets = ["Use agentic development and LLM evaluations every day"]
     resume.experience[1].bullets = ["Built LLM features and coding agent workflows for the listings team"]
     resume.experience[2].bullets = ["Added an LLM summary to the reporting service for teachers"]
     problems = validate.era_problems(resume)
     assert problems == [
-        "Orbital Education (Jun 2021 - Jun 2024) mentions LLM: AI tools belong only to the most recent one or two jobs."
+        "Contoso Education (Jun 2021 - Jun 2024) mentions LLM: AI tools belong only to the most recent one or two jobs."
     ]  # LLM (2023) and coding agents (2025) are fine at a job ending 2025; anything goes at the current job
     resume.profile.companies[1].end = "Dec 2024"  # the 2nd job now ends before coding agents were popular
     assert validate.era_problems(resume)[0] == (
-        "Acquire.com (Jul 2024 - Dec 2024) mentions coding agent, which only became common in 2025.")
+        "Bluefin.com (Jul 2024 - Dec 2024) mentions coding agent, which only became common in 2025.")
 
 
 def test_other_tools_count_from_when_they_became_common():
@@ -322,7 +324,7 @@ def test_other_tools_count_from_when_they_became_common():
     resume.profile.companies[2].end = "Dec 2019"
     resume.experience[2].bullets = ["Set up GitHub Actions pipelines for every service"]
     assert validate.era_problems(resume) == [
-        "Orbital Education (Jun 2021 - Dec 2019) mentions GitHub Actions, which only became common in 2020."]
+        "Contoso Education (Jun 2021 - Dec 2019) mentions GitHub Actions, which only became common in 2020."]
     resume.profile.companies[2].end = "Dec 2020"
     assert validate.era_problems(resume) == []
 

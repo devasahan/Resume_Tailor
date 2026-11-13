@@ -116,7 +116,7 @@ class CareerStep(BaseModel):
     # Decided first, so the bullets describe work on what that company really offered at the time.
     product: str = Field("", description=(
         "the employer's main product or service during this job's dates, as the company itself names and describes "
-        "it (for example \"Acquire.com's marketplace for buying and selling startups\"); \"\" if you do not know "
+        "it (for example \"Bluefin Commerce's marketplace for buying and selling small online stores\"); \"\" if you do not know "
         "this company"))
     focus: list[str] = Field(description="3-6 of the job description's skills or responsibilities this job shows, in its words")
     scope: str = Field(description="implemented, built, designed, owned or led")

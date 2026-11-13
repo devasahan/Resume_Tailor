@@ -20,10 +20,10 @@ from .test_validate import make_output
 
 # ------------------------------------------------------------------ LinkedIn / website not clickable
 @pytest.mark.parametrize("raw,shown", [
-    ("https://www.linkedin.com/in/juan-ramirez-127360365/", "linkedin.com/in/juan-ramirez-127360365"),
-    ("www.linkedin.com/in/juan/", "linkedin.com/in/juan"),
+    ("https://www.linkedin.com/in/taylor-quinn-127360365/", "linkedin.com/in/taylor-quinn-127360365"),
+    ("www.linkedin.com/in/taylor/", "linkedin.com/in/taylor"),
     ("HTTP://WWW.Example.com/me", "Example.com/me"),
-    ("linkedin.com/in/juan", "linkedin.com/in/juan"),
+    ("linkedin.com/in/taylor", "linkedin.com/in/taylor"),
     ("", ""),
 ])
 def test_display_url(raw, shown):
@@ -32,18 +32,18 @@ def test_display_url(raw, shown):
 
 def test_pdf_has_no_link_and_no_auto_link_prefix(profile):
     fancy = profile.model_copy(deep=True)
-    fancy.contact.linkedin = "https://www.linkedin.com/in/juan-ramirez-127360365/"
+    fancy.contact.linkedin = "https://www.linkedin.com/in/taylor-quinn-127360365/"
     fancy.contact.website = "https://portfolio.example.com/"
     resume = validate.build_resume(fancy, make_output())
     pdf = render_resume_pdf(resume, FitStyle())[0]
     page = PdfReader(io.BytesIO(pdf)).pages[0]
     text = page.extract_text()
     assert page.get("/Annots") is None  # the file itself contains no links
-    assert "linkedin.com/in/juan-ramirez-127360365" in text and "portfolio.example.com" in text
+    assert "linkedin.com/in/taylor-quinn-127360365" in text and "portfolio.example.com" in text
     assert "www." not in text and "http" not in text  # what PDF viewers turn into links on their own
     docx_text = "\n".join(p.text for p in Document(io.BytesIO(resume_docx(resume, FitStyle()))).paragraphs)
-    assert "linkedin.com/in/juan-ramirez-127360365" in docx_text and "www." not in docx_text
-    assert resume.profile.contact.linkedin == "https://www.linkedin.com/in/juan-ramirez-127360365/"  # stored value unchanged
+    assert "linkedin.com/in/taylor-quinn-127360365" in docx_text and "www." not in docx_text
+    assert resume.profile.contact.linkedin == "https://www.linkedin.com/in/taylor-quinn-127360365/"  # stored value unchanged
 
 
 # ------------------------------------------------------------------ fewer metrics

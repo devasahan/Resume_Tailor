@@ -155,7 +155,7 @@ def contact_line(contact: Contact) -> str:
 
 
 def person_name(name: str) -> str:
-    """Normal capitals for a name written all in capitals (or all small): 'JUAN DANIEL RAMIREZ' -> 'Juan Daniel Ramirez'.
+    """Normal capitals for a name written all in capitals (or all small): 'TAYLOR QUINN BROOKS' -> 'Taylor Quinn Brooks'.
     A name that already mixes them ('Ann McDonald') stays as it is."""
     return name.title() if name.isupper() or name.islower() else name
 

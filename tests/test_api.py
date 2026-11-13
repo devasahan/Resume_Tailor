@@ -199,7 +199,7 @@ def test_cross_site_style_requests_cannot_use_a_non_json_content_type(client):
 
 
 @pytest.mark.parametrize("text,expected", [
-    ("JUAN DANIEL RAMIREZ", "JUAN_DANIEL_RAMIREZ"),
+    ("TAYLOR QUINN BROOKS", "TAYLOR_QUINN_BROOKS"),
     ("José Álvarez-Łukasz", "Jose_Alvarez_ukasz"),
     ("王小明", ""),
     ("O'Brien, Ann", "O_Brien_Ann"),
@@ -239,7 +239,7 @@ def test_download_name_is_the_usual_name_then_document_pattern():
     assert download_name(typed, "docx") == "Jordan_Rivera_Resume.docx"
     assert download_name(typed, "pdf", cover=True) == "Jordan_Rivera_Cover_Letter.pdf"
     # a name written in capitals gets normal capitals; accents and symbols as in file_part
-    assert download_name(_result(name="JUAN DANIEL RAMIREZ"), "pdf") == "Juan_Daniel_Ramirez_Resume.pdf"
+    assert download_name(_result(name="TAYLOR QUINN BROOKS"), "pdf") == "Taylor_Quinn_Brooks_Resume.pdf"
     assert download_name(_result(name="josé o'brien-smith"), "pdf") == "Jose_O_Brien_Smith_Resume.pdf"
     assert download_name(_result(name="Ann McDonald"), "pdf") == "Ann_McDonald_Resume.pdf"
     # no usable name: only the document
