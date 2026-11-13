@@ -12,12 +12,13 @@
 The restyle changes only the look. The bullet plan and the page count are still worked out on the layout from before
 it (old_layout: Carlito on five steps from 10.5 to 9.5 pt, measured without drawing), so every plan is the one made
 then and no resume takes more pages than it did. The size ladder starts with the design's own sizes; the steps after it
-hold about as much text per page as the old steps, and the last one (8 pt with the gaps brought closer, COMPACT, and
-the skills in line) at least as much as the old 9.5 pt. Runs saved before the restyle hold an old step: current_style
-and saved_resume_pdf show them in the new look.
+hold about as much text per page as the old steps, and the last two (8 pt with the gaps brought closer, COMPACT, then
+also the skills in line), whichever holds more, at least as much as the old 9.5 pt on ordinary text. Runs saved before
+the restyle hold an old step: current_style and saved_resume_pdf show them in the new look.
 """
 from __future__ import annotations
 
+from collections.abc import Callable
 from datetime import date
 from functools import lru_cache
 
@@ -64,7 +65,10 @@ LADDER = [
 # The very last step is this one with each skills label in line with its values (FitStyle.inline_skills), which then
 # wrap across the full width as they did before the restyle, not in the design's narrower column: a very large skills
 # section (eight rows of a dozen items or more) takes more lines in the column than it did then. It comes last so the
-# column stays wherever it keeps the pages; in line never takes more lines than the column, so it holds as much.
+# column stays wherever it keeps the pages. In line usually takes no more lines than the column, but a row can take one
+# more when its first item is a long run with no space (a list typed with slashes): too wide for the rest of the
+# label's line, it moves whole to the next line, where the column splits it. So when no step fits, whichever of the two
+# last steps holds more is the floor: trim_to_fit, render_smallest and saved_resume_pdf try both.
 COMPACT = 0.75
 CALIBRATED = 1  # LADDER[CALIBRATED + i] holds about as much as OLD_LADDER[i]: only a step below it is noted
 OLD_LADDER = [(10.5, 0.65), (10.25, 0.6), (10.0, 0.55), (9.75, 0.5), (9.5, 0.5)]  # (pt, in) before the restyle
@@ -267,8 +271,11 @@ def try_styles(resume: Resume, paper: str = "Letter",
 
 
 def render_smallest(resume: Resume, paper: str = "Letter", document: str = "Resume") -> tuple[FitStyle, int, bytes]:
-    style = styles(paper)[-1]
-    pdf, pages = render_resume_pdf(resume, style, document)
+    """The resume at the smallest size, for one no step fits: of the last two steps (the compact one, then with the
+    skills in line), the one with fewer pages, the compact step on a tie (see COMPACT)."""
+    sheets = [(style, resume_sheet(resume, style, document)) for style in styles(paper)[len(LADDER):]]
+    style, sheet = min(sheets, key=lambda laid_out: laid_out[1].pdf.page)  # min keeps the first on a tie
+    pdf, pages = sheet.finish()
     return style, pages, pdf
 
 
@@ -298,14 +305,17 @@ MAX_REMOVED_IN_NOTE = 5
 def trim_to_fit(resume: Resume, paper: str = "Letter",
                 document: str = "Resume") -> tuple[Resume, FitStyle, int, bytes, list[str]]:
     """Remove bullets until the resume fits on MAX_PAGES pages (or nothing more can be removed). Works on a copy.
-    Fewer bullets never take more room, so the fewest removals that fit are found by halving (a few layouts, not
-    one per removed bullet). Each job keeps its first 2 bullets, and the headline, summary, skills and titles stay
-    as they are (a cover letter written from them meanwhile stays true). `document`: as in try_styles."""
-    order, smallest, seen = _removal_order(resume), styles(paper)[-1], {}
+    Fewer bullets never take more room, so the fewest removals that fit at either of the last two steps (whichever holds
+    more, see COMPACT) are found by halving (a few layouts, not one per removed bullet). Each job keeps its first 2
+    bullets, and the headline, summary, skills and titles stay as they are (a cover letter written from them meanwhile
+    stays true). `document`: as in try_styles."""
+    order, seen = _removal_order(resume), {}
+    compact, in_line = styles(paper)[len(LADDER):]
 
     def fits(k: int) -> bool:
         if k not in seen:
-            seen[k] = resume_layout(_without(resume, order, k), smallest)[0] <= MAX_PAGES
+            work = _without(resume, order, k)  # in line first: it usually holds more, and any() stops there
+            seen[k] = any(resume_layout(work, step)[0] <= MAX_PAGES for step in (in_line, compact))
         return seen[k]
 
     low, high = 0, 1  # look at 1, 2, 4, 8 ... removals (a small overflow costs few layouts), then halve
@@ -367,19 +377,36 @@ def saved_resume_pdf(resume: Resume, style: FitStyle, pages: int,
                      document: str = "Resume") -> tuple[bytes, FitStyle]:
     """The PDF of a saved run and the style it was laid out at, laid out once. A run saved before the restyle is laid
     out at current_style(style); only when that takes more pages than the run had (`pages`; MAX_PAGES when not known)
-    are the next, smaller steps tried, and the first that keeps its page count is used (else the smallest). Its text is
-    never trimmed and nothing is saved: the caller keeps the file under the run's saved style (remember_resume_pdf)."""
-    steps, limit = _saved_steps(style), pages or MAX_PAGES
-    for step in steps:
-        pdf, laid_out = render_resume_pdf(resume, step, document)
-        if laid_out <= limit:
-            break
-    return pdf, step
+    are the next, smaller steps tried, and the first that keeps its page count is used (else whichever of the last two
+    takes fewer pages, _saved_index). Its text is never trimmed and nothing is saved: the caller keeps the file under
+    the run's saved style (remember_resume_pdf)."""
+    steps, made = _saved_steps(style), []
+
+    def pages_at(index: int) -> int:  # called for steps[0], steps[1], ... in turn
+        made.append(render_resume_pdf(resume, steps[index], document))
+        return made[-1][1]
+
+    index = _saved_index(steps, pages or MAX_PAGES, pages_at)
+    return made[index][0], steps[index]
 
 
 def saved_style(resume: Resume, style: FitStyle, pages: int) -> FitStyle:
     """The style saved_resume_pdf lays a saved run out at, found without making the file (no layout at all for a run
     made in the current design): the Word copy of a run saved before the restyle is made at it, so both downloads have
     the same sizes."""
-    steps, limit = _saved_steps(style), pages or MAX_PAGES
-    return next((step for step in steps[:-1] if resume_layout(resume, step)[0] <= limit), steps[-1])
+    steps = _saved_steps(style)
+    if len(steps) == 1:
+        return steps[0]
+    return steps[_saved_index(steps, pages or MAX_PAGES, lambda index: resume_layout(resume, steps[index])[0])]
+
+
+def _saved_index(steps: list[FitStyle], limit: int, pages_at: Callable[[int], int]) -> int:
+    """Which of `steps` a saved run is shown at: the first that keeps `limit` pages, tried in order; when none does, the
+    one of the last two (the compact step and the in-line step, see COMPACT) with fewer pages, the compact step on a
+    tie. `pages_at(index)` lays the run out at steps[index]."""
+    counts = []
+    for index in range(len(steps)):
+        counts.append(pages_at(index))
+        if counts[-1] <= limit:
+            return index
+    return min(range(max(0, len(steps) - 2), len(steps)), key=counts.__getitem__)

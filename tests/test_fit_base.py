@@ -23,7 +23,7 @@ from app.pipeline.fit import (
     styles,
 )
 from app.pipeline.old_layout import BOLD, ITALIC, REGULAR
-from app.pipeline.tailor import refit
+from app.pipeline.tailor import fit_report, refit
 from app.render.pdf import resume_layout
 from app.schemas import (
     Certification,
@@ -507,18 +507,21 @@ LONG_BULLETS = [
 ]
 
 
-def many_skills() -> Resume:
+SKILLS_JOBS = [("Northwind Labs", "Mar 2023", "Present"), ("Bluefin Commerce", "Jan 2020", "Feb 2023"),
+               ("Contoso", "Jun 2017", "Dec 2019"), ("Fabrikam Inc.", "Jan 2015", "May 2017"),
+               ("Tailspin Logistics", "Jun 2013", "Dec 2014")]
+
+
+def many_skills(jobs: int = 3, bullets: int = 4) -> Resume:
     """Jordan Rivera's invented one-page resume with a very large skills section: eight rows of twelve items, one
-    with a long label, beside three jobs of four bullets and a 170-word summary. Before the restyle it filled one
-    page at 9.5 pt."""
+    with a long label, beside three jobs of four bullets (or `jobs` of `bullets`) and a 170-word summary. Before the
+    restyle it filled one page at 9.5 pt."""
     words = "built reliable payment and scheduling systems for growing teams from the data model to the release pipeline"
     profile = Profile(name="Jordan Rivera", contact=Contact(email="jordan.rivera@example.com", phone="(555) 014-2290",
                                                             linkedin="linkedin.com/in/jordanrivera-example",
                                                             location="Denver, CO"),
                       companies=[Company(name=name, start=start, end=end, location="Denver, CO", mode="Hybrid")
-                                 for name, start, end in [("Northwind Labs", "Mar 2023", "Present"),
-                                                          ("Bluefin Commerce", "Jan 2020", "Feb 2023"),
-                                                          ("Contoso", "Jun 2017", "Dec 2019")]],
+                                 for name, start, end in SKILLS_JOBS[:jobs]],
                       education=[Education(school="State University", degree="B.S.", field="Computer Science",
                                            start="2008", end="2012")])
     summary = " ".join(words.split()[i % 17] for i in range(170)).capitalize() + "."
@@ -526,8 +529,8 @@ def many_skills() -> Resume:
               for k, label in enumerate(SKILL_LABELS)]
     return Resume(profile=profile, headline="Backend Engineer", summary=summary, skills=groups,
                   experience=[ResumeExperience(company_index=i, job_title="Senior Software Engineer",
-                                               bullets=[LONG_BULLETS[(i + b) % 4] for b in range(4)])
-                              for i in range(3)])
+                                               bullets=[LONG_BULLETS[(i + b) % 4] for b in range(bullets)])
+                              for i in range(jobs)])
 
 
 def test_a_very_large_skills_section_keeps_its_page():
@@ -549,3 +552,84 @@ def test_a_very_large_skills_section_keeps_its_page():
     saved = FitStyle(font_pt=9.5, margin_in=0.5)  # what the run saved before the restyle holds
     pdf, shown = fit.saved_resume_pdf(resume, saved, 1)
     assert shown == last == fit.saved_style(resume, saved, 1) and len(PdfReader(io.BytesIO(pdf)).pages) == 1
+
+
+def removed_bullets(before: Resume, after: Resume) -> int:
+    return sum(len(a.bullets) - len(b.bullets) for a, b in zip(before.experience, after.experience))
+
+
+def test_trimming_a_very_large_skills_section_ends_at_the_in_line_step():
+    """The very large skills section beside five jobs of nine long bullets: no step fits two pages. In line holds the
+    most here, so trimming removes only the 2 bullets that step needs (the compact step would need 5) and ends there."""
+    resume, (compact, in_line) = many_skills(jobs=5, bullets=9), styles("Letter")[len(LADDER):]
+    order = fit._removal_order(resume)
+    assert fit.try_styles(resume) is None and resume_layout(fit._without(resume, order, 2), compact)[0] == 3
+    trimmed, style, pages, _pdf, notes = fit.trim_to_fit(resume)
+    assert removed_bullets(resume, trimmed) == 2 and (style, pages) == (in_line, 2)
+    assert notes[-1].startswith("Removed 2 bullet(s) to fit two pages")
+
+
+# ------------------------------------------------------------------ a long skills item with no space: the compact step
+LONG_ITEM_ROWS = [  # a long label, then a first item of about 95 characters with no space: a list typed with slashes
+    ("Infrastructure as Code and Continuous Delivery",
+     "Terraform/Pulumi/CloudFormation/Ansible/Chef/Puppet/SaltStack/Packer/Vagrant/Consul/Crossplane"),
+    ("Observability and Incident Response Tooling",
+     "Prometheus/Grafana/Datadog/OpenTelemetry/Jaeger/Loki/Tempo/PagerDuty/Opsgenie/Sentry/Honeycomb"),
+    ("Developer Platforms and Internal Tooling",
+     "Backstage/Buildkite/CircleCI/GitLab/Bazel/Gradle/Nx/Turborepo/Renovate/Dependabot/SonarQube/Snyk"),
+]
+
+
+def long_items(jobs: int, rows: int, words: int) -> Resume:
+    """Casey Morgan's invented career: `jobs` jobs of 8, 8, 7, 7, 6, 6, 5, 5 and then 4 long bullets, a `words`-word
+    summary, and `rows` skills rows of LONG_ITEM_ROWS (each with seven short items after its long one) above a short
+    row. In line, the long item does not fit the rest of its label's line and moves whole to the next one, where the
+    column splits it: each such row takes a line more in line than in the column."""
+    text = "built reliable payment and scheduling systems for growing teams from the data model to the release pipeline"
+    summary = " ".join(text.split()[i % 17] for i in range(words)).capitalize() + "."
+    profile = Profile(name="Casey Morgan", contact=Contact(email="casey.morgan@example.com", phone="(555) 017-3301",
+                                                           linkedin="linkedin.com/in/caseymorgan-example",
+                                                           location="Denver, CO"),
+                      companies=[Company(name=MORE_EMPLOYERS[i], start=f"Mar {2024 - 2 * i}",
+                                         end="Present" if i == 0 else f"Feb {2026 - 2 * i}", location="Denver, CO",
+                                         mode="Hybrid") for i in range(jobs)],
+                      education=[Education(school="State University", degree="B.S.", field="Computer Science",
+                                           start="2008", end="2012")])
+    after = ["Helm", "Argo CD", "Kustomize", "Flux", "Spinnaker", "Jenkins", "Buildkite"]
+    groups = [SkillGroup(category=label, skills=[item] + after) for label, item in LONG_ITEM_ROWS[:rows]]
+    groups.append(SkillGroup(category="Languages", skills=["Python", "Go", "TypeScript", "SQL", "Bash"]))
+    counts = ([8, 8, 7, 7, 6, 6, 5, 5] + [4] * jobs)[:jobs]
+    return Resume(profile=profile, headline="Platform Engineer", summary=summary, skills=groups,
+                  experience=[ResumeExperience(company_index=i, job_title="Senior Platform Engineer",
+                                               bullets=[LONG_BULLETS[(i + b) % 4] for b in range(n)])
+                              for i, n in enumerate(counts)])
+
+
+def test_trimming_removes_only_the_bullets_the_compact_step_needs():
+    """A draft no step fits, with a skills item too long for the rest of its label's line: in line that row takes a
+    line more than in the column, so here the compact step holds a bullet more than the in-line step. Trimming removes
+    only the 6 bullets the compact step needs (it removed 7, as the in-line step needs) and ends at that step."""
+    resume, (compact, in_line) = long_items(9, 1, 40), styles("A4")[len(LADDER):]
+    order = fit._removal_order(resume)
+    six = fit._without(resume, order, 6)
+    assert fit.try_styles(resume, "A4") is None and resume_layout(fit._without(resume, order, 5), compact)[0] == 3
+    assert resume_layout(six, compact)[0] == 2 and resume_layout(six, in_line)[0] == 3
+    trimmed, style, pages, _pdf, notes = fit.trim_to_fit(resume, "A4")
+    assert removed_bullets(resume, trimmed) == 6 and trimmed == six and (style, pages) == (compact, 2)
+    assert notes[-1].startswith("Removed 6 bullet(s) to fit two pages")
+
+
+def test_a_resume_no_step_fits_is_shown_at_the_last_step_with_fewer_pages():
+    """Three skills rows with such a long item, and no step fits two pages: the compact step takes three, the in-line
+    step four. A hand-edited resume like this is reported and shown at the compact step ('Still 3 pages', not 4), and so
+    is a run saved before the restyle that no step keeps on its pages."""
+    resume, (compact, in_line) = long_items(14, 3, 60), styles("A4")[len(LADDER):]
+    assert resume_layout(resume, compact)[0] == 3 and resume_layout(resume, in_line)[0] == 4
+    style, pages, pdf = fit.render_smallest(resume, "A4")
+    assert (style, pages) == (compact, 3) and len(PdfReader(io.BytesIO(pdf)).pages) == 3
+    style, pages, fits, notes = asyncio.run(fit_report(resume, "A4"))
+    assert (style, pages, fits) == (compact, 3, False) and notes[0].startswith("Still 3 pages")
+    saved = FitStyle(font_pt=9.5, margin_in=0.5, paper="A4")  # the old floor, on two pages then
+    pdf, shown = fit.saved_resume_pdf(resume, saved, 2)
+    assert shown == compact == fit.saved_style(resume, saved, 2) and len(PdfReader(io.BytesIO(pdf)).pages) == 3
+
