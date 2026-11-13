@@ -1,8 +1,9 @@
 """The restyle changes only the look. The bullet plan and the page count are still worked out on the layout from before
-it (app/pipeline/old_layout.py: Carlito, measured without drawing), so the restyle changed no plan (only the current
-job's share changed since: it always has the most), no resume takes more pages than it did, and the new floor holds
-what the old one held. The numbers below were recorded with the app as
-it was before the restyle (commit aa88a1a: fpdf2 and the Carlito files). Every person and employer here is invented."""
+it (app/pipeline/old_layout.py: Carlito, measured without drawing), so the restyle changed no plan, no resume takes
+more pages than it did, and the new floor holds what the old one held. The layouts and OLD_PLANS below were recorded
+with the app as it was before the restyle (commit aa88a1a: fpdf2 and the Carlito files). The plans changed once since,
+on purpose: the most recent job always has the most bullets (PLANS, made by the current code), and OLD_PLANS still
+checks that this only ever moves bullets to it. Every person and employer here is invented."""
 import asyncio
 import io
 import random
@@ -207,9 +208,9 @@ def test_the_old_layout_gives_the_pages_and_fill_of_before():
 
 # ------------------------------------------------------------------ the bullet plan
 PLANS = {  # (certifications, paper, short stays): the plans for 2, 3, ... 15 employers, one digit a job
-    (0, "Letter", False): "65 655 6553 65533 655333 6553333 65533333 655333333 6553333333 65533333222 655332222222 "
+    (0, "Letter", False): "65 654 6553 65533 655333 6553333 65533333 655333333 6553333333 65533333222 655332222222 "
                           "6443222222222 54322222222222 432222222222222",
-    (0, "Letter", True): "43 433 5334 53343 533432 5334323 53343232 533432323 5334323233 53343232333 533432323332 "
+    (0, "Letter", True): "43 433 5333 53343 533432 5334323 53343232 533432323 5334323233 53343232333 533432323332 "
                          "5334323222222 53333222222222 432222222222222",
     (0, "A4", False): "65 655 6553 65533 655333 6553333 65533333 655333333 6553333333 65533333333 655333332222 "
                       "6553332222222 65432222222222 544222222222222",
@@ -226,17 +227,62 @@ PLANS = {  # (certifications, paper, short stays): the plans for 2, 3, ... 15 em
 }
 
 
+OLD_PLANS = {  # the same careers' plans as recorded before the restyle (aa88a1a), before the most recent job's lead
+    (0, "Letter", False): "55 555 5553 55533 555333 5553333 55533333 555333333 5553333333 55533333222 555332222222 "
+                          "5543222222222 44422222222222 333222222222222",
+    (0, "Letter", True): "33 333 3334 33343 333432 3334323 33343232 333432323 3334323233 33343232333 333432323333 "
+                         "3334323233222 33343232222222 333222222222222",
+    (0, "A4", False): "55 555 5553 55533 555333 5553333 55533333 555333333 5553333333 55533333333 555333333222 "
+                      "5553333222222 55433222222222 544222222222222",
+    (0, "A4", True): "33 333 3334 33343 333432 3334323 33343232 333432323 3334323233 33343232333 333432323333 "
+                     "3334323233333 33343232333222 333432322222222",
+    (4, "Letter", False): "55 555 5553 55533 555333 5553333 55533333 555333333 5553333222 55533222222 544322222222 "
+                          "4442222222222 33322222222222 222222222222222",
+    (4, "Letter", True): "33 333 3334 33343 333432 3334323 33343232 333432323 3334323233 33343232333 333432323322 "
+                         "3334322222222 33322222222222 222222222222222",
+    (4, "A4", False): "55 555 5553 55533 555333 5553333 55533333 555333333 5553333333 55533333322 555333222222 "
+                      "5543322222222 54422222222222 433222222222222",
+    (4, "A4", True): "33 333 3334 33343 333432 3334323 33343232 333432323 3334323233 33343232333 333432323333 "
+                     "3334323233322 33343232222222 333322222222222",
+}
+
+
 def test_the_bullet_plans_give_the_current_job_the_most():
     """The bullets the model is asked for per job, for careers of 2 to 15 employers, with and without certifications,
-    on both papers, measured on the layout from before the restyle. They are the plans made before it but for the
-    most recent job, which always has the most: one bullet more than any other job (8 at most), however short its
-    stay, also when the pages run out (unless every job is down to 2)."""
+    on both papers, measured on the layout from before the restyle (PLANS). The most recent job always has the most:
+    one bullet more than any other job (8 at most), however short its stay, also when the pages run out (unless every
+    job is down to 2). Against the plans recorded before that rule (OLD_PLANS): the most recent job never has fewer
+    bullets and no other job has more (when the pages run out, its extra bullets come out of the older jobs' shares),
+    and no plan takes more pages (a short career keeps its one page)."""
     for (certifications, paper, short_stays), plans in PLANS.items():
-        for employers, plan in enumerate(plans.split(), start=2):
+        style = fit.old_styles(paper)[fit.BUDGET_STYLE]
+        for employers, (plan, old) in enumerate(zip(plans.split(), OLD_PLANS[(certifications, paper, short_stays)]
+                                                    .split()), start=2):
+            where = (employers, certifications, paper, short_stays)
             profile = career(employers, certifications, short_stays)
-            budget = bullet_budget(profile, paper, today=TODAY)
-            assert budget == [int(n) for n in plan], (employers, certifications, paper, short_stays)
-            assert budget[0] > max(budget[1:]) or max(budget) == 2
+            budget, before = bullet_budget(profile, paper, today=TODAY), [int(n) for n in old]
+            assert budget == [int(n) for n in plan], where
+            assert budget[0] > max(budget[1:]) or max(budget) == 2, where
+            assert budget[0] >= before[0] and all(n <= was for n, was in zip(budget[1:], before[1:])), where
+
+            pages = [old_layout.resume_layout(fit._plan_resume(profile, counts), style)[0] for counts in (budget, before)]
+            assert pages[0] <= pages[1], where
+
+
+def test_a_short_career_keeps_its_one_page_and_the_lead():
+    """A current job of 2 months over two jobs of 14 months: their own shares (2, 5, 5) fit one page, so the plan
+    stays on one page. The current job still gets the most (6), and the bullet that would not fit comes out of the
+    oldest job's share (it used to spill onto a second page)."""
+    jobs = [("Northwind Labs", "Oct 2026", "Present"), ("Bluefin Commerce", "Aug 2025", "Sep 2026"),
+            ("Contoso Education", "Jun 2024", "Jul 2025")]
+    profile = Profile(name="Taylor Quinn", contact=Contact(email="taylor.quinn@example.com"),
+                      companies=[Company(name=name, start=start, end=end, mode="Remote") for name, start, end in jobs],
+                      education=[Education(school="State University", degree="B.S.", field="Computer Science",
+                                           end="2024")])
+    assert fit.stay_caps(profile.companies, TODAY) == [2, 5, 5] and fit.bullet_caps(profile.companies, TODAY) == [6, 5, 5]
+    budget = bullet_budget(profile, today=TODAY)
+    assert budget == [6, 5, 4]
+    assert fit.try_styles(fit._plan_resume(profile, budget))[1] == 1
 
 
 def ten_month_current_job() -> Profile:
@@ -252,7 +298,7 @@ def ten_month_current_job() -> Profile:
 
 def test_a_current_job_of_ten_months_gets_the_most_bullets():
     """10 months into the current job, it gets one bullet more than the 5 of the jobs before it (it got 3, as a short
-    stay), and the plan still fits two pages at full length. Asking for a shorter draft and trimming keep it ahead:
+    stay), and the plan still fits two pages at full length (the jobs' own shares did not fit one). Asking for a shorter draft and trimming keep it ahead:
     its cut goes to the oldest job with the most instead when it would tie."""
     profile = ten_month_current_job()
     budget = bullet_budget(profile, today=TODAY)

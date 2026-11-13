@@ -11,7 +11,9 @@
 
 The restyle changes only the look. The bullet plan and the page count are still worked out on the layout from before
 it (old_layout: Carlito on five steps from 10.5 to 9.5 pt, measured without drawing), so the restyle changed no plan
-(the current job's share has changed since: it always has the most) and no resume takes more pages than it did. The size ladder starts with the design's own sizes; the steps after it
+and no resume takes more pages than it did. The plans have changed since in one way: the most recent job always has
+the most bullets, and when the pages run out its extra bullets come out of the older jobs' shares (a short career
+keeps its one page). The size ladder starts with the design's own sizes; the steps after it
 hold about as much text per page as the old steps, and the last two (8 pt with the gaps brought closer, COMPACT, then
 also the skills in line), whichever holds more, at least as much as the old 9.5 pt on ordinary text. Runs saved before
 the restyle hold an old step: current_style and saved_resume_pdf show them in the new look.
@@ -40,7 +42,7 @@ from ..schemas import (
     SkillGroup,
 )
 from . import old_layout
-from .facts import bullet_caps, is_expired, stay_months
+from .facts import bullet_caps, is_expired, stay_caps, stay_months
 
 LADDER = [
     (DESIGN_SIZE, DESIGN_MARGIN),  # the design's own sizes (13.5 px body text, 64 px sides): the design exactly
@@ -134,7 +136,8 @@ def bullet_budget(profile: Profile, paper: str = "Letter", today: date | None = 
     is too long for the pages: every employer starts with 2 and extras are handed out in order while the
     placeholder resume still fits. The most recent role always has the most; after it, recent roles are favoured and
     so are long stays: a role held for 2-3 years gets its 3rd bullet before a role held for 8 months, even when that
-    one is newer.
+    one is newer. A short career keeps its one page: when every employer's own share (stay_caps, before the most
+    recent role's lead) fits on one page, the plan is made for one page, so the lead comes out of the older roles.
     The placeholder resume is measured in the layout from before the restyle (old_layout), so the restyle changes
     how the bullets look, never how many the model is asked for.
     Cached per profile, paper, page limit and day, because compare mode asks once per model for the same profile.
@@ -149,8 +152,14 @@ def _budget(profile_json: str, paper: str, today: date, max_pages: int) -> tuple
     caps = bullet_caps(profile.companies, today)
     style = old_styles(paper)[BUDGET_STYLE]
 
+    def pages(counts: list[int]) -> int:
+        return old_layout.resume_layout(_plan_resume(profile, counts), style)[0]
+
+    if max_pages > 1 and caps and pages(stay_caps(profile.companies, today)) == 1:
+        max_pages = 1  # a short career keeps its one page: the most recent job's lead is made inside it
+
     def fits(counts: list[int]) -> bool:
-        return old_layout.resume_layout(_plan_resume(profile, counts), style)[0] <= max_pages
+        return pages(counts) <= max_pages
 
     if not caps or fits(caps):  # the usual case on two pages: every employer gets its cap
         return tuple(caps)

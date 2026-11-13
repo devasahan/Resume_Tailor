@@ -65,11 +65,9 @@ def stay_months(company: Company, today: date | None = None) -> int | None:
 RECENCY_CAPS = (8, 6, 5, 4)  # the most recent employer first; 3 for every older one
 
 
-def bullet_caps(companies: list[Company], today: date | None = None) -> list[int]:
-    """Most bullets each employer deserves on a resume of up to two pages: 8 / 6 / 5 / 4 / 3 by recency, and by the
-    length of the stay: 2 under 6 months, 3 under a year, 5 under two years. A short career is not padded out.
-    The most recent employer (the first) is always the richest: one bullet more than any other (8 at most), however
-    short its stay; a career of one job keeps its own cap."""
+def stay_caps(companies: list[Company], today: date | None = None) -> list[int]:
+    """Most bullets each employer's own stay deserves: 8 / 6 / 5 / 4 / 3 by recency, and by the length of the stay:
+    2 under 6 months, 3 under a year, 5 under two years. A short career is not padded out."""
     caps = []
     for index, company in enumerate(companies):
         cap = RECENCY_CAPS[index] if index < len(RECENCY_CAPS) else 3
@@ -77,6 +75,14 @@ def bullet_caps(companies: list[Company], today: date | None = None) -> list[int
         if months is not None:
             cap = min(cap, 2 if months < 6 else 3 if months < 12 else 5 if months < 24 else cap)
         caps.append(cap)
+    return caps
+
+
+def bullet_caps(companies: list[Company], today: date | None = None) -> list[int]:
+    """Most bullets each employer deserves on a resume of up to two pages: its stay_caps, except that the most recent
+    employer (the first) is always the richest: one bullet more than any other (8 at most), however short its stay;
+    a career of one job keeps its own cap."""
+    caps = stay_caps(companies, today)
     if len(caps) > 1:
         caps[0] = min(RECENCY_CAPS[0], max(caps[0], max(caps[1:]) + 1))
     return caps
