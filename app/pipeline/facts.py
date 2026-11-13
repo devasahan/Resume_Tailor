@@ -68,18 +68,17 @@ RECENCY_CAPS = (8, 6, 5, 4)  # the most recent employer first; 3 for every older
 def bullet_caps(companies: list[Company], today: date | None = None) -> list[int]:
     """Most bullets each employer deserves on a resume of up to two pages: 8 / 6 / 5 / 4 / 3 by recency, and by the
     length of the stay: 2 under 6 months, 3 under a year, 5 under two years. A short career is not padded out.
-    The most recent employer (the first) is always the richest: a current role is never a short stay (it is not over),
-    and its cap is never below another employer's."""
+    The most recent employer (the first) is always the richest: one bullet more than any other (8 at most), however
+    short its stay; a career of one job keeps its own cap."""
     caps = []
     for index, company in enumerate(companies):
         cap = RECENCY_CAPS[index] if index < len(RECENCY_CAPS) else 3
         months = stay_months(company, today)
-        current = index == 0 and company.end.strip().lower().rstrip(".") in CURRENT
-        if months is not None and not current:
+        if months is not None:
             cap = min(cap, 2 if months < 6 else 3 if months < 12 else 5 if months < 24 else cap)
         caps.append(cap)
-    if caps:
-        caps[0] = max(caps)
+    if len(caps) > 1:
+        caps[0] = min(RECENCY_CAPS[0], max(caps[0], max(caps[1:]) + 1))
     return caps
 
 

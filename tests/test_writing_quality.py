@@ -50,13 +50,13 @@ def five_jobs(n=5) -> Profile:
 # ------------------------------------------------------------------ bullet budget
 def test_caps_follow_recency_and_length_of_stay():
     profile = five_jobs()
-    # Northwind Labs, the current job, 1 yr 9 mo -> never a short stay: 8; Bluefin.com 8 months -> 3; Contoso
-    # Education 3 years -> its recency cap 5; Fabrikam Holdings 13 months -> 4
-    assert bullet_caps(profile.companies, TODAY) == [8, 3, 5, 4, 3]
+    # Northwind Labs 1 yr 9 mo -> 5, then one more than the most of the others: 6; Bluefin.com 8 months -> 3;
+    # Contoso Education 3 years -> its recency cap 5; Fabrikam Holdings 13 months -> 4
+    assert bullet_caps(profile.companies, TODAY) == [6, 3, 5, 4, 3]
     short = [Company(name="A", start="Jun 2026", end="Present"), Company(name="B", start="", end="")]
-    assert bullet_caps(short, TODAY) == [8, 6]  # a current job of 5 months is no short stay; unreadable dates: no cut
+    assert bullet_caps(short, TODAY) == [7, 6]  # the most recent job, 5 months in, one ahead; unreadable dates: no cut
     ended = [Company(name="A", start="Jan 2026", end="Jun 2026"), Company(name="B", start="Jan 2018", end="Dec 2025")]
-    assert bullet_caps(ended, TODAY) == [6, 6]  # the most recent job, ended after 6 months, is never below another
+    assert bullet_caps(ended, TODAY) == [7, 6]  # an ended one too: the most recent job is always the richest
     long = [Company(name=f"C{i}", start=f"Jan {2010 + 3 * i}", end=f"Dec {2012 + 3 * i}") for i in reversed(range(6))]
     assert bullet_caps(long, TODAY) == [8, 6, 5, 4, 3, 3]  # 3-year stays: the recency caps
 
@@ -65,13 +65,15 @@ def test_budget_gives_recent_roles_the_most_and_fits_two_pages_at_full_length():
     for n in range(1, 6):
         budget = bullet_budget(five_jobs(n), today=TODAY)
         assert len(budget) == n and all(b >= 2 for b in budget)
-        assert budget[0] == max(budget)
+        assert budget[0] == max(budget) and (n == 1 or budget[0] > max(budget[1:]))
         # a draft with every bullet at full length fits without asking the model to shorten anything
         found = try_styles(_plan_resume(five_jobs(n), budget))
         assert found is not None and found[1] <= MAX_PAGES
-    assert bullet_budget(five_jobs(1), today=TODAY) == [8]  # one current job gets the most, still on one page
-    assert try_styles(_plan_resume(five_jobs(1), [8]))[1] == 1
-    assert bullet_budget(five_jobs(4), today=TODAY) == [8, 3, 5, 4]
+    assert bullet_budget(five_jobs(1), today=TODAY) == [5]  # a short career is not padded out
+    assert try_styles(_plan_resume(five_jobs(1), [5]))[1] == 1
+    assert bullet_budget(five_jobs(3), today=TODAY) == [6, 3, 5]
+    assert try_styles(_plan_resume(five_jobs(3), [6, 3, 5]))[1] == 1  # still one page
+    assert bullet_budget(five_jobs(4), today=TODAY) == [6, 3, 5, 4]
     assert bullet_budget(five_jobs(4), today=TODAY, max_pages=1) == [5, 3, 4, 2]  # one page holds less
 
 

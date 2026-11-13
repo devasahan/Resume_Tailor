@@ -207,36 +207,36 @@ def test_the_old_layout_gives_the_pages_and_fill_of_before():
 
 # ------------------------------------------------------------------ the bullet plan
 PLANS = {  # (certifications, paper, short stays): the plans for 2, 3, ... 15 employers, one digit a job
-    (0, "Letter", False): "85 855 8553 85533 855333 8553333 85533333 855333333 8553333322 75533322222 655332222222 "
-                          "5543222222222 54322222222222 432222222222222",
-    (0, "Letter", True): "83 833 8334 83343 833432 8334323 83343232 833432323 8334323233 83343232332 833432222222 "
-                         "6334322222222 53332222222222 432222222222222",
-    (0, "A4", False): "85 855 8553 85533 855333 8553333 85533333 855333333 8553333333 85533333222 755333322222 "
+    (0, "Letter", False): "65 655 6553 65533 655333 6553333 65533333 655333333 6553333333 65533333222 655332222222 "
+                          "6443222222222 54322222222222 432222222222222",
+    (0, "Letter", True): "43 433 5334 53343 533432 5334323 53343232 533432323 5334323233 53343232333 533432323332 "
+                         "5334323222222 53333222222222 432222222222222",
+    (0, "A4", False): "65 655 6553 65533 655333 6553333 65533333 655333333 6553333333 65533333333 655333332222 "
                       "6553332222222 65432222222222 544222222222222",
-    (0, "A4", True): "83 833 8334 83343 833432 8334323 83343232 833432323 8334323233 83343232333 833432323332 "
-                     "8334323232222 73343222222222 633322222222222",
-    (4, "Letter", False): "85 855 8553 85533 855333 8553333 85533333 855333332 7553332222 65533222222 544322222222 "
+    (0, "A4", True): "43 433 5334 53343 533432 5334323 53343232 533432323 5334323233 53343232333 533432323333 "
+                     "5334323233322 53343232322222 533332222222222",
+    (4, "Letter", False): "65 655 6553 65533 655333 6553333 65533333 655333333 6553333222 65533222222 544322222222 "
                           "5432222222222 43222222222222 222222222222222",
-    (4, "Letter", True): "83 833 8334 83343 833432 8334323 83343232 833432323 8334323233 83343222222 633332222222 "
+    (4, "Letter", True): "43 433 5334 53343 533432 5334323 53343232 533432323 5334323233 53343232332 533432322222 "
                          "5333222222222 43222222222222 222222222222222",
-    (4, "A4", False): "85 855 8553 85533 855333 8553333 85533333 855333333 8553333322 75533332222 655332222222 "
+    (4, "A4", False): "65 655 6553 65533 655333 6553333 65533333 655333333 6553333333 65533333222 655332222222 "
                       "6543222222222 54422222222222 433222222222222",
-    (4, "A4", True): "83 833 8334 83343 833432 8334323 83343232 833432323 8334323233 83343232333 833432322222 "
-                     "7334322222222 63332222222222 532222222222222",
+    (4, "A4", True): "43 433 5334 53343 533432 5334323 53343232 533432323 5334323233 53343232333 533432323332 "
+                     "5334323222222 53333222222222 433222222222222",
 }
 
 
 def test_the_bullet_plans_give_the_current_job_the_most():
     """The bullets the model is asked for per job, for careers of 2 to 15 employers, with and without certifications,
     on both papers, measured on the layout from before the restyle. They are the plans made before it but for the
-    current job (the first), which always has the most: it is never a short stay, and when the pages run out it gets
-    each extra bullet before any other job gets its own."""
+    most recent job, which always has the most: one bullet more than any other job (8 at most), however short its
+    stay, also when the pages run out (unless every job is down to 2)."""
     for (certifications, paper, short_stays), plans in PLANS.items():
         for employers, plan in enumerate(plans.split(), start=2):
             profile = career(employers, certifications, short_stays)
             budget = bullet_budget(profile, paper, today=TODAY)
             assert budget == [int(n) for n in plan], (employers, certifications, paper, short_stays)
-            assert budget[0] == max(budget)
+            assert budget[0] > max(budget[1:]) or max(budget) == 2
 
 
 def ten_month_current_job() -> Profile:
@@ -251,19 +251,20 @@ def ten_month_current_job() -> Profile:
 
 
 def test_a_current_job_of_ten_months_gets_the_most_bullets():
-    """A current job is never a short stay: 10 months into it, it gets the most bullets (it got 3, under the 5 of
-    the jobs before it), and the plan still fits two pages at full length. Asking for a shorter draft and trimming
-    keep it the richest."""
+    """10 months into the current job, it gets one bullet more than the 5 of the jobs before it (it got 3, as a short
+    stay), and the plan still fits two pages at full length. Asking for a shorter draft and trimming keep it ahead:
+    its cut goes to the oldest job with the most instead when it would tie."""
     profile = ten_month_current_job()
     budget = bullet_budget(profile, today=TODAY)
-    assert budget == [8, 5, 5, 4, 3]
+    assert budget == [6, 5, 5, 4, 3]
     assert fit.try_styles(fit._plan_resume(profile, budget))[1] == 2
-    assert fit.smaller_budget(budget) == [7, 4, 4, 3, 3]
+    assert fit.smaller_budget(budget) == [5, 4, 4, 3, 3]
+    assert fit.smaller_budget([4, 3, 3, 3]) == [4, 3, 2, 2] and fit.smaller_budget([5, 3, 5, 4, 3]) == [5, 3, 3, 3, 3]
     resume = fit._plan_resume(profile, budget)
     order = fit._removal_order(resume)
     for k in range(len(order) + 1):
         counts = [len(exp.bullets) for exp in fit._without(resume, order, k).experience]
-        assert counts[0] == max(counts), k
+        assert counts[0] > max(counts[1:]) or max(counts) == 2, k
 
 
 # ------------------------------------------------------------------ the page count

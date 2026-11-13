@@ -18,6 +18,7 @@ the restyle hold an old step: current_style and saved_resume_pdf show them in th
 """
 from __future__ import annotations
 
+import math
 from collections.abc import Callable
 from datetime import date
 from functools import lru_cache
@@ -172,20 +173,30 @@ def _budget(profile_json: str, paper: str, today: date, max_pages: int) -> tuple
 
 def extra_order(profile: Profile, caps: list[int], today: date) -> list[tuple[int, int]]:
     """(employer, bullet number) for every bullet above 2, in the order they are handed out when the pages run
-    out: the most recent role's bullet at each number first, so it always has the most; then recent roles first, and
-    long stays before short ones (a role held 3 years gets its 3rd bullet before a newer role held 8 months)."""
+    out: recent roles first, and long stays before short ones (a role held 3 years gets its 3rd bullet before a
+    newer role held 8 months). The most recent role stays one ahead: its bullet N+1 comes before any other role's
+    bullet N."""
     years = [min((stay_months(c, today) or 12) / 12, 3) for c in profile.companies]  # unreadable dates: 1 year
-    # any other role's score at a level is at least level - 0.75 (0.75 * 1 - 0.5 * 3), so level - 1 comes first
-    return [(index, level) for _score, index, level in sorted(
-        (level - 1 if index == 0 else level + 0.75 * index - 0.5 * years[index], index, level)
-        for index, cap in enumerate(caps)
-        for level in range(3, cap + 1)
-    )]
+
+    def score(index: int, level: int) -> float:
+        return level + 0.75 * index - 0.5 * years[index]
+
+    others = [(score(index, level), index, level) for index, cap in enumerate(caps) if index
+              for level in range(3, cap + 1)]
+    lead: dict[int, float] = {}  # the most recent role's bullet N+1 goes before any other role's bullet N
+    for value, _index, level in others:
+        lead[level + 1] = min(lead.get(level + 1, math.inf), value)
+    first, best = [], math.inf
+    for level in range(caps[0] if caps else 2, 2, -1):  # from its last bullet down, so its own stay in order
+        best = min(best, score(0, level), lead.get(level, math.inf))
+        first.append((best, 0, level))
+    return [(index, level) for _value, index, level in sorted(others + first)]  # a tie: the most recent role first
 
 
 def smaller_budget(counts: list[int]) -> list[int]:
     """The budget for a second try after a draft did not fit: one bullet fewer for every employer above 3 (and at
-    least two employers above 2, most bullets first, then the oldest)."""
+    least two employers above 2, most bullets first, then the oldest). The most recent role keeps its lead: when its
+    cut would tie it with another role, the oldest role with the most bullets above 2 gives that bullet instead."""
     smaller = list(counts)
     above = [i for i, n in enumerate(smaller) if n > 3]
     if len(above) < 2:
@@ -193,6 +204,11 @@ def smaller_budget(counts: list[int]) -> list[int]:
                         key=lambda i: (-smaller[i], -i))[: 2 - len(above)]
     for index in above:
         smaller[index] -= 1
+    if 0 in above and len(smaller) > 1 and smaller[0] <= max(smaller[1:]):
+        rest = [i for i in range(1, len(smaller)) if smaller[i] > 2]
+        if rest:
+            smaller[0] += 1
+            smaller[max(rest, key=lambda i: (smaller[i], i))] -= 1
     return smaller
 
 
@@ -283,12 +299,12 @@ def render_smallest(resume: Resume, paper: str = "Letter", document: str = "Resu
 
 def _removal_order(resume: Resume) -> list[int]:
     """Positions in resume.experience, one per bullet trim_to_fit may remove, in order: always the last bullet of
-    the oldest among the employers with the most bullets, keeping 2 each. Needs no layout."""
+    the oldest among the employers with the most bullets, keeping 2 each; the most recent counts one bullet fewer
+    there, so it keeps its lead. Needs no layout."""
     counts = [len(e.bullets) for e in resume.experience]
     order = []
     while any(n > 2 for n in counts):
-        most = max(counts)
-        position = max(i for i, n in enumerate(counts) if n == most)
+        position = max((i for i, n in enumerate(counts) if n > 2), key=lambda i: (counts[i] - (i == 0), i))
         counts[position] -= 1
         order.append(position)
     return order
