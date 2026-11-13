@@ -14,8 +14,8 @@ from app.pipeline.fit import LADDER, MAX_PAGES, styles, trim_to_fit, try_styles
 from app.render import pdf as pdf_module
 from app.render.docx import cover_docx, resume_docx
 from app.render.pdf import (
-    CONTACT_SIZE, DRAWABLE, DRAWABLE_LIMIT, REGULAR, SEMIBOLD, Run, Sheet, advance_widths, contact_line, fmt_dates,
-    render_cover_pdf, render_resume_pdf, text_width,
+    CONTACT_SIZE, DRAWABLE, DRAWABLE_LIMIT, REGULAR, SEMIBOLD, Run, Sheet, advance_widths, contact_line, drawable,
+    fmt_dates, render_cover_pdf, render_resume_pdf, text_width,
 )
 from app.schemas import (
     Certification, Contact, CoverLetter, ExperienceOut, FitStyle, SkillGroup, TailoredSections, TailorOutput,
@@ -415,7 +415,8 @@ def test_ligatures_and_invisible_marks_print_as_plain_letters(profile, caplog):
 def test_accents_typed_apart_print_on_their_letters(profile):
     """Some systems type an accented letter as the letter and then the accent (Unicode's decomposed form: e + U+0301).
     fpdf2 places no accents, so each would print beside its letter ('Jose´'); the PDF composes them first and draws
-    exactly what the composed text draws, and readers get the composed letters back."""
+    exactly what the composed text draws, and readers get the composed letters back. An accent no letter has with it
+    (the acute on the dotted ẹ of Yoruba) is left out rather than printed beside the letter."""
     pdfplumber = pytest.importorskip("pdfplumber")
     composed = ["José Müller · Nguyễn Thị Hạnh", "Café Société", "Mérida, Yucatán",
                 "Created a résumé reader for the café's Zürich team."]
@@ -436,6 +437,7 @@ def test_accents_typed_apart_print_on_their_letters(profile):
         text = unicodedata.normalize("NFC", document.pages[0].extract_text())
     assert all(part in text for part in composed)
     assert text_width(decomposed[0], REGULAR, 10) == text_width(composed[0], REGULAR, 10)
+    assert drawable("O\u0323\u0300s\u0323un e\u0323\u0301") == "Ọṣun ẹ"
 
 
 def test_a_mark_the_font_lacks_prints_nothing_and_leaves_no_gap(profile, caplog):

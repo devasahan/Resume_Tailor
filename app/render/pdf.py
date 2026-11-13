@@ -192,22 +192,27 @@ class _Drawable(dict):
     that the font before it had: the ligatures in text copied out of a PDF (ﬁ ﬂ ﬀ ﬃ ﬄ) and invisible marks such as a
     soft hyphen or a zero-width joiner. fpdf2 leaves a character the font lacks out of the page, while measuring counts
     it, so 'Certiﬁed' would print as 'Certied' with a gap after it. Such a character becomes its compatibility form
-    when the fonts have all of that (ﬁ -> fi, a full-width Ａ -> A), or else its letter and accent apart (the few
-    symbols such as ≮ that Inter has only in parts); an invisible one is left out, and so is an accent or other mark
-    the fonts lack (the variation selector after ™ that an emoji keyboard types); any other stays as it is, and fpdf2
-    leaves it out as before (as it did Chinese and emoji with the old font too). Only the first DRAWABLE_LIMIT of those
-    are kept in the table: text made of many thousands of different such characters does not fill a worker's memory."""
+    when the fonts have all of that (ﬁ -> fi, a full-width Ａ -> A), or else its parts (the few symbols such as ≮ that
+    Inter has only in parts); an invisible one is left out; any other stays as it is, and fpdf2 leaves it out as before
+    (as it did Chinese and emoji with the old font too). Only the first DRAWABLE_LIMIT of those are kept in the table:
+    text made of many thousands of different such characters does not fill a worker's memory.
+    An accent or other mark on its own (one drawable() could not compose with its letter, as no letter has both the dot
+    below and the acute of 'ẹ́', or the variation selector after ™ that an emoji keyboard types) is left out too, with
+    the fonts' glyph for it or not: fpdf2 places no marks, so it would print beside its letter, not on it."""
 
     def __missing__(self, code: int) -> int | str | None:
         covered, char = _covered(), chr(code)
         form = unicodedata.normalize("NFKC", char)
-        if code in covered:
-            value: int | str | None = code
+        category = unicodedata.category(char)
+        if category in ("Mn", "Me"):
+            value: int | str | None = None
+        elif code in covered:
+            value = code
         elif all(ord(part) in covered for part in form):
             value = form
         elif all(ord(part) in covered for part in unicodedata.normalize("NFD", char)):
             value = unicodedata.normalize("NFD", char)
-        elif unicodedata.category(char) in ("Cf", "Mn", "Me"):
+        elif category == "Cf":
             value = None
         else:
             value = code
@@ -224,7 +229,7 @@ DRAWABLE_LIMIT = 20_000  # far more than a resume in any script meets, and about
 def drawable(text: str) -> str:
     """`text` as the PDF draws it: each accent composed with its letter first (fpdf2 places no accents, so a decomposed
     'é', an e and then U+0301 as some systems type it, would put the accent beside the letter), then translated by
-    DRAWABLE."""
+    DRAWABLE, which leaves out an accent no letter has with it."""
     return unicodedata.normalize("NFC", text).translate(DRAWABLE)
 
 
