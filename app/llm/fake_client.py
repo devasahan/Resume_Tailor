@@ -60,7 +60,7 @@ SALARY_RE = re.compile(  # a range ("$140,000 - $180,000"), or one amount with i
 
 
 def job_facts(jd: str) -> dict:
-    """{work_mode, work_mode_detail, salary} from plain patterns: hybrid before remote before on-site."""
+    """{company, work_mode, work_mode_detail, salary} from plain patterns: hybrid before remote before on-site."""
     if HYBRID_RE.search(jd):
         mode = "Hybrid"
     elif REMOTE_RE.search(jd):
@@ -71,7 +71,7 @@ def job_facts(jd: str) -> dict:
         mode = "Not stated"
     days = OFFICE_DAYS_RE.search(jd) if mode == "Hybrid" else None
     pay = SALARY_RE.search(jd)
-    return {"work_mode": mode, "work_mode_detail": days.group(0).strip() if days else "",
+    return {"company": guess_company(jd), "work_mode": mode, "work_mode_detail": days.group(0).strip() if days else "",
             "salary": pay.group(0).strip(" .,") if pay else ""}
 
 

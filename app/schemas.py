@@ -217,10 +217,18 @@ class CoverLetterOut(BaseModel):
 
 
 class JobFacts(BaseModel):
-    """What a pasted job post says about where the job is done and what it pays, as the AI reads it."""
+    """What a pasted job post says about who is hiring, where the job is done and what it pays, as the AI reads it."""
+    company: str = ""  # the hiring company's name as the post writes it; "" when it names none (never guessed)
     work_mode: Literal["Remote", "Hybrid", "On-site", "Not stated"]
     work_mode_detail: str  # "3 days a week in office", "US only"; "" when the post says nothing more
     salary: str  # as written, with currency and period: "$140,000 - $180,000 a year"; "" when not stated
+
+    @field_validator("company")
+    @classmethod
+    def _one_company(cls, value: str) -> str:
+        """The name the Company box takes: trimmed, and "" when it is too long to be one (over 120 characters)."""
+        value = " ".join(value.split())
+        return value if len(value) <= 120 else ""
 
 
 # ---------------------------------------------------------------- merged document
