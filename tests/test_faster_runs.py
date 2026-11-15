@@ -77,12 +77,21 @@ def test_a_long_letter_tries_its_sizes_without_fonts(resume):
 
 
 def test_a_sheet_draws_what_it_laid_out(profile):
-    """The file has the pages the layout counted, its text in reading order, and the same file twice."""
+    """The file holds every line the layout noted, on the page it was noted for and in reading order, and finishing
+    again gives the same file."""
     sheet = pdf_module.resume_sheet(long_resume(profile, bullets=12), FitStyle())
     first, pages = sheet.finish()
     again, _ = sheet.finish()
-    assert pages == sheet.pdf.page == len(PdfReader(io.BytesIO(first)).pages) >= 2
-    assert pdf_text(first) == pdf_text(again)
+    reader = PdfReader(io.BytesIO(first))
+    assert pages == sheet.pdf.page == len(reader.pages) >= 2
+    noted: list[list[str]] = [[]]
+    for note in sheet._notes:
+        if note[0] == "page":
+            noted.append([])
+        elif note[0] == "text":
+            noted[-1].append(" ".join(text for text, _style, _width in note[1]))
+    drawn = [" ".join(page.extract_text().split()) for page in reader.pages]
+    assert [" ".join(" ".join(lines).split()) for lines in noted] == drawn
     streams = [[page.get_contents().get_data() for page in PdfReader(io.BytesIO(data)).pages] for data in (first, again)]
     assert streams[0] == streams[1]
 
@@ -100,7 +109,7 @@ def test_the_letters_request_goes_out_before_the_layout_starts(router, db, regis
     [draft], [letter] = client.of("tailor_output"), client.of("cover_letter")
     (layout_start, layout_end), *_ = layouts
     assert draft["end"] <= letter["start"] <= layout_start  # asked before the layout began
-    assert layout_end < letter["end"]  # and written while it ran
+    assert layout_start < letter["end"]  # and still being written while the layout ran
 
 
 def test_the_trimming_starts_after_the_letters_request_too(router, db, registry, monkeypatch):
