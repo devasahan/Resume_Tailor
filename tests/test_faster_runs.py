@@ -107,7 +107,7 @@ def test_the_letters_request_goes_out_before_the_layout_starts(router, db, regis
     result = tailored(router, db, profile, cover_letter=True)
     assert result.status == "ok" and result.cover_letter is not None
     [draft], [letter] = client.of("tailor_output"), client.of("cover_letter")
-    (layout_start, layout_end), *_ = layouts
+    (layout_start, _layout_end), *_ = layouts
     assert draft["end"] <= letter["start"] <= layout_start  # asked before the layout began
     assert layout_start < letter["end"]  # and still being written while the layout ran
 
