@@ -359,7 +359,8 @@ async function create(withLetter, keepResume = false) {
 }
 
 // Who is hiring, where the pasted job is done and what it pays, read by the AI right after a paste (or a drop), or
-// once typing stops for FACTS_WAIT_MS (not one check per key)
+// once typing stops for FACTS_WAIT_MS (not one check per key). A post changed again within FACTS_WAIT_MS of a paste is
+// checked once more (one small model call), the price of showing the company sooner
 const FACTS_MIN_CHARS = 200, FACTS_WAIT_MS = 1200, FACTS_MAX_WAIT_MS = 12000, HEAD_CHARS = 80;
 const AT_ONCE = new Set(['insertFromPaste', 'insertFromDrop']);
 const NO_COMPANY = 'Copy the company name from the job post into the Company box, exactly as the company writes it, then press the button again.';

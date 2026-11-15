@@ -19,8 +19,8 @@ text_width): a sheet notes what to draw, and only the file made (Sheet.finish) l
 that is only tried (a fit step, a cover letter size) costs no font load.
 
 The latest resume PDFs are kept in memory (remember_resume_pdf), so the preview and the downloads that follow a run
-serve the file its job made instead of laying the resume out again. A cover letter's PDF is made in a thread of its own
-as soon as the letter is written (make_cover_pdf_soon) and kept the same way (cover_pdf).
+serve the file its job made instead of laying the resume out again. A cover letter's PDF is kept the same way once its
+preview has made it (cover_pdf), for the download that usually follows.
 """
 from __future__ import annotations
 
@@ -31,7 +31,6 @@ import threading
 import time
 import unicodedata
 from collections import OrderedDict
-from concurrent import futures
 from dataclasses import dataclass
 from functools import cache
 from pathlib import Path
@@ -874,10 +873,10 @@ def render_cover_pdf(resume: Resume, letter: CoverLetter, paper: str = "Letter",
     return sheet.finish()
 
 
-# ---------------------------------------------------------------------- cover letter PDFs made ahead
-COVER_WAIT_SECONDS = 30.0  # a file still being made is waited for this long at most, then made where it is asked for
-_recent_covers: OrderedDict[str, futures.Future] = OrderedDict()  # as _recent_pdfs, with its lock; a file being made
-_cover_maker = futures.ThreadPoolExecutor(max_workers=1, thread_name_prefix="cover-pdf")  # one at a time
+# ---------------------------------------------------------------------- cover letter PDFs kept for the download
+# Made when first asked for (the preview), not during the job: a build running alongside the job's last steps made the
+# job's answer about one build later, and the preview came no sooner (the GIL lets one of them run at a time)
+_recent_covers: OrderedDict[str, bytes] = OrderedDict()  # as _recent_pdfs, with its lock
 
 
 def _cover_key(resume: Resume, letter: CoverLetter, paper: str, lang: str) -> str:
@@ -888,47 +887,21 @@ def _cover_key(resume: Resume, letter: CoverLetter, paper: str, lang: str) -> st
     return hashlib.sha256(json.dumps(parts).encode("utf-8")).hexdigest()
 
 
-def _keep_cover(key: str, made: futures.Future) -> None:
-    """Keep a letter's file (or one being made); the least recently used goes past RECENT_PDFS. _recent_lock held."""
-    _recent_covers[key] = made
-    _recent_covers.move_to_end(key)
-    while len(_recent_covers) > RECENT_PDFS:
-        _recent_covers.popitem(last=False)
-
-
-def _cover_file(resume: Resume, letter: CoverLetter, paper: str, lang: str) -> bytes:
-    return render_cover_pdf(resume, letter, paper, lang)[0]
-
-
-def make_cover_pdf_soon(resume: Resume, letter: CoverLetter, paper: str = "Letter", lang: str = "en-US") -> None:
-    """Start making a letter's PDF in a thread of its own as soon as the letter is written, and keep it: the preview
-    that follows (cover_pdf) then needs no layout. Made from copies, so the caller may go on with its objects."""
-    resume, letter = resume.model_copy(deep=True), letter.model_copy(deep=True)
-    key = _cover_key(resume, letter, paper, lang)
-    with _recent_lock:
-        if key in _recent_covers:
-            _recent_covers.move_to_end(key)
-            return
-        _keep_cover(key, _cover_maker.submit(_cover_file, resume, letter, paper, lang))
-
-
 def cover_pdf(resume: Resume, letter: CoverLetter, paper: str = "Letter", lang: str = "en-US") -> bytes:
-    """The letter's PDF (the file render_cover_pdf makes): the kept one, waiting for one still being made (at most
-    COVER_WAIT_SECONDS), else made now and kept for the download that usually follows the preview."""
+    """The letter's PDF (the file render_cover_pdf makes): the kept one, else made now and kept, for the download that
+    usually follows the preview. The least recently used goes when more than RECENT_PDFS are kept."""
     key = _cover_key(resume, letter, paper, lang)
     with _recent_lock:
-        made = _recent_covers.get(key)
-        if made is not None:
+        pdf = _recent_covers.get(key)
+        if pdf is not None:
             _recent_covers.move_to_end(key)  # read again: kept longer
-    if made is not None:
-        futures.wait([made], timeout=COVER_WAIT_SECONDS)
-        if made.done() and not made.cancelled() and made.exception() is None:
-            return made.result()
-    pdf = _cover_file(resume, letter, paper, lang)  # not kept, or its making failed: made here
-    done: futures.Future = futures.Future()
-    done.set_result(pdf)
+            return pdf
+    pdf = render_cover_pdf(resume, letter, paper, lang)[0]
     with _recent_lock:
-        _keep_cover(key, done)
+        _recent_covers[key] = pdf
+        _recent_covers.move_to_end(key)
+        while len(_recent_covers) > RECENT_PDFS:
+            _recent_covers.popitem(last=False)
     return pdf
 
 

@@ -1,9 +1,10 @@
 """The speed-ups that leave the resume and the cover letter exactly as they were: a size that is only tried is laid out
 without fonts (only the file made loads them), the letter's request goes out before the layout starts, a run reads
-the Settings once, the letter's PDF is made while the job ends and kept for the preview, and a pasted job post is
-checked at once."""
+the Settings once, the letter's PDF made for its preview is kept for the download, and a pasted job post is checked at
+once."""
 import asyncio
 import io
+import re
 import time
 
 import pytest
@@ -17,8 +18,8 @@ from app.render.pdf import (
     COVER_STYLES,
     _cover_sheet,
     cover_pdf,
+    drawable,
     forget_resume_pdfs,
-    make_cover_pdf_soon,
     render_cover_pdf,
     resume_layout,
 )
@@ -30,7 +31,7 @@ from .test_api import save_profile
 from .test_letter_in_job import Paced, career, slow_layout, tailored
 from .test_pipeline import Priced
 from .test_render import long_resume
-from .test_speed_extras import pdf_text, small_resume
+from .test_speed_extras import pdf_text
 from .test_validate import make_output
 
 
@@ -43,11 +44,6 @@ def letter_of(words: int, paragraphs: int = 4, greeting: str = "Dear Hiring Mana
     paragraph = " ".join(["Delivered reliable data pipelines for the analytics team."] * words)
     return CoverLetter(greeting=greeting, paragraphs=[paragraph] * paragraphs, closing="Sincerely,",
                        company_name="Fabrikam Robotics")
-
-
-def made_meanwhile() -> None:
-    """Until the letters' files being made in the background are made (one at a time, in order)."""
-    pdf_module._cover_maker.submit(lambda: None).result()
 
 
 def lang_of(pdf: bytes) -> str:
@@ -77,21 +73,31 @@ def test_a_long_letter_tries_its_sizes_without_fonts(resume):
 
 
 def test_a_sheet_draws_what_it_laid_out(profile):
-    """The file holds every line the layout noted, on the page it was noted for and in reading order, and finishing
-    again gives the same file."""
+    """The file holds every line the layout noted, drawn where the layout put it, on its page and in reading order, and
+    finishing again gives the same file."""
     sheet = pdf_module.resume_sheet(long_resume(profile, bullets=12), FitStyle())
     first, pages = sheet.finish()
     again, _ = sheet.finish()
     reader = PdfReader(io.BytesIO(first))
     assert pages == sheet.pdf.page == len(reader.pages) >= 2
     noted: list[list[str]] = [[]]
+    placed: list[list[tuple[str, str]]] = [[]]  # where each piece starts: fpdf2 puts a cell's baseline at y + h/2 + 0.3 size
     for note in sheet._notes:
         if note[0] == "page":
             noted.append([])
+            placed.append([])
         elif note[0] == "text":
-            noted[-1].append(" ".join(text for text, _style, _width in note[1]))
+            _kind, merged, x, y, size, height = note
+            noted[-1].append(" ".join(text for text, _style, _width in merged))
+            for text, _style, width in merged:
+                if drawable(text):
+                    placed[-1].append((f"{x:.2f}", f"{sheet.pdf.h - y - 0.5 * height - 0.3 * size:.2f}"))
+                x += width
     drawn = [" ".join(page.extract_text().split()) for page in reader.pages]
     assert [" ".join(" ".join(lines).split()) for lines in noted] == drawn
+    starts = [re.findall(r"BT (-?[\d.]+) (-?[\d.]+) Td", page.get_contents().get_data().decode("latin-1"))
+              for page in reader.pages]
+    assert starts == placed and sum(map(len, placed)) > 100
     streams = [[page.get_contents().get_data() for page in PdfReader(io.BytesIO(data)).pages] for data in (first, again)]
     assert streams[0] == streams[1]
 
@@ -218,38 +224,31 @@ def test_a_settings_change_applies_from_the_next_run(router, db, registry):
     assert router.settings()["paper_size"] == "A4"  # the next run reads it again
 
 
-# ------------------------------------------------------------------ the letter's PDF, made while the job ends
-def test_the_letters_pdf_is_ready_for_the_preview_and_the_download(client, monkeypatch):
+# ------------------------------------------------------------------ the letter's PDF, kept for the download
+def test_the_letters_preview_makes_its_pdf_once_and_the_download_reuses_it(client):
+    """The job makes no letter file (a build alongside the job's last steps delayed its answer); the preview makes it,
+    in the run's language, and the download that follows serves the same file without laying the letter out again."""
     save_profile(client)
-    run = client.post("/api/tailor", json={"jd": SAMPLE_JD, "cover_letter": True, "spelling": "eu"}).json()
-    assert run["status"] == "ok" and run["cover_letter"]
-    made_meanwhile()
     loads = FONTS.count
-
-    def no_layout(*_args, **_kwargs):
-        raise AssertionError("the letter was laid out again")
-
-    monkeypatch.setattr(pdf_module, "Sheet", no_layout)
+    run = client.post("/api/tailor", json={"jd": SAMPLE_JD, "cover_letter": True, "spelling": "eu"}).json()
+    assert run["status"] == "ok" and run["cover_letter"] and FONTS.count == loads + 1  # the resume's file only
     url = f"/api/runs/{run['run_id']}/cover.pdf"
-    preview, download = client.get(url), client.get(url + "?download=1")
-    assert preview.status_code == download.status_code == 200 and preview.content == download.content
-    assert FONTS.count == loads and lang_of(preview.content) == "en-GB"  # EU style: British English
+    preview = client.get(url)
+    assert preview.status_code == 200 and FONTS.count == loads + 2 and lang_of(preview.content) == "en-GB"
     assert run["cover_letter"]["greeting"] in pdf_text(preview.content)
+    download = client.get(url + "?download=1")
+    assert download.content == preview.content and FONTS.count == loads + 2  # kept: no new layout
 
 
-def test_an_added_letters_pdf_is_ready_for_its_preview_too(client, monkeypatch):
+def test_an_added_letters_download_reuses_its_preview_too(client):
     save_profile(client)
     run = client.post("/api/tailor", json={"jd": SAMPLE_JD}).json()  # Resume only
     added = client.post(f"/api/runs/{run['run_id']}/cover-letter", json={}).json()  # then Add cover letter
-    assert added["cover_letter"]
-    made_meanwhile()
-
-    def no_layout(*_args, **_kwargs):
-        raise AssertionError("the letter was laid out again")
-
-    monkeypatch.setattr(pdf_module, "Sheet", no_layout)
-    preview = client.get(f"/api/runs/{run['run_id']}/cover.pdf")
+    url = f"/api/runs/{run['run_id']}/cover.pdf"
+    preview = client.get(url)
+    loads = FONTS.count
     assert preview.status_code == 200 and added["cover_letter"]["greeting"] in pdf_text(preview.content)
+    assert client.get(url + "?download=1").content == preview.content and FONTS.count == loads
     assert lang_of(preview.content) == "en-US"
 
 
@@ -266,58 +265,27 @@ def test_a_rewritten_letter_gets_its_own_file(client):
     assert "Dear Sam Lee," in pdf_text(rewritten) and "Dear Sam Lee," not in pdf_text(first)
 
 
-def test_a_file_still_being_made_is_waited_for_and_a_failed_one_made_again(resume, monkeypatch):
-    letter, made, real = letter_of(3), [], pdf_module._cover_file
-
-    def slow(*args):
-        made.append(time.perf_counter())
-        time.sleep(0.3)
-        return real(*args)
-
-    monkeypatch.setattr(pdf_module, "_cover_file", slow)
-    make_cover_pdf_soon(resume, letter)
-    pdf = cover_pdf(resume, letter)  # asked while it is being made: waited for, not made twice
-    assert len(made) == 1 and cover_pdf(resume, letter) == pdf and "Sincerely," in pdf_text(pdf)
-
-    def broken(*args):
-        made.append(time.perf_counter())
-        raise RuntimeError("the letter's file could not be made")
-
-    other = letter_of(3, greeting="Dear Sam Lee,")
-    monkeypatch.setattr(pdf_module, "_cover_file", broken)
-    make_cover_pdf_soon(resume, other)
-    made_meanwhile()
-    monkeypatch.setattr(pdf_module, "_cover_file", real)
-    assert "Dear Sam Lee," in pdf_text(cover_pdf(resume, other))  # made again where it is asked for
-
-
 def test_a_kept_letter_is_the_file_render_cover_pdf_makes(resume):
     letter = letter_of(16)  # needs the second size
-    make_cover_pdf_soon(resume, letter, "A4", "en-GB")
     kept = cover_pdf(resume, letter, "A4", "en-GB")
+    assert cover_pdf(resume, letter, "A4", "en-GB") is kept  # the second time: the kept file
     made, pages = render_cover_pdf(resume, letter, "A4", "en-GB")
     contents = [[page.get_contents().get_data() for page in PdfReader(io.BytesIO(data)).pages] for data in (kept, made)]
     assert pages == 1 and contents[0] == contents[1] and lang_of(kept) == "en-GB"
     assert cover_pdf(resume, letter, "Letter", "en-GB") != kept  # another paper is another file
+    header = resume.model_copy(deep=True)
+    header.headline = "Staff Data Engineer"
+    assert "Staff Data Engineer" in pdf_text(cover_pdf(header, letter, "A4", "en-GB"))  # another header: made again
 
 
 def test_deleting_data_forgets_the_kept_letters_too(resume):
     letter = letter_of(3)
-    make_cover_pdf_soon(resume, letter)
-    made_meanwhile()
+    cover_pdf(resume, letter)
     forget_resume_pdfs()
     assert not pdf_module._recent_covers
     loads = FONTS.count
     cover_pdf(resume, letter)
     assert FONTS.count == loads + 1  # made again
-
-
-def test_the_letter_is_copied_before_it_is_made_in_the_background(profile):
-    resume, letter = small_resume(profile), letter_of(3)
-    make_cover_pdf_soon(resume, letter)
-    letter.greeting = "Changed after the letter was written,"  # the job goes on with its objects
-    made_meanwhile()
-    assert "Changed after" not in pdf_text(cover_pdf(resume, letter_of(3)))
 
 
 # ------------------------------------------------------------------ a pasted job post is checked at once

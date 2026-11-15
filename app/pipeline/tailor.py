@@ -18,7 +18,7 @@ from ..prompts import (
     tailor_system,
     tailor_user,
 )
-from ..render.pdf import document_language, make_cover_pdf_soon, remember_resume_pdf
+from ..render.pdf import remember_resume_pdf
 from ..schemas import (
     MAX_CERTIFICATIONS,
     CoverLetter,
@@ -719,8 +719,6 @@ async def run_tailor(
             letter_absorbed = True
             if letter is not None:
                 result.cover_letter = letter
-                # its PDF, made meanwhile for the preview the page shows first
-                make_cover_pdf_soon(result.resume, letter, style.paper, document_language(spelling))
             else:
                 notes.append(why or "Cover letter failed.")
         run_checks(result, jd)  # once, for both documents
@@ -888,8 +886,6 @@ async def write_cover_letter(
         fresh.job_link = job_link
     if letter is not None:
         fresh.cover_letter = letter  # replaces any earlier letter
-        if fresh.resume is not None:  # its PDF, made meanwhile for the preview that follows
-            make_cover_pdf_soon(fresh.resume, letter, fresh.style.paper, document_language(fresh.spelling))
     fresh.cover_cost_usd = round(fresh.cover_cost_usd + outcome.cost_usd, 6)
     fresh.notes = [n for n in fresh.notes if not n.startswith(LETTER_NOTES)]
     fresh.notes += notes

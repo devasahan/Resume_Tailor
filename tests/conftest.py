@@ -101,12 +101,10 @@ def test_accounts(monkeypatch):
 
 @pytest.fixture(autouse=True)
 def no_kept_pdfs():
-    """A resume or cover letter PDF kept in memory by one test (app/render/pdf.py) is never served in another, and a
-    letter's file one test started making is made before the next test counts the fonts loaded."""
-    from app.render import pdf
+    """A resume or cover letter PDF kept in memory by one test (app/render/pdf.py) is never served in another."""
+    from app.render.pdf import forget_resume_pdfs
 
-    pdf._cover_maker.submit(lambda: None).result()
-    pdf.forget_resume_pdfs()
+    forget_resume_pdfs()
 
 
 def log_in(client: TestClient, email: str, password: str) -> TestClient:
