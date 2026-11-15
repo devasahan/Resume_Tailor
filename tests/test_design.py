@@ -369,13 +369,15 @@ def test_a_saved_run_tries_smaller_steps_only_when_it_needs_more_pages(profile, 
     resume = long_resume(profile, bullets=6)
     old = FitStyle(font_pt=10.5, margin_in=0.65)
     laid_out = []
-    real = fit.render_resume_pdf
-    monkeypatch.setattr(fit, "render_resume_pdf", lambda r, s, d="Resume": laid_out.append(s) or real(r, s, d))
+    real = fit.resume_sheet
+    monkeypatch.setattr(fit, "resume_sheet", lambda r, s, d="Resume": laid_out.append(s) or real(r, s, d))
     two_pages, shown = saved_resume_pdf(resume, old, 2)
     assert laid_out == [current_style(old)] == [shown] and len(PdfReader(io.BytesIO(two_pages)).pages) == 2  # it fits
     laid_out.clear()
+    loads = FONTS.count
     one_page, shown = saved_resume_pdf(resume, old, 1)  # it was one page then: smaller steps until it is one page again
     assert laid_out[0] == current_style(old) and len(laid_out) > 1 and len(PdfReader(io.BytesIO(one_page)).pages) == 1
+    assert FONTS.count == loads + 1  # the steps tried are only laid out: the fonts load once, for the file made
     assert shown == laid_out[-1] == saved_style(resume, old, 1)  # the style it settled on, found again without a file
     text = " ".join(" ".join(page.extract_text() for page in PdfReader(io.BytesIO(one_page)).pages).split())
     assert all(bullet in text for exp in resume.experience for bullet in exp.bullets)  # never trimmed

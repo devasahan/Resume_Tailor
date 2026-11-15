@@ -1,6 +1,13 @@
-"""Chooses and calls models. The model for each task comes from Settings and is read on every call,
-so changing it takes effect immediately (requests already running finish on the model they started on)."""
+"""Chooses and calls models. The model for each task comes from Settings, read at each call, or once for a whole
+tailoring run, cover letter job or tailoring request (keep_settings): a change takes effect from the next one (work
+already running finishes with the Settings it started with)."""
 from __future__ import annotations
+
+import copy
+import functools
+from collections.abc import Iterator
+from contextlib import contextmanager
+from contextvars import ContextVar
 
 from .. import config
 from ..storage.db import Database
@@ -9,6 +16,21 @@ from .base import CostCapError, LLMClient, LLMResult, ProviderError
 from .fake_client import FakeClient
 from .openai_compat_client import OpenAICompatClient
 from .registry import ModelSpec, Registry
+
+# (router, its Settings as read once) inside a keep_settings block: asyncio tasks and asyncio.to_thread copy it
+_KEPT: ContextVar[tuple[Router, dict] | None] = ContextVar("kept_settings", default=None)
+
+
+def keeps_settings(work):
+    """For an async function whose first argument is the Router: the Settings are read once for the whole call (see
+    Router.keep_settings)."""
+
+    @functools.wraps(work)
+    async def kept(router: Router, *args, **kwargs):
+        with router.keep_settings():
+            return await work(router, *args, **kwargs)
+
+    return kept
 
 
 class Router:
@@ -29,7 +51,26 @@ class Router:
 
     # ------------------------------------------------------------------ selection
     def settings(self) -> dict:
+        """The Settings as saved, or as read at the start of the keep_settings block this runs in."""
+        kept = _KEPT.get()
+        if kept is not None and kept[0] is self:
+            return copy.deepcopy(kept[1])
         return self.db.get_settings()
+
+    @contextmanager
+    def keep_settings(self) -> Iterator[None]:
+        """Read the Settings once for the block: every model choice and check inside it, and in the tasks and threads
+        it starts, uses that reading (a run then reads the database once for them, not before every model call; the
+        daily cost cap still reads today's spend at each call). A block inside another keeps the outer reading."""
+        kept = _KEPT.get()
+        if kept is not None and kept[0] is self:
+            yield
+            return
+        token = _KEPT.set((self, self.db.get_settings()))
+        try:
+            yield
+        finally:
+            _KEPT.reset(token)
 
     def default_model(self, task: str, automatic: bool = False) -> str | None:
         """task: resume | cover_letter | parser. Falls back to the first available model.

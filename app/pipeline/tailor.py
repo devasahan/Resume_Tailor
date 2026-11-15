@@ -8,7 +8,7 @@ import time
 from datetime import date
 
 from ..llm.base import CostCapError, LLMError
-from ..llm.router import Router
+from ..llm.router import Router, keeps_settings
 from ..llm.schema import strict_json_schema
 from ..prompts import (
     PROMPT_VERSION,
@@ -18,7 +18,7 @@ from ..prompts import (
     tailor_system,
     tailor_user,
 )
-from ..render.pdf import remember_resume_pdf
+from ..render.pdf import document_language, make_cover_pdf_soon, remember_resume_pdf
 from ..schemas import (
     MAX_CERTIFICATIONS,
     CoverLetter,
@@ -78,6 +78,9 @@ LETTER_WAIT_SECONDS = 120.0
 # successful call, in this process), or LETTER_SECONDS_DEFAULT before the first one.
 LETTER_SECONDS_DEFAULT = 8.0
 _LETTER_SECONDS: dict[str, float] = {}
+# The layout and the trimming start once the letter's request is on its way (they run in a thread, which would slow the
+# letter's preparation down, and the letter takes longer), waiting at most this long for it
+LETTER_START_SECONDS = 1.0
 LETTER_NOTES = ("Cover letter failed", "Cover letter not written")  # how a note about a missing letter starts
 
 
@@ -280,6 +283,7 @@ async def refit(resume: Resume, paper: str) -> tuple[Resume, FitStyle, int, bool
     return trimmed, style, pages, pages <= MAX_PAGES, notes, removed
 
 
+@keeps_settings  # the Settings are read once, for the whole run
 async def run_tailor(
     router: Router,
     db: Database,
@@ -332,6 +336,7 @@ async def run_tailor(
     # resume's steps while it runs; the run takes in its outcome once it ends.
     letter_task: asyncio.Task | None = None
     letter_outcome: Outcome = Outcome()
+    letter_sending = asyncio.Event()  # set by the letter just before its model is asked
     letter_absorbed, letter_seconds = False, 0.0
     steps.mark("setup")
 
@@ -596,7 +601,7 @@ async def run_tailor(
                     router, final, out.jd_analysis, jd=jd, hints=hints, facts=facts, spelling=spelling,
                     company_name=company_name or out.jd_analysis.company, hiring_manager=hiring_manager,
                     model_id=letter_model, allow_fallback=allow_fallback, wait=LETTER_WAIT_SECONDS,
-                    outcome=letter_outcome, pending_cost=pending,
+                    outcome=letter_outcome, pending_cost=pending, sending=letter_sending,
                 ), LETTER_WAIT_SECONDS)
             except TimeoutError:  # the call on its way was billed (_write_letter counts it when it is stopped)
                 model = letter_outcome.chain[-1] if letter_outcome.chain else letter_model
@@ -604,24 +609,32 @@ async def run_tailor(
                 why = f"{LETTER_NOTES[0]}: {model}: did not answer within {LETTER_WAIT_SECONDS:.0f} seconds"
             return letter, why, time.perf_counter() - began
 
-        def start_letter(final: Resume, out: TailorOutput) -> None:
+        async def start_letter(final: Resume, out: TailorOutput) -> None:
             """Start writing the letter (once), now that no shorter draft can come: that would be a whole new draft
             with new figures, which a letter written before it would not have. The layout and the trimming only read
-            the text, and trimming keeps all the letter reads (see trim_to_fit)."""
+            the text, and trimming keeps all the letter reads (see trim_to_fit). Returns once the letter's request is
+            on its way (or the letter has ended; at most LETTER_START_SECONDS), so the layout's thread does not slow
+            its preparation down: the letter takes longer than the layout, so the run ends sooner."""
             nonlocal letter_task
             if cover_letter and letter_task is None:
                 # the draft's cost is not saved until the run is: the letter's cost-cap check counts it
                 letter_task = asyncio.create_task(write_letter(final, out, outcome.cost_usd))
+                sending = asyncio.create_task(letter_sending.wait())
+                try:
+                    await asyncio.wait({letter_task, sending}, timeout=LETTER_START_SECONDS,
+                                       return_when=asyncio.FIRST_COMPLETED)
+                finally:
+                    sending.cancel()
 
         time_left = None if deadline is None else deadline - time.perf_counter()
         if not shorter_fits(time_left, outcome.first_call_seconds):
-            start_letter(resume, output)  # the usual case with a time limit: the letter is written during the layout
+            await start_letter(resume, output)  # the usual case with a time limit: written during the layout
 
         # --- fit two pages at most: pick the style -> ask once more with a smaller bullet budget -> trim bullets
         fit = await asyncio.to_thread(try_styles, resume, paper, document)
         steps.mark("layout")
         if fit:
-            start_letter(resume, output)
+            await start_letter(resume, output)
         time_left = None if deadline is None else deadline - time.perf_counter()
         if fit is None and not shorter_fits(time_left, outcome.first_call_seconds):
             notes.append("There was no time left (Settings > Time limit) to ask the model for shorter bullets, so the "
@@ -660,7 +673,7 @@ async def run_tailor(
                 notes.append("Asking the model for shorter bullets ran past the time limit (Settings), so the text was "
                              "trimmed instead.")
             steps.mark("shorter draft")
-        start_letter(resume, output)  # the final text: a shorter draft is used only when it fits
+        await start_letter(resume, output)  # the final text: a shorter draft is used only when it fits
         # fitted_pdf: the final resume's PDF as it was laid out to fit, with the preview's title and language
         if fit:
             style, pages, fitted_pdf, fit_notes = fit
@@ -706,6 +719,8 @@ async def run_tailor(
             letter_absorbed = True
             if letter is not None:
                 result.cover_letter = letter
+                # its PDF, made meanwhile for the preview the page shows first
+                make_cover_pdf_soon(result.resume, letter, style.paper, document_language(spelling))
             else:
                 notes.append(why or "Cover letter failed.")
         run_checks(result, jd)  # once, for both documents
@@ -751,14 +766,15 @@ async def _write_letter(
     router: Router, resume: Resume, analysis: JDAnalysis, *, jd: str, hints: str, facts: str, spelling: str,
     company_name: str, hiring_manager: str, model_id: str, allow_fallback: bool, outcome: Outcome,
     wait: float | None = None,
-    pending_cost: float = 0.0, steps: Steps | None = None,
+    pending_cost: float = 0.0, steps: Steps | None = None, sending: asyncio.Event | None = None,
 ) -> tuple[CoverLetter | None, str | None]:
     """The cover letter for a final resume: (letter, None), or (None, why no letter was written). Never raises, so a
     letter never fails the resume it goes with; the reason starts with one of LETTER_NOTES, so a later letter can
     replace it. `outcome` gets what it spent. A model is waited for as long as for the resume (SWITCH_AFTER_SECONDS
     before the next model is tried); the last one `wait` seconds (LAST_MODEL_SECONDS when not given).
     `pending_cost`: spent on the draft, not saved yet, so the daily cost cap counts it. `steps` (the Add/Rewrite
-    cover letter job's) gets a mark after each step.
+    cover letter job's) gets a mark after each step. `sending` (a letter written inside a tailoring job) is set just
+    before the model is asked, so the job starts its layout then.
     Cancelled while its call is on its way, it counts that call's prompt (the provider bills it), then stops."""
     style = spelling or "us"
     keep = validate.known_names(resume, analysis, company_name, hiring_manager)
@@ -796,6 +812,8 @@ async def _write_letter(
         if pending_cost > 0:
             router.check_cost_cap(pending_cost)
         began = time.perf_counter()
+        if sending is not None:
+            sending.set()
         await generate_validated(
             router, chain, system=system_prompt, user=user_prompt,
             schema=schema, schema_name="cover_letter", parse=parse,
@@ -828,6 +846,7 @@ async def _write_letter(
     return None, message
 
 
+@keeps_settings  # the Settings are read once, for the whole job
 async def write_cover_letter(
     router: Router, db: Database, run_id: int, *, jd: str, model_id: str, user_id: int | None = None,
     steps: Steps | None = None, job_link: str = "",
@@ -869,6 +888,8 @@ async def write_cover_letter(
         fresh.job_link = job_link
     if letter is not None:
         fresh.cover_letter = letter  # replaces any earlier letter
+        if fresh.resume is not None:  # its PDF, made meanwhile for the preview that follows
+            make_cover_pdf_soon(fresh.resume, letter, fresh.style.paper, document_language(fresh.spelling))
     fresh.cover_cost_usd = round(fresh.cover_cost_usd + outcome.cost_usd, 6)
     fresh.notes = [n for n in fresh.notes if not n.startswith(LETTER_NOTES)]
     fresh.notes += notes

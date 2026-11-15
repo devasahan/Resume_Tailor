@@ -338,9 +338,9 @@ def test_cover_letter_starts_at_the_greeting_under_the_resume_header(resume):
 def test_a_long_cover_letter_stays_on_one_page(resume):
     long = CoverLetter(greeting="Dear Hiring Manager,", closing="Sincerely,", company_name="Acme Corp",
                        paragraphs=[" ".join(["Delivered reliable data pipelines for the analytics team."] * 16)] * 4)
-    from app.render.pdf import COVER_STYLES, _cover
+    from app.render.pdf import COVER_STYLES, _cover_sheet
 
-    assert _cover(resume, long, "Letter", *COVER_STYLES[0])[1] == 2  # too long at full size
+    assert _cover_sheet(resume, long, "Letter", *COVER_STYLES[0]).pdf.page == 2  # too long at full size
     pdf, pages = render_cover_pdf(resume, long)
     assert pages == 1 and "Sincerely," in text_of(pdf)
 

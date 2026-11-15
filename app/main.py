@@ -44,12 +44,13 @@ from .prompts import read_all as read_prompt_files
 from .pipeline.tailor import analysis_terms, fit_report, refit, run_checks, run_tailor, write_cover_letter
 from .render.docx import cover_docx, resume_docx
 from .render.pdf import (
+    cover_pdf,
+    document_language,
     document_name,
     forget_resume_pdfs,
     person_name,
     recent_resume_pdf,
     remember_resume_pdf,
-    render_cover_pdf,
     render_resume_pdf,
 )
 from .schemas import (
@@ -513,7 +514,7 @@ def document_word(result: TailorResult) -> str:
 
 def document_lang(result: TailorResult) -> str:
     """The language the PDF and DOCX files declare: British English for an EU style run."""
-    return "en-GB" if result.spelling == "eu" else "en-US"
+    return document_language(result.spelling)
 
 
 NO_JD = ("No job description was saved with this run. Runs tailored before the app kept the job description "
@@ -1203,29 +1204,30 @@ def create_app(db: Database | None = None, registry: Registry | None = None, rou
             if not found:
                 raise HTTPException(400, "Upload a resume first (Profile page).")
             profile_id, profile = found
-        compare = body.compare and user.is_admin  # users never pick a model: the admin's Settings decide
-        model_id = (body.model if user.is_admin else None) or router.default_model("resume")
-        if not model_id:
-            raise HTTPException(422, "No model is available. Add an API key, or choose a model in Settings.")
-        try:
-            router.usable_spec(model_id)
-        except LLMError as exc:
-            raise HTTPException(422, str(exc)) from exc
-        cover_model = None
-        if body.cover_letter and not compare:
-            chosen = db.get_settings().get("cover_letter_model")
-            if chosen:
-                try:
-                    router.usable_spec(chosen)
-                    cover_model = chosen
-                except LLMError:
-                    cover_model = None
-        return await answer_soon(user, "tailor", lambda steps: run_tailor(
-            router, db, profile=profile, profile_id=profile_id, jd=body.jd, hints=body.hints, model_id=model_id,
-            allow_fallback=not compare, cover_letter=body.cover_letter, cover_model_id=cover_model,
-            company_name=body.company_name.strip(), hiring_manager=body.hiring_manager.strip(), user_id=user.id,
-            spelling=body.spelling, steps=steps, job_link=job_link,
-        ))
+        with router.keep_settings():  # one reading of the Settings, for these checks and the run they start
+            compare = body.compare and user.is_admin  # users never pick a model: the admin's Settings decide
+            model_id = (body.model if user.is_admin else None) or router.default_model("resume")
+            if not model_id:
+                raise HTTPException(422, "No model is available. Add an API key, or choose a model in Settings.")
+            try:
+                router.usable_spec(model_id)
+            except LLMError as exc:
+                raise HTTPException(422, str(exc)) from exc
+            cover_model = None
+            if body.cover_letter and not compare:
+                chosen = router.settings().get("cover_letter_model")
+                if chosen:
+                    try:
+                        router.usable_spec(chosen)
+                        cover_model = chosen
+                    except LLMError:
+                        cover_model = None
+            return await answer_soon(user, "tailor", lambda steps: run_tailor(
+                router, db, profile=profile, profile_id=profile_id, jd=body.jd, hints=body.hints, model_id=model_id,
+                allow_fallback=not compare, cover_letter=body.cover_letter, cover_model_id=cover_model,
+                company_name=body.company_name.strip(), hiring_manager=body.hiring_manager.strip(), user_id=user.id,
+                spelling=body.spelling, steps=steps, job_link=job_link,
+            ))
 
     @app.get("/api/jobs/{job_id}")
     async def api_job(job_id: str, user: auth.User = Depends(current_user)):
@@ -1362,22 +1364,23 @@ def create_app(db: Database | None = None, registry: Registry | None = None, rou
             raise HTTPException(
                 409, "This run was made before job descriptions were kept. Tailor the resume again, then make "
                      "the cover letter.")
-        model_id = router.default_model("cover_letter")
-        if not model_id:
-            raise HTTPException(422, "No model is available for cover letters. Choose one in Settings.")
-        try:
-            router.usable_spec(model_id)
-        except LLMError as exc:
-            raise HTTPException(422, str(exc)) from exc
+        with router.keep_settings():  # one reading of the Settings, for these checks and the job they start
+            model_id = router.default_model("cover_letter")
+            if not model_id:
+                raise HTTPException(422, "No model is available for cover letters. Choose one in Settings.")
+            try:
+                router.usable_spec(model_id)
+            except LLMError as exc:
+                raise HTTPException(422, str(exc)) from exc
 
-        async def work(steps: timing.Steps) -> TailorResult:
-            fresh, error = await write_cover_letter(router, db, run_id, jd=jd, model_id=model_id, user_id=user.id,
-                                                    steps=steps, job_link=job_link)
-            if error:
-                raise JobFailed(error)
-            return fresh
+            async def work(steps: timing.Steps) -> TailorResult:
+                fresh, error = await write_cover_letter(router, db, run_id, jd=jd, model_id=model_id,
+                                                        user_id=user.id, steps=steps, job_link=job_link)
+                if error:
+                    raise JobFailed(error)
+                return fresh
 
-        return await answer_soon(user, "cover_letter", work)
+            return await answer_soon(user, "cover_letter", work)
 
     # ------------------------------------------------------------------ files (a Download click is logged)
     @app.get("/api/runs/{run_id}/resume.pdf")
@@ -1416,7 +1419,7 @@ def create_app(db: Database | None = None, registry: Registry | None = None, rou
         result = load_run(run_id, user)
         if result.resume is None or result.cover_letter is None:
             raise HTTPException(404, "No cover letter in this run.")
-        pdf, _ = render_cover_pdf(result.resume, result.cover_letter, result.style.paper, document_lang(result))
+        pdf = cover_pdf(result.resume, result.cover_letter, result.style.paper, document_lang(result))  # kept or made
         name = download_name(result, "pdf", cover=True)
         if download:
             log_download(user, run_id, result, "cover_letter", "pdf", name)

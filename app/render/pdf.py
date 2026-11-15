@@ -14,19 +14,24 @@ values (FitStyle.inline_skills), so a very large skills section does too.
 
 The code is a small typesetter: measure text, wrap it into lines, draw the lines top to bottom. Drawing in reading order
 also gives a clean text layer for ATS extraction. A page break never splits a bullet, and never leaves a section heading
-or a job line alone at the bottom of a page.
+or a job line alone at the bottom of a page. Laying out needs no fonts (text widths come from the font tables,
+text_width): a sheet notes what to draw, and only the file made (Sheet.finish) loads the fonts and draws it, so a size
+that is only tried (a fit step, a cover letter size) costs no font load.
 
 The latest resume PDFs are kept in memory (remember_resume_pdf), so the preview and the downloads that follow a run
-serve the file its job made instead of laying the resume out again.
+serve the file its job made instead of laying the resume out again. A cover letter's PDF is made in a thread of its own
+as soon as the letter is written (make_cover_pdf_soon) and kept the same way (cover_pdf).
 """
 from __future__ import annotations
 
 import hashlib
+import json
 import re
 import threading
 import time
 import unicodedata
 from collections import OrderedDict
+from concurrent import futures
 from dataclasses import dataclass
 from functools import cache
 from pathlib import Path
@@ -292,8 +297,8 @@ Line = list[Piece]
 
 def forget_glyph_caches() -> None:
     """fpdf2 caches two methods of its SubsetMap with functools.cache, keyed by the map itself, so every document's four
-    fonts (fontTools' parsed glyphs, about 10 MB) stay in memory for the life of the process, and a tailoring run lays
-    out many documents. The cache only saves a lookup: pick() gives the same number for a character again, so emptying
+    fonts (fontTools' parsed glyphs, about 10 MB) stay in memory for the life of the process, and the server draws
+    many documents. The cache only saves a lookup: pick() gives the same number for a character again, so emptying
     it is safe at any time, also while another thread lays out a document."""
     for name in ("pick", "get_glyph"):
         clear = getattr(getattr(SubsetMap, name, None), "cache_clear", None)
@@ -301,40 +306,39 @@ def forget_glyph_caches() -> None:
             clear()
 
 
+def _blank_pdf(paper: str, margin: float, top: float) -> FPDF:
+    """An fpdf2 document of this paper and these margins, without fonts or pages."""
+    pdf = FPDF(orientation="P", unit="pt", format=paper)
+    pdf.set_auto_page_break(False)  # pagination is handled here so a line is never split in two
+    pdf.set_margins(margin, top, margin)
+    pdf.c_margin = 0  # no inner padding: widths measured here are the widths drawn
+    return pdf
+
+
 class Sheet:
     """A PDF being laid out. `y` is the current top of the next line, in points from the page top. `margin` is the left
     and right margin (x = 0 is there), `top` the top and bottom one (the same as `margin` when not given). `spacing`
-    scales the gaps between the body's parts (FitStyle.spacing): they are measured in `gap_unit`."""
+    scales the gaps between the body's parts (FitStyle.spacing): they are measured in `gap_unit`.
+
+    Laying out loads no fonts and draws nothing: `pdf` only counts the pages (`pdf.page`), and each line, rule and new
+    page is noted in order. finish() loads the fonts and draws the notes into the file, with the same fpdf2 calls in
+    the same order as drawing at once, so the file is the same; a sheet that is only measured costs no font load."""
 
     def __init__(self, paper: str, margin: float, size: float, line: float, title: str, author: str,
                  lang: str = "en-US", top: float | None = None, spacing: float = 1.0):
-        forget_glyph_caches()  # the documents laid out before this one are let go
         top = margin if top is None else top
-        pdf = FPDF(orientation="P", unit="pt", format=paper)
-        pdf.set_auto_page_break(False)  # pagination is handled here so a line is never split in two
-        pdf.set_margins(margin, top, margin)
-        pdf.c_margin = 0  # no inner padding: widths measured here are the widths drawn
-        began = time.perf_counter()  # fpdf2 reads and parses the four font files again for every sheet
-        for family, style, file in WEIGHTS.values():
-            pdf.add_font(family, style, str(FONT_DIR / file))
-        FONTS.add(time.perf_counter() - began)  # counted for the job lines (app/timing.py)
-        pdf.set_title(title)
-        pdf.set_author(author)
-        try:
-            pdf.set_lang(lang)  # en-GB for an EU style CV and its letter
-        except Exception:  # older fpdf2 without set_lang
-            pass
-        pdf.add_page()
-        pdf.set_draw_color(RULE)  # the only lines drawn are the thin rules
-        pdf.set_line_width(RULE_WIDTH)
-        self.pdf = pdf
+        self.pdf = _blank_pdf(paper, margin, top)
+        self.pdf.add_page()
+        self.paper = paper
+        self._file_info = (title, author, lang)  # finish() writes them into the file
+        self._notes: list[tuple] = []  # what finish() draws, in order: ("page",), ("text", ...), ("rule", ...)
         self.margin = margin
         self.top = top
         self.size = size
         self.gap_unit = size * spacing  # exactly `size` at spacing 1: every gap as the design has it
         self.line = line
-        self.width = pdf.w - 2 * margin
-        self.bottom = pdf.h - top
+        self.width = self.pdf.w - 2 * margin
+        self.bottom = self.pdf.h - top
         self.y = top
         self.text_x = TEXT_INDENT * size  # a bullet's text, in points from the left margin
         self.bullet_x = MARKER_END * size - text_width("• ", REGULAR, size)  # its marker: "• " ends at MARKER_END
@@ -436,6 +440,7 @@ class Sheet:
     def _ensure(self, height: float) -> None:
         if self.y + height > self.bottom + 0.01:
             self.pdf.add_page()
+            self._notes.append(("page",))
             self.y = self.top
 
     def keep(self, height: float) -> None:
@@ -444,6 +449,7 @@ class Sheet:
         self._ensure(min(height, self.bottom - self.top))
 
     def _draw(self, line: Line, x: float, y: float, size: float, height: float) -> None:
+        """Note a line to draw from (x, y) on the current page (finish() draws it)."""
         merged: list[list] = []  # neighbours in the same style become one text string
         for piece in line:
             style = (piece.weight, piece.color, piece.tracking)
@@ -452,15 +458,7 @@ class Sheet:
                 merged[-1][2] += piece.width
             else:
                 merged.append([piece.text, style, piece.width])
-        for text, (weight, color, tracking), width in merged:
-            family, style, _file = WEIGHTS[weight]
-            self.pdf.set_font(family, style, size)
-            self.pdf.set_text_color(color)
-            self.pdf.set_char_spacing(char_spacing(tracking, size))
-            self.pdf.set_xy(x, y)
-            self.pdf.cell(w=width, h=height, text=drawable(text), new_x=XPos.RIGHT, new_y=YPos.TOP)
-            x += width
-        self.pdf.set_char_spacing(0)  # written into the page only when it was set
+        self._notes.append(("text", merged, x, y, size, height))
 
     def space(self, points: float) -> None:
         self.y += points
@@ -549,8 +547,7 @@ class Sheet:
     def rule(self, before: float = 0.0, after: float = 0.0, width: float = RULE_WIDTH) -> None:
         """A full-width thin gray line, as under the cover letter's header."""
         self.y += before
-        self.pdf.set_line_width(width)
-        self.pdf.line(self.margin, self.y + width / 2, self.margin + self.width, self.y + width / 2)
+        self._notes.append(("rule", width, self.margin, self.y + width / 2, self.margin + self.width, self.y + width / 2))
         self.y += width + after
 
     def heading(self, text: str, keep: float = 0.0) -> None:
@@ -568,8 +565,7 @@ class Sheet:
         start, end = self.margin + width + RULE_GAP * self.size, self.margin + self.width
         if start < end:
             middle = self.y + height / 2 + 0.3 * size - CAP_HEIGHT * size / 2  # the baseline, less half the capitals
-            self.pdf.set_line_width(RULE_WIDTH)
-            self.pdf.line(start, middle, end, middle)
+            self._notes.append(("rule", RULE_WIDTH, start, middle, end, middle))
         self.y += height + HEADING_GAP * self.gap_unit
 
     def last_page_fill(self) -> float:
@@ -577,7 +573,42 @@ class Sheet:
         return max(0.0, min(1.0, (self.y - self.top) / (self.bottom - self.top)))
 
     def finish(self) -> tuple[bytes, int]:
-        return bytes(self.pdf.output()), self.pdf.page
+        """The PDF file and its page count: the fonts are loaded and the noted lines, rules and pages drawn."""
+        forget_glyph_caches()  # the documents drawn before this one are let go
+        title, author, lang = self._file_info
+        pdf = _blank_pdf(self.paper, self.margin, self.top)
+        began = time.perf_counter()  # fpdf2 reads and parses the four font files again for every file
+        for family, style, file in WEIGHTS.values():
+            pdf.add_font(family, style, str(FONT_DIR / file))
+        FONTS.add(time.perf_counter() - began)  # counted for the job lines (app/timing.py)
+        pdf.set_title(title)
+        pdf.set_author(author)
+        try:
+            pdf.set_lang(lang)  # en-GB for an EU style CV and its letter
+        except Exception:  # older fpdf2 without set_lang
+            pass
+        pdf.add_page()
+        pdf.set_draw_color(RULE)  # the only lines drawn are the thin rules
+        pdf.set_line_width(RULE_WIDTH)
+        for note in self._notes:
+            if note[0] == "page":
+                pdf.add_page()
+            elif note[0] == "rule":
+                _kind, width, x1, y1, x2, y2 = note
+                pdf.set_line_width(width)
+                pdf.line(x1, y1, x2, y2)
+            else:
+                _kind, merged, x, y, size, height = note
+                for text, (weight, color, tracking), width in merged:
+                    family, style, _file = WEIGHTS[weight]
+                    pdf.set_font(family, style, size)
+                    pdf.set_text_color(color)
+                    pdf.set_char_spacing(char_spacing(tracking, size))
+                    pdf.set_xy(x, y)
+                    pdf.cell(w=width, h=height, text=drawable(text), new_x=XPos.RIGHT, new_y=YPos.TOP)
+                    x += width
+                pdf.set_char_spacing(0)  # written into the page only when it was set
+        return bytes(pdf.output()), pdf.page
 
 
 # ---------------------------------------------------------------------- the header (resume and cover letter)
@@ -617,6 +648,11 @@ def document_name(spelling: str | None) -> str:
     return "CV" if spelling == "eu" else "Resume"
 
 
+def document_language(spelling: str | None) -> str:
+    """The language a run's PDF and Word files declare: British English in EU style, American English otherwise."""
+    return "en-GB" if spelling == "eu" else "en-US"
+
+
 def render_resume_pdf(resume: Resume, style: FitStyle, document: str = "Resume") -> tuple[bytes, int]:
     """Return (pdf bytes, page count). `document` names it in the file's title: "Resume", or "CV" in EU style.
     Always lays the resume out (the server's warm-up relies on it): recent_resume_pdf serves a kept file."""
@@ -624,7 +660,7 @@ def render_resume_pdf(resume: Resume, style: FitStyle, document: str = "Resume")
 
 
 def resume_layout(resume: Resume, style: FitStyle) -> tuple[int, float]:
-    """(page count, how full the last page is), without building the PDF file."""
+    """(page count, how full the last page is), without making the PDF file (no fonts are loaded)."""
     sheet = resume_sheet(resume, style)
     return sheet.pdf.page, sheet.last_page_fill()
 
@@ -813,9 +849,10 @@ def recent_resume_pdf(resume: Resume, style: FitStyle, document: str) -> bytes |
 
 
 def forget_resume_pdfs() -> None:
-    """Drop every kept PDF (the admin deleted an account, or all data)."""
+    """Drop every kept PDF, the cover letters' too (the admin deleted an account, or all data)."""
     with _recent_lock:
         _recent_pdfs.clear()
+        _recent_covers.clear()
 
 
 # ---------------------------------------------------------------------- cover letter
@@ -830,15 +867,73 @@ def render_cover_pdf(resume: Resume, letter: CoverLetter, paper: str = "Letter",
     """The letter under the same header as the resume (name, headline, contact line), so the two look like one set:
     a thin rule, then the letter from its greeting to the typed signature (no date, address or subject line). One
     column of real text in reading order, like the resume, so applicant systems read it too."""
-    for size, line_height, gap in COVER_STYLES:
-        data, pages = _cover(resume, letter, paper, size, line_height, gap, lang)
-        if pages == 1:
+    for size, line_height, gap in COVER_STYLES:  # each size laid out without fonts; only the one used is drawn
+        sheet = _cover_sheet(resume, letter, paper, size, line_height, gap, lang)
+        if sheet.pdf.page == 1:
             break
-    return data, pages
+    return sheet.finish()
 
 
-def _cover(resume: Resume, letter: CoverLetter, paper: str, size: float, line_height: float,
-           gap: float, lang: str = "en-US") -> tuple[bytes, int]:
+# ---------------------------------------------------------------------- cover letter PDFs made ahead
+COVER_WAIT_SECONDS = 30.0  # a file still being made is waited for this long at most, then made where it is asked for
+_recent_covers: OrderedDict[str, futures.Future] = OrderedDict()  # as _recent_pdfs, with its lock; a file being made
+_cover_maker = futures.ThreadPoolExecutor(max_workers=1, thread_name_prefix="cover-pdf")  # one at a time
+
+
+def _cover_key(resume: Resume, letter: CoverLetter, paper: str, lang: str) -> str:
+    """What the letter's file is made of (all _cover_sheet reads): the resume header's name, title line and contact
+    line, the letter, the paper and the language."""
+    p = resume.profile
+    parts = [p.name, resume.headline, p.contact.model_dump_json(), letter.model_dump_json(), paper, lang]
+    return hashlib.sha256(json.dumps(parts).encode("utf-8")).hexdigest()
+
+
+def _keep_cover(key: str, made: futures.Future) -> None:
+    """Keep a letter's file (or one being made); the least recently used goes past RECENT_PDFS. _recent_lock held."""
+    _recent_covers[key] = made
+    _recent_covers.move_to_end(key)
+    while len(_recent_covers) > RECENT_PDFS:
+        _recent_covers.popitem(last=False)
+
+
+def _cover_file(resume: Resume, letter: CoverLetter, paper: str, lang: str) -> bytes:
+    return render_cover_pdf(resume, letter, paper, lang)[0]
+
+
+def make_cover_pdf_soon(resume: Resume, letter: CoverLetter, paper: str = "Letter", lang: str = "en-US") -> None:
+    """Start making a letter's PDF in a thread of its own as soon as the letter is written, and keep it: the preview
+    that follows (cover_pdf) then needs no layout. Made from copies, so the caller may go on with its objects."""
+    resume, letter = resume.model_copy(deep=True), letter.model_copy(deep=True)
+    key = _cover_key(resume, letter, paper, lang)
+    with _recent_lock:
+        if key in _recent_covers:
+            _recent_covers.move_to_end(key)
+            return
+        _keep_cover(key, _cover_maker.submit(_cover_file, resume, letter, paper, lang))
+
+
+def cover_pdf(resume: Resume, letter: CoverLetter, paper: str = "Letter", lang: str = "en-US") -> bytes:
+    """The letter's PDF (the file render_cover_pdf makes): the kept one, waiting for one still being made (at most
+    COVER_WAIT_SECONDS), else made now and kept for the download that usually follows the preview."""
+    key = _cover_key(resume, letter, paper, lang)
+    with _recent_lock:
+        made = _recent_covers.get(key)
+        if made is not None:
+            _recent_covers.move_to_end(key)  # read again: kept longer
+    if made is not None:
+        futures.wait([made], timeout=COVER_WAIT_SECONDS)
+        if made.done() and not made.cancelled() and made.exception() is None:
+            return made.result()
+    pdf = _cover_file(resume, letter, paper, lang)  # not kept, or its making failed: made here
+    done: futures.Future = futures.Future()
+    done.set_result(pdf)
+    with _recent_lock:
+        _keep_cover(key, done)
+    return pdf
+
+
+def _cover_sheet(resume: Resume, letter: CoverLetter, paper: str, size: float, line_height: float,
+                 gap: float, lang: str = "en-US") -> Sheet:
     p = resume.profile
     sheet = Sheet(paper, COVER_MARGIN, size, line_height, f"{p.name} - Cover Letter", p.name, lang)
     draw_header(sheet, p.name, resume.headline, p.contact, DESIGN_SIZE)  # the resume's header at its first step
@@ -850,4 +945,4 @@ def _cover(resume: Resume, letter: CoverLetter, paper: str, size: float, line_he
         sheet.para([Run(paragraph)], after=after)
     sheet.para([Run(letter.closing)], after=after + SIGNATURE_ROOM)
     sheet.para([Run(person_name(p.name))])
-    return sheet.finish()
+    return sheet

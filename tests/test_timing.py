@@ -47,8 +47,9 @@ def test_a_tailoring_and_a_cover_letter_each_log_their_steps(client, caplog):
     assert [name for name, _ in steps_of(tailored)] == [
         "setup", "models", "thread wait", "bullet plan", "prompts", "AI", "layout", "checks", "saving"]
     add_up(tailored)
-    # settings, models, saving; the layout at its step and at the design's sizes (the bullet plan loads no font)
-    assert int(tailored["db"]) >= 3 and int(tailored["fonts"]) >= 2
+    # today's spend (the call's cost check) and saving: the request read the Settings once, for the run too; the sizes
+    # tried are only laid out (as the bullet plan), so the fonts load once, for the file
+    assert int(tailored["db"]) == 2 and int(tailored["fonts"]) == 1
     covered = finished_line(caplog, "cover_letter")
     assert [name for name, _ in steps_of(covered)] == [
         "reading the run", "cover models", "cover prompts", "cover AI", "cost record", "reading the run again",

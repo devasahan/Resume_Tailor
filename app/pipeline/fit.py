@@ -29,7 +29,6 @@ from ..render.pdf import (
     DESIGN_MARGIN,
     DESIGN_SIZE,
     Sheet,
-    render_resume_pdf,
     resume_layout,
     resume_sheet,
 )
@@ -408,14 +407,14 @@ def saved_resume_pdf(resume: Resume, style: FitStyle, pages: int,
     are the next, smaller steps tried, and the first that keeps its page count is used (else whichever of the last two
     takes fewer pages, _saved_index). Its text is never trimmed and nothing is saved: the caller keeps the file under
     the run's saved style (remember_resume_pdf)."""
-    steps, made = _saved_steps(style), []
+    steps, sheets = _saved_steps(style), []
 
-    def pages_at(index: int) -> int:  # called for steps[0], steps[1], ... in turn
-        made.append(render_resume_pdf(resume, steps[index], document))
-        return made[-1][1]
+    def pages_at(index: int) -> int:  # called for steps[0], steps[1], ... in turn; only the step used is drawn
+        sheets.append(resume_sheet(resume, steps[index], document))
+        return sheets[-1].pdf.page
 
     index = _saved_index(steps, pages or MAX_PAGES, pages_at)
-    return made[index][0], steps[index]
+    return sheets[index].finish()[0], steps[index]
 
 
 def saved_style(resume: Resume, style: FitStyle, pages: int) -> FitStyle:
