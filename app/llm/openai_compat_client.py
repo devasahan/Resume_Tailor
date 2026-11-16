@@ -94,10 +94,11 @@ def is_key_error(resp: httpx.Response) -> bool:
         return True
     return resp.status_code == 400 and any(marker in resp.text.lower() for marker in KEY_ERROR_MARKERS)
 RETRY_DELAYS = (1.5, 4.0)  # network errors, rate limits (429) and other short hiccups
-# "This model is currently experiencing high demand" (503) and other server-side failures usually pass within a
-# minute, for paid keys too. Tailoring runs as a background job, so the page keeps waiting ("Still tailoring...").
+# "This model is currently experiencing high demand" (503) and other server-side failures: the model is not asked
+# again here. The error is marked busy, so the next model in the chain is asked at once, and the busy models are asked
+# again in rounds, the chosen model first (app/pipeline/generate.py BUSY_ROUND_PAUSES). A plain 429 (too many
+# requests, not a used-up quota) is retried here first, then marked busy too.
 BUSY = {500, 502, 503, 504}
-BUSY_RETRY_DELAYS = (3.0, 8.0, 15.0, 30.0)
 # A model may think for minutes before it answers; a host that cannot be reached at all is reported much sooner.
 TIMEOUT = httpx.Timeout(240.0, connect=15.0)
 
@@ -204,8 +205,8 @@ class OpenAICompatClient(LLMClient):
                 if resp.status_code not in TRANSIENT or is_quota_error(resp):
                     return resp
                 last = ProviderError(f"{self.spec.label}: HTTP {resp.status_code}: {error_message(resp)[:200]}",
-                                     resp.status_code)
-                delays = BUSY_RETRY_DELAYS if resp.status_code in BUSY else RETRY_DELAYS
+                                     resp.status_code, busy=resp.status_code in BUSY or resp.status_code == 429)
+                delays = () if resp.status_code in BUSY else RETRY_DELAYS
             if attempt >= len(delays):
                 raise last
             await self._sleep(delays[attempt])

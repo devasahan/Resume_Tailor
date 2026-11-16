@@ -29,6 +29,9 @@ MAX_BYTES = 5 * 1024 * 1024
 MAX_CHARS = 24_000
 MAX_PDF_PAGES = 10
 MAX_UNZIPPED_BYTES = 50 * 1024 * 1024  # a DOCX is a zip: refuse ones that expand into something huge
+# The upload waits for the reader in the same request: a busy reader model is asked again for at most about this
+# long (no longer than before), then the rule-based reader is used (app/pipeline/generate.py BUSY_ROUND_PAUSES)
+READ_BUSY_SECONDS = 45.0
 
 
 _NUM_ID = qn("w:pPr") + "/" + qn("w:numPr") + "/" + qn("w:numId")
@@ -161,6 +164,7 @@ async def read_resume(
                 router, [model_id], system=parse_system(), user=parse_user(text),
                 schema=strict_json_schema(Profile), schema_name="profile",
                 parse=lambda data: Profile.model_validate(data), context={"resume_text": text}, outcome=outcome,
+                busy_give_up=READ_BUSY_SECONDS,
             )
             profile, method = outcome.value, f"model:{model_id}"  # type: ignore[assignment]
             for company in profile.companies:  # type: ignore[union-attr]

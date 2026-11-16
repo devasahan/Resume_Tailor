@@ -81,15 +81,19 @@ function modelOptions(select, current, blankLabel, extra = []) {
 }
 const labelOf = id => (models.find(m => m.id === id) || {}).label || id;
 
-// A backup that uses the same API key as the resume model stops with it (a used-up quota, a refused key)
+// A backup that uses the same API key as the resume model stops with it: that company's service is busy (Google's
+// "high demand"), the key's quota is used up, or the key is refused. Shown also before another company's key is set.
+const OTHER_COMPANY = ['claude-sonnet-5-5', 'gpt-6.1-sol'];  // suggested when no other company's model is set up yet
 function sameKeyNote(st, resumeId) {
   const resume = models.find(m => m.id === resumeId);
   if (!resume || resume.demo || !resume.key_env) return null;
   const backups = models.filter(m => m.available && st.fallback_models.includes(m.id));
   if (backups.some(m => m.key_env && m.key_env !== resume.key_env)) return null;
   const other = models.find(m => m.available && !m.demo && m.key_env && m.key_env !== resume.key_env);
-  if (!other) return null;
-  return el('div', { class: 'small note notice warn', text: `No backup model uses a different API key from the resume model (${resume.key_env}). When that key's quota is used up, tailoring stops. Tick a backup with another key, for example ${other.label}.` });
+  const idea = OTHER_COMPANY.map(id => models.find(m => m.id === id)).find(m => m && m.key_env && m.key_env !== resume.key_env);
+  const fix = other ? `Tick a backup with another key, for example ${other.label}.`
+    : `Paste another company's API key under API keys above${idea ? ` (for example ${idea.key_env}, for ${idea.label})` : ''}, then tick that model here.`;
+  return el('div', { class: 'small note notice warn', text: `No backup model uses a different API key from the resume model (${resume.key_env}). When that company's AI service is busy (for example Google's "high demand") or the key's quota is used up, tailoring stops. ${fix}` });
 }
 
 async function init() {

@@ -20,6 +20,9 @@ from .registry import ModelSpec
 from .schema import extract_json
 
 FALLBACK_BETA = "server-side-fallback-2026-07-01"
+# Overloaded (529), other server-side failures and rate limits (429), after the SDK's own 2 short retries: busy, so the
+# next model in the chain is asked at once (app/pipeline/generate.py BUSY_ROUND_PAUSES)
+BUSY = {429, 500, 502, 503, 504, 529}
 
 
 class AnthropicClient(LLMClient):
@@ -80,7 +83,8 @@ class AnthropicClient(LLMClient):
             if exc.status_code in (401, 403):
                 hint = (f" -> The API key was rejected. In use: {config.key_hint(self.spec.key_env) or 'none'}. "
                         "Put a valid key in .env and restart.")
-            raise ProviderError(f"Anthropic API error {exc.status_code}: {exc.message}{hint}", exc.status_code) from exc
+            raise ProviderError(f"Anthropic API error {exc.status_code}: {exc.message}{hint}", exc.status_code,
+                                busy=exc.status_code in BUSY) from exc
         except anthropic.APIConnectionError as exc:
             raise ProviderError(f"Anthropic connection error: {exc}") from exc
 

@@ -11,14 +11,18 @@ class LLMError(Exception):
 
 class ProviderError(LLMError):
     """HTTP / transport / auth / rate-limit failure. `quota`: the API key's quota is used up (no retry helps until it
-    resets); `retry_after`: seconds until it lets a request through, when the provider says."""
+    resets); `retry_after`: seconds until it lets a request through, when the provider says; `busy`: the provider is
+    overloaded or limits requests for now (Google's 503 "high demand", a 500/502/504, a plain 429, Anthropic's 529
+    "overloaded"), so the next model in the chain is asked at once and this one again a little later
+    (app/pipeline/generate.py BUSY_ROUND_PAUSES)."""
 
     def __init__(self, message: str, status: int | None = None, *, quota: bool = False,
-                 retry_after: float | None = None):
+                 retry_after: float | None = None, busy: bool = False):
         super().__init__(message)
         self.status = status
         self.quota = quota
         self.retry_after = retry_after
+        self.busy = busy
 
 
 class RefusedError(LLMError):

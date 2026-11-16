@@ -134,31 +134,52 @@ def test_auth_error_is_not_retried_and_keeps_status():
     assert info.value.status == 401 and len(attempts) == 1
 
 
-def test_persistent_server_error_raises_after_retries():
-    client = client_with(lambda r: httpx.Response(503, text="down"), json_mode="json_object")
-    with pytest.raises(ProviderError):
-        call(client)
-    assert client.sleeps == [3.0, 8.0, 15.0, 30.0]  # "high demand": waits about a minute in all
+HIGH_DEMAND = {"error": {"code": 503, "status": "UNAVAILABLE", "message": (
+    "This model is currently experiencing high demand. Spikes in demand are usually temporary. Please try again later.")}}
 
 
-def test_a_busy_model_is_waited_for_and_a_network_error_is_not():
-    """Gemini's 503 "high demand" usually passes within a minute; a network error (no proxy) is reported soon."""
+@pytest.mark.parametrize("status", [500, 502, 503, 504])
+def test_a_busy_server_hands_over_at_once(status):
+    """Google's 503 "high demand" (and the other server errors) is not asked again inside the call: the error says
+    busy, so the next model in the chain is asked at once, and the chain takes turns (app/pipeline/generate.py)."""
     attempts = []
 
-    def busy_then_ok(request):
+    def handler(request):
         attempts.append(1)
-        return httpx.Response(503, text="high demand") if len(attempts) <= 2 else httpx.Response(200, json=ok_payload())
+        return httpx.Response(status, json=HIGH_DEMAND)
 
-    client = client_with(busy_then_ok, json_mode="json_object")
-    assert call(client).data == {"a": 1} and client.sleeps == [3.0, 8.0]
+    client = client_with(handler, json_mode="json_object")
+    with pytest.raises(ProviderError) as info:
+        call(client)
+    assert info.value.busy and info.value.status == status and not info.value.quota
+    assert len(attempts) == 1 and client.sleeps == []
+    assert str(info.value).startswith(f"X Model: HTTP {status}: This model is currently experiencing high demand.")
+
+
+def test_a_rate_limit_is_retried_shortly_then_busy_and_other_failures_are_not_busy():
+    client = client_with(lambda r: httpx.Response(429, text="slow down"), json_mode="json_object")
+    with pytest.raises(ProviderError) as info:
+        call(client)
+    assert info.value.busy and info.value.status == 429 and client.sleeps == [1.5, 4.0]
 
     def unreachable(request):
         raise httpx.ConnectError("no route", request=request)
 
     client = client_with(unreachable, json_mode="json_object")
-    with pytest.raises(ProviderError, match="network error"):
+    with pytest.raises(ProviderError, match="network error") as info:
         call(client)
-    assert client.sleeps == [1.5, 4.0]
+    assert client.sleeps == [1.5, 4.0] and not info.value.busy  # no route: the next model, never asked again
+
+    quota = {"error": {"code": 429, "status": "RESOURCE_EXHAUSTED",
+                       "message": "You exceeded your current quota, please check your plan and billing details."}}
+    client = client_with(lambda r: httpx.Response(429, json=quota), json_mode="json_object")
+    with pytest.raises(ProviderError) as info:
+        call(client)
+    assert info.value.quota and not info.value.busy and client.sleeps == []  # it rests instead (generate.py)
+
+    with pytest.raises(ProviderError) as info:
+        call(client_with(lambda r: httpx.Response(401, text="bad key"), json_mode="json_object"))
+    assert info.value.status == 401 and not info.value.busy
 
 
 # ------------------------------------------------------------------ Anthropic adapter
@@ -216,6 +237,18 @@ def test_anthropic_retries_without_fallback_if_api_rejects_it():
     calls = []
     result = call(anthropic_client([Rejected(), message()], calls, refusal_fallback=True))
     assert [c[0] for c in calls] == ["beta", "plain"] and result.data == {"a": 2}
+
+
+@pytest.mark.parametrize("status,busy", [(529, True), (503, True), (500, True), (429, True), (400, False),
+                                         (401, False), (404, False)])
+def test_anthropic_overloaded_is_busy(status, busy):
+    """After the SDK's own 2 short retries, "overloaded" (529), other server errors and rate limits hand over to the
+    next model at once; a refused request or key does not come back in a later round."""
+    error = anthropic.APIStatusError("Overloaded", response=httpx.Response(
+        status, request=httpx.Request("POST", "https://api.anthropic.com/v1/messages")), body=None)
+    with pytest.raises(ProviderError) as info:
+        call(anthropic_client([error], [], refusal_fallback=False))
+    assert info.value.status == status and info.value.busy is busy
 
 
 def test_anthropic_refusal_truncation_and_bad_json():
