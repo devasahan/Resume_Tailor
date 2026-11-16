@@ -29,8 +29,10 @@ MAX_BYTES = 5 * 1024 * 1024
 MAX_CHARS = 24_000
 MAX_PDF_PAGES = 10
 MAX_UNZIPPED_BYTES = 50 * 1024 * 1024  # a DOCX is a zip: refuse ones that expand into something huge
-# The upload waits for the reader in the same request: a busy reader model is asked again for at most about this
-# long (no longer than before), then the rule-based reader is used (app/pipeline/generate.py BUSY_ROUND_PAUSES)
+# The upload waits for the reader in the same request: a busy reader model (Google's 503, a plain 429, Anthropic's
+# 529) is asked again for at most about this long, busy answers and pauses together, then the rule-based reader is used
+# (app/pipeline/generate.py BUSY_ROUND_PAUSES). That is shorter than the minute of 503 retries an upload once waited
+# for; a 429 or 529 used to fail within seconds, and now gets these rounds too.
 READ_BUSY_SECONDS = 45.0
 
 

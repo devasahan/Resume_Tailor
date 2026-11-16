@@ -3,6 +3,7 @@ tailoring run, cover letter job or tailoring request (keep_settings): a change t
 already running finishes with the Settings it started with)."""
 from __future__ import annotations
 
+import asyncio
 import copy
 import functools
 from collections.abc import Iterator
@@ -19,6 +20,11 @@ from .registry import ModelSpec, Registry
 
 # (router, its Settings as read once) inside a keep_settings block: asyncio tasks and asyncio.to_thread copy it
 _KEPT: ContextVar[tuple[Router, dict] | None] = ContextVar("kept_settings", default=None)
+CHECK_SCHEMA = {"type": "object", "properties": {"ok": {"type": "boolean"}}, "required": ["ok"],
+                "additionalProperties": False}
+# A check (Settings > Run check, `python -m app.cli check`) asks a model that answered "busy" once more after this
+# long: a passing spike (Google's 503 "high demand") does not show as a broken key or model
+CHECK_BUSY_PAUSE = 3.0
 
 
 def keeps_settings(work):
@@ -150,3 +156,16 @@ class Router:
             max_tokens=spec.max_output_tokens, context=context,
         )
         return result, spec
+
+    async def check(self, model_id: str) -> tuple[LLMResult, ModelSpec]:
+        """One tiny real call that verifies the key, the model name and the JSON mode (it costs cents). A "busy" answer
+        is asked once more after CHECK_BUSY_PAUSE seconds; one still busy fails with the provider's own words."""
+        ask = functools.partial(self.call, model_id, system="Reply with one JSON object.", user='Return {"ok": true}.',
+                                schema=CHECK_SCHEMA, schema_name="check")
+        try:
+            return await ask()
+        except ProviderError as exc:
+            if not exc.busy:
+                raise
+        await asyncio.sleep(CHECK_BUSY_PAUSE)
+        return await ask()

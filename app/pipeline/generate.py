@@ -29,8 +29,10 @@ _RESTING_UNTIL: dict[str, float] = {}  # model id -> time.monotonic() until whic
 # plain 429, Anthropic's 529 "overloaded") hands over at once to the next model in the chain. When no model answered in
 # a round and some were busy, those are asked again, the chosen model first, after each of these pauses in turn:
 # a provider's "busy" usually passes within seconds to a minute, and taking turns finds the first model that is free.
-# No new round starts when its pause would end more than BUSY_GIVE_UP_SECONDS after the first try (about a minute and
-# a half in all, instead of a minute of waiting per model): the error then says plainly that the provider is busy.
+# A busy follow-up (the rewrite pass) is asked again after the same pauses, while its own time allows.
+# Busy answers and these pauses may take BUSY_GIVE_UP_SECONDS in all (about a minute and a half, instead of a minute of
+# waiting per model): no pause starts that would end past it, and the error then says plainly that the provider is
+# busy. Time spent on other failures (a slow answer that never came) does not count: those models are not asked again.
 BUSY_ROUND_PAUSES = (2.0, 5.0, 10.0, 15.0, 20.0, 25.0)
 BUSY_GIVE_UP_SECONDS = 100.0
 # The pause between rounds and the clock that measures BUSY_GIVE_UP_SECONDS (tests replace both)
@@ -122,11 +124,21 @@ class Outcome(Generic[T]):
     follow_up: str = ""  # "skipped" or "stopped" when the deadline left no time for the follow-up, else ""
     first_call_seconds: float = 0.0  # how long the first answer took (a whole new draft takes about as long)
     calls: list[dict] = field(default_factory=list)  # one entry per attempt, see add_call (the admin's timing line)
+    # The latest attempt's model and when it started (time.perf_counter()): while it has no entry in `calls` yet, that
+    # call is on its way (see on_its_way)
+    asking: str = ""
+    asking_since: float = 0.0
 
     def add_usage(self, usage: Usage, price_cost: float) -> None:
         self.input_tokens += usage.input_tokens
         self.output_tokens += usage.output_tokens
         self.cost_usd += price_cost
+
+    def on_its_way(self) -> bool:
+        """A call was started and has not ended: every attempt that ends gets its entry in `calls` (add_call), so a
+        step stopped from outside during one has one attempt more than entries. Between calls (a pause between rounds
+        of busy answers) nothing is on its way."""
+        return self.attempts > len(self.calls)
 
 
 def company(router: Router, model_id: str) -> str:
@@ -160,19 +172,23 @@ def _and(names: list[str]) -> str:
     return names[0] if len(names) == 1 else ", ".join(names[:-1]) + " and " + names[-1]
 
 
-def busy_summary(router: Router, busy: dict[str, ProviderError], asked: dict[str, int], seconds: float) -> str:
+def busy_summary(router: Router, busy: dict[str, ProviderError], asked: dict[str, int], seconds: float,
+                 chain: list[str] | None = None, rested: list[str] | None = None) -> str:
     """Every model asked was busy to the end, in plain words for the admin: 'Google's AI service is overloaded right
     now: Gemini 3.8 Flash and Gemini 3.5 Flash-Lite answered "busy" (HTTP 503) every time they were asked (5 times
     each in 1 min 32 s). This is on Google's side, not a problem in the app: try again in a few minutes. A backup
-    model from another company (Settings > Fallback models) keeps the app working when Google is busy.'"""
+    model from another company (Settings > Fallback models) keeps the app working when Google is busy.' A plain 429
+    (too many requests) is the rate limit of the app's API key at that company, and is called that. `rested`: models
+    of the `chain` that were not asked because their API key's quota is used up for now; the backup advice is given
+    only when every model of the chain is from the busy company."""
     owners = {company(router, model_id) for model_id in busy}
     owner = next(iter(owners)) if len(owners) == 1 else ""
     if owner:
-        who, side = f"{owner}'s AI service is", f"{owner}'s side"
+        who, side, at = f"{owner}'s AI service is", f"{owner}'s side", owner
     elif len(owners) > 1:
-        who, side = "The AI services are", "the AI companies' side"
+        who, side, at = "The AI services are", "the AI companies' side", "the AI companies"
     else:
-        who, side = "The AI service is", "the AI company's side"
+        who, side, at = "The AI service is", "the AI company's side", "the AI company"
     statuses = sorted({error.status for error in busy.values() if error.status})
     http = f" (HTTP {_and([str(status) for status in statuses])})" if statuses else ""
     counts = {asked[model_id] for model_id in busy}
@@ -180,20 +196,35 @@ def busy_summary(router: Router, busy: dict[str, ProviderError], asked: dict[str
     how_often = "" if times == 1 else (
         f" every time {'they were' if many else 'it was'} asked ({'' if len(counts) == 1 else 'up to '}{times} times"
         f"{' each' if many and len(counts) == 1 else ''} in {_in_words(seconds)})")
-    text = (f"{who} overloaded right now: {_and([model_label(router, model_id) for model_id in busy])} answered "
-            f"\"busy\"{http}{how_often}. This is on {side}, not a problem in the app: try again in a few minutes.")
-    if len(owners) == 1:  # every model from one company: a backup from another one would have answered
+    names = _and([model_label(router, model_id) for model_id in busy])
+    if statuses == [429]:  # too many requests: the API key's own rate limit there, not an overload
+        text = (f"{who} limiting this app's requests right now: {names} answered \"too many requests\"{http}"
+                f"{how_often}. This is the rate limit of the app's API key at {at}, not a problem in the app: try "
+                f"again in a few minutes, or raise that limit at {at}.")
+    else:
+        both = " (an overload, or the rate limit of the app's API key)"
+        state, cause = ("overloaded or limiting this app's requests", both) if 429 in statuses else ("overloaded", "")
+        text = (f"{who} {state} right now: {names} answered \"busy\"{http}{how_often}. This is on {side}{cause}, not "
+                "a problem in the app: try again in a few minutes.")
+    rested = [model_id for model_id in rested or [] if model_id not in busy]
+    if rested:
+        one = len(rested) == 1
+        whose = "its API key's quota is" if one else "their API keys' quotas are"
+        text += (f" {_and([model_label(router, model_id) for model_id in rested])} {'was' if one else 'were'} not "
+                 f"asked, because {whose} used up for now.")
+    if len(owners) == 1 and all(company(router, model_id) == owner for model_id in chain or busy):
+        # every model of the chain from one company: a backup from another one would have answered
         text += (" A backup model from another company (Settings > Fallback models) keeps the app working when "
                  f"{owner or 'that company'} is busy.")
     return text
 
 
 def failure_text(router: Router, errors: list[str], asked: dict[str, int], busy: dict[str, ProviderError | None],
-                 seconds: float) -> str:
+                 seconds: float, chain: list[str] | None = None, rested: list[str] | None = None) -> str:
     """What the admin reads when no model answered (users see only "busy, try again", app/main.py). With one round,
     every failure in order, as each model's attempts went. After more rounds, each model's last error, with how often
-    it was asked. When every model asked was busy to the end, a plain summary first (busy_summary), then each model's
-    last answer."""
+    it was asked. When every model asked was busy to the end, a plain summary first (busy_summary: `chain` is every
+    model of the step, `rested` the ones skipped because their quota is used up), then each model's last answer."""
     if not errors:
         return "No model could be used."
     last: dict[str, str] = {}
@@ -203,7 +234,8 @@ def failure_text(router: Router, errors: list[str], asked: dict[str, int], busy:
             last[model_id] = error
     ended_busy = {model_id: error for model_id, error in busy.items() if error is not None}
     if asked and len(ended_busy) == len(asked):
-        return f"{busy_summary(router, ended_busy, asked, seconds)} Last answers: {'; '.join(last.values())}"
+        summary = busy_summary(router, ended_busy, asked, seconds, chain, rested)
+        return f"{summary} Last answers: {'; '.join(last.values())}"
     if max(asked.values(), default=1) <= 1:
         return "; ".join(errors)
     return "; ".join(f"{error} (asked {asked[model_id]} times)" if asked[model_id] > 1 else error
@@ -232,8 +264,8 @@ async def generate_validated(
     `parse` turns the raw dict into the final object and raises ValueError when it is not usable.
     Provider errors, refusals and truncation skip straight to the next model (no same-model retry).
     `refine` may return a follow-up request for a VALID first answer (style, not correctness), with its own
-    prompt, schema and parser (a small "fix only this" answer instead of a full rewrite). It is asked once, and if
-    that second answer fails for any reason the first one is kept.
+    prompt, schema and parser (a small "fix only this" answer instead of a full rewrite). It is asked once (a "busy"
+    answer is asked again, see below), and if that second answer fails the first one is kept.
     `deadline` (a time.perf_counter() value) limits only that follow-up: it is not started when it would not finish
     in time (see follow_up_seconds), and it is stopped at the deadline; the first answer is kept either way. A
     follow-up marked `required` ignores the deadline.
@@ -241,36 +273,43 @@ async def generate_validated(
     `last_after` for the last model: that bounds a hanging request. A model that answers "busy" (ProviderError.busy:
     Google's 503 "high demand" and the like) hands over to the next model at once. When a whole round answered
     nothing and some models were busy, only those are asked again, in chain order (the chosen model first), after
-    the next of BUSY_ROUND_PAUSES, as long as that pause ends within `busy_give_up` seconds of the start
-    (BUSY_GIVE_UP_SECONDS when not given); then the error starts with a plain summary (failure_text). A model
-    whose API key's quota is used up rests (QUOTA_REST_SECONDS): it is skipped while another model follows it (the
-    last model is always tried). A slow or busy model never rests: the next run tries it first again.
+    the next of BUSY_ROUND_PAUSES. A busy follow-up is asked again after the same pauses while there is time for it
+    before the deadline (a required one, or one with no deadline: as long as the busy answers allow). Busy answers and
+    these pauses may take `busy_give_up` seconds in all (BUSY_GIVE_UP_SECONDS when not given): no pause starts that
+    would end past it, and the error then starts with a plain summary (failure_text). A model whose API key's quota
+    is used up rests (QUOTA_REST_SECONDS): it is skipped while another model follows it (the last model is always
+    tried). A slow or busy model never rests: the next run tries it first again.
     """
     out = outcome or Outcome()
     first = Ask(user, schema, schema_name, parse, context)
     began, errors_before = _clock(), len(out.errors)
     give_up = BUSY_GIVE_UP_SECONDS if busy_give_up is None else busy_give_up
+    busy_spent = 0.0  # seconds of busy answers and of the pauses after them, held against give_up
     asked: dict[str, int] = {}  # model id -> how many rounds asked it for a first answer
     busy: dict[str, ProviderError | None] = {}  # model id -> its last error, when that error said "busy"
+    rested: list[str] = []  # models skipped because their API key's quota is used up for now
     todo = list(model_ids)
     for round_no, pause in enumerate((0.0, *BUSY_ROUND_PAUSES)):
         if round_no:  # no model answered in the last round: ask again only the ones that were busy
             todo = [model_id for model_id in todo if busy.get(model_id) is not None]
             if not todo:
                 break
-            if _clock() - began + pause > give_up:
-                log.info("%s: still busy after %.0fs (%s): no more rounds", schema_name, _clock() - began,
-                         ", ".join(todo))
+            if busy_spent + pause > give_up:
+                log.info("%s: still busy after %.0fs of busy answers and pauses (%s): no more rounds", schema_name,
+                         busy_spent, ", ".join(todo))
                 break
             log.info("%s: every model asked was busy (%s), asking again in %gs", schema_name, ", ".join(todo),
                      pause)
             await _sleep(pause)
+            busy_spent += pause
         for position, model_id in enumerate(todo):
             last = position == len(todo) - 1
             if not last and resting(model_id):
                 log.info("%s %s skipped: its API key's quota is used up for now, so %s is used", model_id,
                          schema_name, todo[position + 1])
                 busy[model_id] = None  # resting since the last round (another call used up the quota): not again
+                if model_id not in rested:
+                    rested.append(model_id)
                 continue
             answer_limit = last_after if last else switch_after
             if model_id not in out.chain:
@@ -281,9 +320,13 @@ async def generate_validated(
             kept: tuple | None = None  # (value, served_model) of a valid first answer under refinement
             time_left: float | None = None  # how long the follow-up may take
             first_call = 0.0  # seconds the first answer took
-            for attempt in (1, 2):
+            follow_up_pauses = iter(BUSY_ROUND_PAUSES)  # before a busy follow-up is asked again
+            attempt = 0
+            while attempt < 2:
+                attempt += 1
                 out.attempts += 1
-                started = time.perf_counter()
+                started, clocked = time.perf_counter(), _clock()
+                out.asking, out.asking_since = model_id, started
                 try:
                     call = router.call(
                         model_id, system=system, user=ask.user, schema=ask.schema, schema_name=ask.schema_name,
@@ -335,8 +378,27 @@ async def generate_validated(
                     if isinstance(exc, ProviderError) and exc.quota:
                         _rest(model_id, "its API key's quota is used up", QUOTA_REST_SECONDS if exc.retry_after is None
                               else min(exc.retry_after, QUOTA_REST_SECONDS))
-                    if isinstance(exc, ProviderError) and exc.busy and kept is None:
-                        busy[model_id] = exc  # asked again in the next round, if there is one
+                    if isinstance(exc, ProviderError) and exc.busy:
+                        busy_spent += _clock() - clocked
+                        if kept is None:
+                            busy[model_id] = exc  # asked again in the next round, if there is one
+                        else:  # the follow-up: asked again after a pause while its own time allows
+                            pause = next(follow_up_pauses, None)
+                            # under a deadline (time_left is set) only when the next try can still finish before it
+                            fits = time_left is None or deadline is None or (
+                                deadline - time.perf_counter()
+                                >= (pause or 0.0) + follow_up_seconds(model_id, ask.schema_name, first_call))
+                            if pause is not None and busy_spent + pause <= give_up and fits:
+                                log.info("%s %s follow-up was busy, asking again in %gs", model_id, ask.schema_name,
+                                         pause)
+                                await _sleep(pause)
+                                busy_spent += pause
+                                if time_left is not None and deadline is not None:
+                                    time_left = deadline - time.perf_counter()
+                                attempt -= 1  # the same follow-up again: still the second attempt
+                                continue
+                            log.info("%s %s follow-up still busy: the first answer is kept", model_id,
+                                     ask.schema_name)
                     break
                 took = time.perf_counter() - started
                 thinking = f" (thinking {result.usage.thinking_tokens})" if result.usage.thinking_tokens else ""
@@ -386,4 +448,5 @@ async def generate_validated(
                 out.value, out.served_model = kept
                 out.final_model_id = model_id
                 return out
-    raise GenerationFailed(failure_text(router, out.errors[errors_before:], asked, busy, _clock() - began), out)
+    raise GenerationFailed(failure_text(router, out.errors[errors_before:], asked, busy, _clock() - began,
+                                        list(model_ids), rested), out)

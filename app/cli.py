@@ -48,14 +48,11 @@ def cmd_models(args) -> int:
 
 
 async def _check(router: Router, ids: list[str]) -> int:
-    schema = {"type": "object", "properties": {"ok": {"type": "boolean"}}, "required": ["ok"], "additionalProperties": False}
     failures = 0
     for model_id in ids:
         started = time.perf_counter()
         try:
-            result, spec = await router.call(
-                model_id, system="Reply with one JSON object.", user='Return {"ok": true}.', schema=schema, schema_name="check"
-            )
+            result, spec = await router.check(model_id)
             ms = int((time.perf_counter() - started) * 1000)
             print(f"OK    {model_id:24} answered as {result.served_model!r} in {ms} ms, cost ${spec.cost(result.usage):.5f}")
         except LLMError as exc:

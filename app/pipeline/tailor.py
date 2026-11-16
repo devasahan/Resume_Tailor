@@ -97,14 +97,15 @@ def _absorb(total: Outcome, other: Outcome) -> None:
     total.calls += other.calls
 
 
-def _stopped(out: Outcome, router: Router, model_id: str, kind: str, system: str, user: str, began: float,
-             calls: int = 0) -> None:
-    """A call stopped from outside while on its way (at the time limit, or its job ended): the provider got its whole
-    prompt and bills it, so it counts in the cost, and in the timing record as stopped. `began`: when the calls of
-    `out` from position `calls` on started (the earlier ones of them took their own recorded time)."""
-    sent = record_sent(out, router, model_id, system, user)
-    ran = time.perf_counter() - began - sum(call["seconds"] for call in out.calls[calls:])
-    add_call(out, model_id, kind, max(0.0, ran), sent, "stopped")
+def _stopped(out: Outcome, router: Router, kind: str, system: str, user: str) -> None:
+    """A step stopped from outside (at the time limit, or its job ended): the call on its way, if any, had sent its
+    whole prompt, which the provider bills, so it counts in the cost, and in the timing record as stopped, under the
+    model that was asked and for the time it ran (Outcome.asking). Stopped during a pause between rounds of busy
+    answers, nothing was on its way and nothing is counted."""
+    if not out.on_its_way():
+        return
+    sent = record_sent(out, router, out.asking, system, user)
+    add_call(out, out.asking, kind, max(0.0, time.perf_counter() - out.asking_since), sent, "stopped")
 
 
 def shorter_fits(time_left: float | None, first_call_seconds: float) -> bool:
@@ -603,10 +604,14 @@ async def run_tailor(
                     model_id=letter_model, allow_fallback=allow_fallback, wait=LETTER_WAIT_SECONDS,
                     outcome=letter_outcome, pending_cost=pending, sending=letter_sending,
                 ), LETTER_WAIT_SECONDS)
-            except TimeoutError:  # the call on its way was billed (_write_letter counts it when it is stopped)
-                model = letter_outcome.chain[-1] if letter_outcome.chain else letter_model
-                letter = None
-                why = f"{LETTER_NOTES[0]}: {model}: did not answer within {LETTER_WAIT_SECONDS:.0f} seconds"
+            except TimeoutError:  # the call on its way was billed and recorded as stopped (_write_letter)
+                letter, calls = None, letter_outcome.calls
+                if calls and calls[-1]["result"] != "stopped":  # time ran out in a pause between busy answers
+                    error = letter_outcome.errors[-1][:150] if letter_outcome.errors else "no answer"
+                    why = f"{LETTER_NOTES[0]}: still busy after {LETTER_WAIT_SECONDS:.0f} seconds ({error})"
+                else:  # the model that was writing it when time ran out
+                    model = calls[-1]["model"] if calls else letter_model
+                    why = f"{LETTER_NOTES[0]}: {model}: did not answer within {LETTER_WAIT_SECONDS:.0f} seconds"
             return letter, why, time.perf_counter() - began
 
         async def start_letter(final: Resume, out: TailorOutput) -> None:
@@ -645,7 +650,6 @@ async def run_tailor(
             shorter_system = tailor_system(metrics_mode, spelling, certifications_section=certifications_on)
             shorter_user = tailor_user(jd, profile.companies, hints, facts, shorten=True, bullets=smaller, today=today,
                                        certifications=profile.certifications, certifications_section=certifications_on)
-            asked = time.perf_counter()
             try:
                 shorter = generate_validated(
                     router, [outcome.final_model_id], system=shorter_system, user=shorter_user,
@@ -667,8 +671,7 @@ async def run_tailor(
                 _absorb(outcome, exc.outcome)
                 notes.append("Asking the model for shorter bullets failed, so the text was trimmed instead.")
             except TimeoutError:
-                _stopped(second, router, outcome.final_model_id, "tailor_output", shorter_system, shorter_user,
-                         asked)  # billed anyway
+                _stopped(second, router, "tailor_output", shorter_system, shorter_user)  # billed anyway
                 _absorb(outcome, second)
                 notes.append("Asking the model for shorter bullets ran past the time limit (Settings), so the text was "
                              "trimmed instead.")
@@ -799,7 +802,6 @@ async def _write_letter(
 
     attempts, calls = outcome.attempts, len(outcome.calls)  # before this letter
     system_prompt = user_prompt = ""
-    began = time.perf_counter()
     try:
         chain = router.chain(model_id, allow_fallback)
         schema = strict_json_schema(CoverLetterOut)
@@ -809,7 +811,6 @@ async def _write_letter(
         mark("cover prompts")
         if pending_cost > 0:
             router.check_cost_cap(pending_cost)
-        began = time.perf_counter()
         if sending is not None:
             sending.set()
         await generate_validated(
@@ -831,7 +832,7 @@ async def _write_letter(
         return outcome.value, None
     except asyncio.CancelledError:
         if outcome.attempts - attempts > len(outcome.calls) - calls:  # a call was on its way: its prompt was sent
-            _stopped(outcome, router, outcome.chain[-1], "cover_letter", system_prompt, user_prompt, began, calls)
+            _stopped(outcome, router, "cover_letter", system_prompt, user_prompt)
         raise
     except GenerationFailed as exc:
         message = f"{LETTER_NOTES[0]}: {str(exc)[:200]}"

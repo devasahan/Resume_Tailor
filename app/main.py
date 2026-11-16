@@ -982,16 +982,13 @@ def create_app(db: Database | None = None, registry: Registry | None = None, rou
 
     @app.post("/api/models/check", dependencies=[Depends(admin_user)])
     async def api_check(body: CheckRequest):
-        """One tiny real call per model: verifies the key, the model name and the JSON mode. Costs cents."""
-        schema = {"type": "object", "properties": {"ok": {"type": "boolean"}}, "required": ["ok"], "additionalProperties": False}
+        """One tiny real call per model (Router.check): verifies the key, the model name and the JSON mode. Costs
+        cents."""
         results = []
         for model_id in body.models:
             started = time.perf_counter()
             try:
-                result, spec = await router.call(
-                    model_id, system="Reply with one JSON object.", user='Return {"ok": true}.',
-                    schema=schema, schema_name="check",
-                )
+                result, spec = await router.check(model_id)
                 results.append({"id": model_id, "ok": True, "served_model": result.served_model,
                                 "ms": int((time.perf_counter() - started) * 1000), "cost_usd": round(spec.cost(result.usage), 6)})
             except LLMError as exc:

@@ -35,7 +35,8 @@ KEY_ERROR_MARKERS = ("api key not valid", "api_key_invalid", "missing or invalid
                      "incorrect api key", "invalid x-api-key")
 
 
-QUOTA_MARKERS = ("resource_exhausted", "exceeded your current quota", "insufficient_quota")
+QUOTA_MARKERS = ("resource_exhausted", "exceeded your current quota", "insufficient_quota", "billing_not_active",
+                 "exceeded_current_quota", "insufficient balance")
 # Where the owner sees a key's plan, billing and limits, per API host
 BILLING = {
     "generativelanguage.googleapis.com": ("Google", "aistudio.google.com"),
@@ -44,8 +45,9 @@ BILLING = {
 
 
 def is_quota_error(resp: httpx.Response) -> bool:
-    """The key's quota is used up (Google's RESOURCE_EXHAUSTED, OpenAI's insufficient_quota): not a short hiccup, so
-    it is not retried. A plain 429 (too many requests at once) still is."""
+    """The key's quota is used up (Google's RESOURCE_EXHAUSTED, OpenAI's insufficient_quota) or its account has no
+    credit (OpenAI's billing_not_active, Moonshot's exceeded_current_quota_error, Z.ai's "Insufficient balance"): not
+    a short hiccup, so it is not retried, and not taken for "busy". A plain 429 (too many requests at once) is."""
     return resp.status_code == 429 and any(marker in resp.text.lower() for marker in QUOTA_MARKERS)
 
 

@@ -20,8 +20,9 @@ from .registry import ModelSpec
 from .schema import extract_json
 
 FALLBACK_BETA = "server-side-fallback-2026-07-01"
-# Overloaded (529), other server-side failures and rate limits (429), after the SDK's own 2 short retries: busy, so the
-# next model in the chain is asked at once (app/pipeline/generate.py BUSY_ROUND_PAUSES)
+# Overloaded (529), other server-side failures and rate limits (429), after the SDK's own 2 retries (about a second
+# for a 529; a 429 waits as long as Anthropic's retry-after header asks): busy, so the next model in the chain is asked
+# then (app/pipeline/generate.py BUSY_ROUND_PAUSES)
 BUSY = {429, 500, 502, 503, 504, 529}
 
 

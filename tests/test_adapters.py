@@ -182,6 +182,23 @@ def test_a_rate_limit_is_retried_shortly_then_busy_and_other_failures_are_not_bu
     assert info.value.status == 401 and not info.value.busy
 
 
+@pytest.mark.parametrize("body", [
+    {"error": {"message": "Your account is not active, please check your billing details on our website.",
+               "type": "billing_not_active", "code": "billing_not_active"}},  # OpenAI
+    {"error": {"message": "Your account is suspended, please check your plan and billing details",
+               "type": "exceeded_current_quota_error"}},  # Moonshot (Kimi)
+    {"error": {"code": "1113", "message": "Insufficient balance or no resource package. Please recharge."}},  # Z.ai
+])
+def test_an_account_without_credit_is_a_used_up_quota_not_busy(body):
+    """These 429s are no short rate limit: asking again for a minute and a half cannot help, and "overloaded, try
+    again in a few minutes" would hide that the account needs money."""
+    client = client_with(lambda r: httpx.Response(429, json=body), json_mode="json_object")
+    with pytest.raises(ProviderError) as info:
+        call(client)
+    assert info.value.quota and not info.value.busy and client.sleeps == []
+    assert "the API key's quota is used up" in str(info.value)
+
+
 # ------------------------------------------------------------------ Anthropic adapter
 def anthropic_client(responses, calls, **settings):
     queue = list(responses)
@@ -242,8 +259,8 @@ def test_anthropic_retries_without_fallback_if_api_rejects_it():
 @pytest.mark.parametrize("status,busy", [(529, True), (503, True), (500, True), (429, True), (400, False),
                                          (401, False), (404, False)])
 def test_anthropic_overloaded_is_busy(status, busy):
-    """After the SDK's own 2 short retries, "overloaded" (529), other server errors and rate limits hand over to the
-    next model at once; a refused request or key does not come back in a later round."""
+    """After the SDK's own 2 retries, "overloaded" (529), other server errors and rate limits hand over to the next
+    model; a refused request or key does not come back in a later round."""
     error = anthropic.APIStatusError("Overloaded", response=httpx.Response(
         status, request=httpx.Request("POST", "https://api.anthropic.com/v1/messages")), body=None)
     with pytest.raises(ProviderError) as info:
