@@ -188,6 +188,9 @@ def test_a_rate_limit_is_retried_shortly_then_busy_and_other_failures_are_not_bu
     {"error": {"message": "Your account is suspended, please check your plan and billing details",
                "type": "exceeded_current_quota_error"}},  # Moonshot (Kimi)
     {"error": {"code": "1113", "message": "Insufficient balance or no resource package. Please recharge."}},  # Z.ai
+    {"code": "Some resource has been exhausted",
+     "error": "Your team has either used all available credits or reached its monthly spending limit. To continue "
+              "making API requests, please purchase more credits or raise your spending limit."},  # xAI
 ])
 def test_an_account_without_credit_is_a_used_up_quota_not_busy(body):
     """These 429s are no short rate limit: asking again for a minute and a half cannot help, and "overloaded, try

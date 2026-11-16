@@ -607,8 +607,10 @@ async def run_tailor(
             except TimeoutError:  # the call on its way was billed and recorded as stopped (_write_letter)
                 letter, calls = None, letter_outcome.calls
                 if calls and calls[-1]["result"] != "stopped":  # time ran out in a pause between busy answers
-                    error = letter_outcome.errors[-1][:150] if letter_outcome.errors else "no answer"
-                    why = f"{LETTER_NOTES[0]}: still busy after {LETTER_WAIT_SECONDS:.0f} seconds ({error})"
+                    # the busy answer it was waiting out, not a later model's other failure in that round
+                    error = letter_outcome.busy_error or (letter_outcome.errors[-1] if letter_outcome.errors
+                                                          else "no answer")
+                    why = f"{LETTER_NOTES[0]}: still busy after {LETTER_WAIT_SECONDS:.0f} seconds ({error[:150]})"
                 else:  # the model that was writing it when time ran out
                     model = calls[-1]["model"] if calls else letter_model
                     why = f"{LETTER_NOTES[0]}: {model}: did not answer within {LETTER_WAIT_SECONDS:.0f} seconds"

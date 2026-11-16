@@ -179,6 +179,25 @@ def test_a_busy_follow_up_under_the_time_limit_is_asked_again_only_when_it_still
     assert out.value == "draft" and clock["pauses"] == [] and main.calls == 2
 
 
+def test_a_busy_follow_up_whose_pause_ends_past_the_time_limit_is_not_sent(router, registry, monkeypatch):
+    """The event loop stood still during the pause (on the Web-tab site it moves only while a request is served), so
+    the pause ended past the time limit: the follow-up is not sent again only to be stopped at once, and nothing more is
+    billed or shown as a stopped call."""
+    monkeypatch.setattr(generate, "MIN_FOLLOW_UP_SECONDS", 0.3)
+    monkeypatch.setattr(generate, "BUSY_ROUND_PAUSES", (0.05,) * 6)
+    deadline = time.perf_counter() + 1.5
+
+    async def late(seconds):
+        await asyncio.sleep(deadline - time.perf_counter() + 0.05)
+
+    monkeypatch.setattr(generate, "_sleep", late)
+    main = router.overrides[MAIN] = Script(registry, MAIN, ["ok", busy(), "ok"], {"now": 0.0, "order": []})
+    out = ask(router, parse=lambda data: "draft", refine=lambda value: FIX, deadline=deadline)
+    assert out.value == "draft" and out.follow_up == "stopped" and main.calls == 2
+    assert [call["result"] for call in out.calls] == ["ok", "failed"]
+    assert out.input_tokens == out.calls[0]["input"]  # only the first answer's prompt
+
+
 def test_time_spent_on_other_failures_leaves_the_busy_time_alone(router, registry, clock):
     """The chosen model said "busy" once; the backup then took 94 s to give two unusable answers. The chosen model is
     still asked again: only busy answers and pauses count toward the 100 s."""
@@ -188,6 +207,20 @@ def test_time_spent_on_other_failures_leaves_the_busy_time_alone(router, registr
     out = ask(router)
     assert out.final_model_id == MAIN and clock["order"] == [MAIN, BACKUP, BACKUP, MAIN]
     assert clock["pauses"] == [2.0] and clock["now"] - 1000 == 108
+
+
+def test_a_turn_that_ends_busy_counts_in_full(router, registry, clock):
+    """Each round the chosen model gave an unusable answer (30 s), then "busy" when asked again (30 s): it is asked
+    again in the next round, so its whole turn counts toward the 100 s, and the step stops after 2 rounds (2 min 6 s),
+    not after 3 (3 min 13 s)."""
+    unusable = InvalidOutputError("Gemini 3.8 Flash returned an empty answer")
+    router.overrides[MAIN] = Script(registry, MAIN, [unusable, busy()] * 6, clock, seconds=30.0)
+    router.overrides[BACKUP] = Script(registry, BACKUP, [busy("Gemini 3.5 Flash-Lite")], clock, seconds=2.0)
+    with pytest.raises(GenerationFailed) as info:
+        ask(router)
+    assert clock["pauses"] == [2.0] and clock["now"] - 1000 == 126
+    assert clock["order"] == [MAIN, MAIN, BACKUP] * 2
+    assert str(info.value).startswith("Google's AI service is overloaded right now")
 
 
 def test_one_round_keeps_every_error_in_order(router, registry, clock):
@@ -225,15 +258,17 @@ def limited(label="Gemini 3.8 Flash"):
     return ProviderError(f"{label}: HTTP 429: Too many requests, slow down.", 429, busy=True)
 
 
-def test_a_rate_limit_is_called_the_keys_rate_limit(router, registry, clock):
+def test_too_many_requests_is_called_an_overload_or_the_keys_rate_limit(router, registry, clock):
+    """Some providers answer 429 when the key's rate limit is reached, others when they are overloaded ("The service
+    may be temporarily overloaded"): the app cannot tell which, so the message names both."""
     scripted(router, registry, clock, [limited()], [limited("Gemini 3.5 Flash-Lite")])
     with pytest.raises(GenerationFailed) as info:
         ask(router, busy_give_up=0.0)
     assert str(info.value).startswith(
-        "Google's AI service is limiting this app's requests right now: Gemini 3.8 Flash and Gemini 3.5 Flash-Lite "
-        "answered \"too many requests\" (HTTP 429). This is the rate limit of the app's API key at Google, not a "
-        "problem in the app: try again in a few minutes, or raise that limit at Google. A backup model from another "
-        "company (Settings > Fallback models) keeps the app working when Google is busy. Last answers: ")
+        "Google's AI service is overloaded or limiting this app's requests right now: Gemini 3.8 Flash and Gemini 3.5 "
+        "Flash-Lite answered \"too many requests\" (HTTP 429). This is on Google's side (an overload, or the rate "
+        "limit of the app's API key), not a problem in the app: try again in a few minutes. A backup model from "
+        "another company (Settings > Fallback models) keeps the app working when Google is busy. Last answers: ")
 
     router.overrides["claude-sonnet-5-5"] = Script(registry, "claude", [limited("Anthropic API error")], clock)
     router.overrides[MAIN] = Script(registry, MAIN, [busy()], clock)
@@ -373,6 +408,27 @@ def test_a_letter_whose_time_runs_out_between_busy_answers_says_busy(router, reg
                            "503: This model is currently experiencing high demand.")
     letters = [(call.model, call.result) for call in result.timing.calls if call.kind == "cover_letter"]
     assert letters == [(MAIN, "failed"), (BACKUP, "failed")]  # nothing was on its way, nothing stopped or billed
+
+
+def test_a_letter_note_quotes_the_busy_answer_it_waited_out(router, registry, db, profile, monkeypatch):
+    """The chosen letter model was busy and the backup, asked after it, was refused: only the chosen model was due
+    again when the letter's time ran out in the pause. The note quotes that busy answer, not the backup's refusal."""
+    db.set_settings({"fallback_models": [BACKUP]})
+    monkeypatch.setattr(generate, "BUSY_ROUND_PAUSES", (5.0,) * 6)  # the letter's 1 s ends during the first pause
+    monkeypatch.setattr(tailor, "LETTER_WAIT_SECONDS", 1.0)
+    refused = ProviderError("Gemini 3.5 Flash-Lite: HTTP 400: API key not valid.", 400)
+    router.overrides[MAIN] = ByKind(registry, {"tailor_output": ["ok"], "tailor_revision": ["ok"],
+                                               "cover_letter": [busy()]})
+    router.overrides[BACKUP] = ByKind(registry, {"cover_letter": [refused]})
+    result = asyncio.run(run_tailor(router, db, profile=profile, profile_id=None, jd=SAMPLE_JD, model_id=MAIN,
+                                    save=False, cover_letter=True, time_limit=0))
+    assert result.status == "ok" and result.cover_letter is None
+    note = next(note for note in result.notes if note.startswith("Cover letter failed"))
+    assert note.startswith(f"Cover letter failed: still busy after 1 seconds ({MAIN}: Gemini 3.8 Flash: HTTP 503: "
+                           "This model is currently experiencing high demand.")
+    assert "API key not valid" not in note
+    letters = [(call.model, call.result) for call in result.timing.calls if call.kind == "cover_letter"]
+    assert letters == [(MAIN, "failed"), (BACKUP, "failed")]
 
 
 def test_a_time_limit_during_a_pause_bills_no_call(router, registry, db, profile, monkeypatch):
