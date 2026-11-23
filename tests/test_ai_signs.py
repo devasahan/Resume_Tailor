@@ -336,8 +336,8 @@ def test_the_fix_round_and_the_shorter_draft_come_out_british_too(router, db, re
     jobs = Profile(name="Jordan Rivera", companies=[
         Company(name=f"Employer {i}", start=f"Jan {2023 - 3 * i}", end="Present" if i == 0 else f"Dec {2025 - 3 * i}")
         for i in range(9)])
-    shorter = tailor(router, db, jobs, jd, model="demo-detailed", spelling="eu")
-    assert "The model shortened the bullets to fit two pages." in shorter.notes
+    shorter = tailor(router, db, jobs, jd, model="demo-detailed", spelling="eu", time_limit=0)  # no limit: asked
+    assert "The model shortened the resume to fit two pages." in shorter.notes
     for result in (fixed, shorter):
         assert spelling.other_style_words(all_text(result), "eu") == []
         assert "organisation" in all_text(result).lower() or "optimis" in all_text(result).lower()
@@ -587,7 +587,8 @@ def test_vague_results_are_rewritten_in_the_one_fix_round(router, db, registry, 
     if count == 2:
         assert "Replace a vague result" in client.prompts[1] and validate.plain_word_problems(result.resume) == []
     else:
-        assert any("'Improved operational efficiency' (Northwind Labs)" in w for w in result.ats_warnings)
+        # the current job's bullet, in the present tense (the app's tense fix)
+        assert any("'Improve operational efficiency' (Northwind Labs)" in w for w in result.ats_warnings)
 
 
 def test_the_demo_writes_no_vague_results_dashes_or_bare_percentages(router, db, profile, jd):

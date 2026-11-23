@@ -45,7 +45,7 @@ def test_a_tailoring_and_a_cover_letter_each_log_their_steps(client, caplog):
         client.post(f"/api/runs/{run['run_id']}/cover-letter", json={})
     tailored = finished_line(caplog, "tailor")
     assert [name for name, _ in steps_of(tailored)] == [
-        "setup", "models", "thread wait", "bullet plan", "prompts", "AI", "layout", "checks", "saving"]
+        "setup", "models", "thread wait", "bullet plan", "prompts", "AI", "layout", "pdf", "checks", "saving"]
     add_up(tailored)
     # today's spend (the call's cost check) and saving: the request read the Settings once, for the run too; the sizes
     # tried are only laid out (as the bullet plan), so the fonts load once, for the file

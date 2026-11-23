@@ -39,9 +39,10 @@ from ..schemas import (
     TailorOutput,
     TailorRevision,
 )
-from . import spelling
-from .facts import is_expired, months_phrase, parse_point, stay_months
+from . import spelling, tense
+from .facts import is_current, is_expired, months_phrase, parse_point, stay_months
 from .notes import clean_notes
+from .numerals import normal, numerals
 
 _PUNCT_MAP = str.maketrans({
     "\u2019": "'", "\u2018": "'", "\u201c": '"', "\u201d": '"', "\u2013": "-", "\u2014": " - ", "\u2015": " - ",
@@ -1156,12 +1157,15 @@ def keyword_coverage(resume: Resume, analysis: JDAnalysis) -> Coverage:
     )
 
 
-MIN_SUMMARY_WORDS = 55
+MIN_SUMMARY_WORDS = 25  # 2-3 sentences of 30-48 words since the one-page rule (prompt v38)
 MIN_BULLET_WORDS = 15
 WEAK_OPENERS = (
     "responsible for", "worked on", "helped", "assisted", "participated in", "involved in", "utilized", "utilised",
     "build and maintain", "built and maintained",
 )
+# whole words only: 'Helped' opens a duty list, 'Helpdesk' does not
+_WEAK_OPENER = re.compile(r"^\s*(?:" + "|".join(re.escape(opener) for opener in WEAK_OPENERS) + r")\b",
+                          re.IGNORECASE)
 
 
 def thin_text_problems(resume: Resume) -> list[str]:
@@ -1176,7 +1180,7 @@ def thin_text_problems(resume: Resume) -> list[str]:
         problems.append(
             f"{len(thin)} bullets are under {MIN_BULLET_WORDS} words (" + "; ".join(f"'{b}'" for b in thin[:3]) + ")"
         )
-    weak = [b for b in bullets if b.lower().startswith(WEAK_OPENERS)]
+    weak = [b for b in bullets if _WEAK_OPENER.match(b)]
     if weak:
         problems.append("these bullets open like a duty list: " + "; ".join(f"'{b}'" for b in weak[:3]))
     return problems
@@ -1567,6 +1571,138 @@ def fix_repeated_words(resume: Resume) -> list[str]:
     return fixed
 
 
+# ------------------------------------------------------------------ the past tense, teamwork endings, weak bullets
+def tense_bullets(resume: Resume, analysis: JDAnalysis | None = None) -> list[str]:
+    """Every bullet in its job's tense (system.md, BULLETS): the present for the current job (facts.is_current: 'Added
+    RAG over ...' -> 'Add RAG over ...', see tense.present_opening), the past for every other ('Lead the ...' -> 'Led
+    the ...', tense.past_opening). A bullet in the posting's own voice is left for the rewrite pass, which replaces it
+    whole, and a change that would lose a mention of a posting term is not made. Returns one note per employer."""
+    terms = _posting_terms(analysis)
+    notes = []
+    for exp in resume.experience:
+        current = is_current(resume.profile.companies[exp.company_index], exp.company_index)
+        change = tense.present_opening if current else tense.past_opening
+        changed = 0
+        for index, bullet in enumerate(exp.bullets):
+            if _POSTING_VOICE.search(bullet):
+                continue
+            new = change(bullet)
+            if new == bullet or any(mention_count(new, term) < mention_count(bullet, term) for term in terms):
+                continue
+            exp.bullets[index] = new
+            changed += 1
+        if changed:
+            company = resume.profile.companies[exp.company_index].name
+            how = ("present tense, as the current job is written" if current
+                   else "past tense, as every earlier job is written")
+            notes.append(f"{company}: wrote {changed} bullet(s) in the {how}.")
+    return notes
+
+
+# '..., in close partnership with security and product teams.': an ending that only says who the work was done with.
+# Lowercase words only (a name such as 'with Stripe' or 'with Epic Systems' is never matched), ending on a team or a
+# department word, at the very end of the bullet.
+_TEAM_NOUN = (r"(?:teams?|stakeholders|leads|leadership|leaders|engineers|developers|designers|analysts|managers|PMs"
+              r"|counterparts|colleagues|peers|departments|groups|owners|squads|staff)")
+_DEPARTMENT = (r"(?:product|design|engineering|security|legal|compliance|sales|marketing|finance|operations|ops"
+               r"|support|QA|UX|IT|HR|SRE|DevOps)")
+_TEAMWORK_WITH = (r"(?:in\s+(?:(?:close|tight|direct|ongoing|daily|constant)\s+)?(?:partnership|collaboration"
+                  r"|coordination|lockstep)\s+with"
+                  r"|(?:working|partnering|collaborating|coordinating|liaising)(?:\s+(?:closely|directly|tightly"
+                  r"|daily))?\s+with"
+                  r"|(?:together|jointly)\s+with)")
+_WHO = (r"(?:(?:the|both|all|other|our)\s+)?"
+        r"(?:(?:[a-z][a-z/-]*|QA|UX|IT|HR|SRE|PMs?|DevOps)(?:,\s+|\s+(?:and|&)\s+|\s+)){0,6}")
+_TEAMWORK_TAIL = re.compile(
+    rf"(?P<cut>,?\s+(?:and\s+)?(?:{_TEAMWORK_WITH}\s+{_WHO}(?:{_TEAM_NOUN}|{_DEPARTMENT})"
+    rf"|alongside\s+{_WHO}{_TEAM_NOUN}))\s*(?P<end>[.!]?)\s*$")
+TEAMWORK_WINDOW = 200  # the ending is looked for in a bullet's last characters only: the scan stays short
+# a bullet opening like this is about the work with others, so its ending is part of what it says
+_TOGETHER_OPENERS = frozenset({
+    "partnered", "collaborated", "worked", "coordinated", "liaised", "teamed", "co-led", "co-designed", "co-authored",
+    "co-founded", "facilitated", "aligned", "paired", "joined",
+})
+_DANGLING = re.compile(r"\b(?:and|or|but|with|for|to|of|by|in|on|at|from|via|while|the|a|an)$", re.IGNORECASE)
+
+
+def _teamwork_cut(text: str) -> tuple[int, int, str] | None:
+    """The edit that cuts the closing teamwork clause off a bullet (keeping its full stop), or None when the bullet
+    does not end with one or is about working with others ('Partnered with ...')."""
+    match = _TEAMWORK_TAIL.search(text, max(0, len(text) - TEAMWORK_WINDOW))
+    if match is None:
+        return None
+    opener = text.split(maxsplit=1)[0].strip(",").lower() if text.split() else ""
+    if opener in _TOGETHER_OPENERS:
+        return None
+    return match.start("cut"), len(text), match.group("end") or "."
+
+
+def trim_teamwork_tails(resume: Resume, analysis: JDAnalysis | None = None) -> list[str]:
+    """No bullet ends by saying who the work was done with (system.md, BULLETS): '... for enterprise clients, in close
+    partnership with security and product teams.' becomes '... for enterprise clients.'. Only when what is left still
+    stands on its own: it keeps MIN_BULLET_WORDS words, the cut part holds no figure, nothing is left dangling, and no
+    must-have or keyword loses its only mention. A bullet that cannot be cut is left for the rewrite pass
+    (weak_bullets). Returns one note per cut."""
+    notes = []
+    for exp in resume.experience:
+        company = resume.profile.companies[exp.company_index].name
+        for index, bullet in enumerate(exp.bullets):
+            edit = _teamwork_cut(bullet)
+            if edit is None:
+                continue
+            new, clause = _applied(bullet, edit), bullet[edit[0]:edit[1]].strip(" ,.!")
+            if (word_count(new) < MIN_BULLET_WORDS or has_figure(clause) or _DANGLING.search(new.rstrip(" .!"))
+                    or not _sound(bullet, edit, 0, None)):
+                continue
+            before = (unshown_must_haves(resume, analysis), keyword_coverage(resume, analysis).found) if analysis \
+                else None
+            exp.bullets[index] = new
+            if before is not None and (unshown_must_haves(resume, analysis),
+                                       keyword_coverage(resume, analysis).found) != before:
+                exp.bullets[index] = bullet  # the clause held a keyword's only mention: the rewrite pass places it
+                continue
+            notes.append(f"{company}: removed the closing '{clause}' from a bullet: it said who the work was done "
+                         "with, not how it was done or what changed.")
+    return notes
+
+
+# a result written in words: 'so ...', 'cutting ...', 'without ...', 'to catch ...' (a figure counts too, has_figure)
+_RESULT_WORDS = re.compile(
+    r"\b(?:so|letting|allowing|enabling|which|cutting|cut|reducing|lowering|saving|raising|lifting|doubling|halving"
+    r"|making|giving|keeping|kept|freeing|helping|until|without|instead\s+of|no\s+longer|fewer|faster|sooner|less"
+    r"|stopped|before|ahead\s+of|never|zero|removing|eliminating|avoiding|preventing|shortening|unblocking|now"
+    r"|to\s+(?:catch|keep|cut|stop|prevent|avoid|handle|reduce|lower|speed|let|help|save|free|spot|flag|protect"
+    r"|meet|pass))\b", re.IGNORECASE)
+MIN_WEAK_BULLETS_FOR_RETRY = 2  # one weak bullet is only noted; two or more are worth the single fix round
+WEAK_SHOWN_WORDS = 8  # a weak bullet is named by its first words
+
+
+def weak_bullets(resume: Resume) -> list[tuple[str, str, str]]:
+    """(company, bullet, why) for each bullet that does not say what changed: one still ending on who the work was
+    done with (too short to cut, trim_teamwork_tails), or one with no figure and no result in words ('so ...',
+    'cutting ...', 'without ...'). The rewrite pass is asked to fix them when there is time; the admin sees them."""
+    weak = []
+    for exp in resume.experience:
+        company = resume.profile.companies[exp.company_index].name
+        for bullet in exp.bullets:
+            if _teamwork_cut(bullet) is not None:
+                weak.append((company, bullet, "ends on who the work was done with"))
+            elif not has_figure(bullet) and not _RESULT_WORDS.search(bullet):
+                weak.append((company, bullet, "names no result"))
+    return weak
+
+
+def weak_bullet_list(weak: list[tuple[str, str, str]], limit: int = 6) -> str:
+    """'"Configured HIPAA compliance controls, audit logs and SSO for ..." (Northwind Labs: ends on ...)', for notes and the
+    fix round."""
+    shown = []
+    for company, bullet, why in weak[:limit]:
+        words = bullet.split()
+        start = " ".join(words[:WEAK_SHOWN_WORDS]) + (" ..." if len(words) > WEAK_SHOWN_WORDS else "")
+        shown.append(f'"{start}" ({company}: {why})')
+    return "; ".join(shown)
+
+
 _LEVEL_WORDS = {
     "intern": -1, "trainee": -1, "junior": 0, "jr": 0, "associate": 0, "graduate": 0,
     "senior": 3, "sr": 3, "staff": 4, "lead": 4, "principal": 5,
@@ -1727,26 +1863,28 @@ def ats_lint(resume: Resume) -> list[str]:
     if word_count(resume.headline) > 14:
         warnings.append(f"Headline is long ({word_count(resume.headline)} words).")
     words = word_count(resume.summary)
-    if words > 95:
-        warnings.append(f"Summary is long ({words} words; aim for 60-85).")
+    if words > 60:
+        warnings.append(f"Summary is long ({words} words; aim for 30-48, 2-3 lines).")
     elif words < MIN_SUMMARY_WORDS:
-        warnings.append(f"Summary is short ({words} words; aim for 60-85).")
+        warnings.append(f"Summary is short ({words} words; aim for 30-48).")
     if _FIRST_PERSON.search(resume.summary):
         warnings.append("Summary uses first-person pronouns.")
     total_skills = sum(len(g.skills) for g in resume.skills)
-    if not 12 <= total_skills <= 40:
-        warnings.append(f"{total_skills} skills listed (aim for roughly 24-32).")
+    if not 8 <= total_skills <= 24:
+        warnings.append(f"{total_skills} skills listed (aim for 12-18 in at most 3 rows).")
+    if len(resume.skills) > 3:
+        warnings.append(f"{len(resume.skills)} skills rows (aim for at most 3, the most relevant first).")
     warnings += title_growth_problems(resume)
     for exp in resume.experience:
         company = resume.profile.companies[exp.company_index].name
-        if not 2 <= len(exp.bullets) <= 8:
-            warnings.append(f"{company}: {len(exp.bullets)} bullets (aim for 3-8, the most in recent roles).")
+        if len(exp.bullets) > 8:
+            warnings.append(f"{company}: {len(exp.bullets)} bullets (one page holds fewer: the most in recent roles).")
         openers = [b.split()[0].lower() for b in exp.bullets if b.split()]
         if len(openers) != len(set(openers)):
             warnings.append(f"{company}: two bullets start with the same word.")
         for bullet in exp.bullets:
-            if word_count(bullet) > 36:
-                warnings.append(f"{company}: a bullet is {word_count(bullet)} words long.")
+            if word_count(bullet) > 26:
+                warnings.append(f"{company}: a bullet is {word_count(bullet)} words long (aim for 15-22).")
                 break
             if word_count(bullet) < MIN_BULLET_WORDS:
                 warnings.append(
@@ -1824,7 +1962,7 @@ def figure_style_problems(resume: Resume, allowed_text: str, notes: str = "") ->
     Figures that appear in `allowed_text` (the user's hints and the computed facts) are never reported, nor those
     the person's project notes give whole (`notes`, see note_figures).
     """
-    allowed, own = allowed_text.lower(), note_figures(notes)
+    allowed, own = numerals(allowed_text).lower(), note_figures(notes)
     problems: list[str] = []
     texts = [resume.summary] + [bullet for exp in resume.experience for bullet in exp.bullets]
     for text in texts:
@@ -1837,7 +1975,8 @@ def figure_style_problems(resume: Resume, allowed_text: str, notes: str = "") ->
 
 
 MAX_FIGURE_BULLETS_PER_JOB = 2
-MAX_FIGURE_SHARE = 0.5
+MAX_FIGURE_BULLETS_CURRENT = 3  # the most recent job carries its scale and results (the reviewer's rule, prompt v38)
+MAX_FIGURE_SHARE = 0.5  # of the bullets after each job's first, which always carries a figure
 
 
 def has_figure(text: str) -> bool:
@@ -1850,19 +1989,32 @@ def has_figure(text: str) -> bool:
     return False
 
 
+def _density_figure(text: str) -> bool:
+    """has_figure, but a small count on its own ('7 schools', '3 teams') is no measurement: only a figure of 10 or more,
+    or one with a unit, a sign or a decimal, counts toward the density."""
+    for token in _numbers_in(text):
+        if token.isdigit() and (int(token) < 10 or (len(token) == 4 and 1900 <= int(token) <= 2100)):
+            continue
+        if token:
+            return True
+    return False
+
+
 def metric_density_problems(resume: Resume) -> list[str]:
-    """Employers with more than 2 bullets carrying figures, and an overall share above half."""
+    """Employers with more bullets carrying figures than they may (the most recent 3, every other 2), and a share of
+    the bullets after each job's first (which always carries one) above half. A small count is no figure here."""
     problems: list[str] = []
     total = with_figure = 0
-    for exp in resume.experience:
-        count = sum(has_figure(b) for b in exp.bullets)
-        total += len(exp.bullets)
-        with_figure += count
-        if count > MAX_FIGURE_BULLETS_PER_JOB:
+    for position, exp in enumerate(resume.experience):
+        count = sum(_density_figure(b) for b in exp.bullets)
+        total += max(0, len(exp.bullets) - 1)
+        with_figure += sum(_density_figure(b) for b in exp.bullets[1:])
+        allowed = MAX_FIGURE_BULLETS_CURRENT if position == 0 else MAX_FIGURE_BULLETS_PER_JOB
+        if count > allowed:
             company = resume.profile.companies[exp.company_index].name
             problems.append(f"{company}: {count} of {len(exp.bullets)} bullets have figures")
-    if total and with_figure / total > MAX_FIGURE_SHARE:
-        problems.append(f"{with_figure} of {total} bullets overall have figures")
+    if total >= 2 and with_figure / total > MAX_FIGURE_SHARE:
+        problems.append(f"{with_figure} of the {total} bullets after each job's first have figures")
     return problems
 
 
@@ -2523,7 +2675,7 @@ def vary_figures(resume: Resume, allowed_text: str = "") -> list[str]:
     an AI-written draft only: text the person edited stays as typed. Changes the resume in place and returns the
     texts that changed, as they are now. `allowed_text`: the hints and the computed facts."""
     texts = [resume.summary, *(bullet for exp in resume.experience for bullet in exp.bullets)]
-    varied = _varied(texts, allowed_text)
+    varied = _varied(texts, normal(allowed_text))  # the hints' '38 percent' is the text's '38%' (numerals.py)
     resume.summary, rest = varied[0], iter(varied[1:])
     for exp in resume.experience:
         exp.bullets = [next(rest) for _bullet in exp.bullets]
@@ -2536,7 +2688,7 @@ def vary_letter_figures(letter: CoverLetter, allowed_text: str = "") -> list[str
     cover_plain_problems reads a letter. Changes the letter in place and returns the paragraphs that changed."""
     paragraphs = list(letter.paragraphs)
     pieces = [_sentence_pieces(paragraph) for paragraph in paragraphs]
-    varied = iter(_varied([sentence for parts in pieces for sentence in parts[0::2]], allowed_text))
+    varied = iter(_varied([sentence for parts in pieces for sentence in parts[0::2]], normal(allowed_text)))
     letter.paragraphs = ["".join(next(varied) if index % 2 == 0 else part for index, part in enumerate(parts))
                          for parts in pieces]
     return [new for old, new in zip(paragraphs, letter.paragraphs) if new != old]
@@ -2706,7 +2858,7 @@ def claim_flags(resume: Resume, jd: str, hints: str, notes: str = "") -> list[Fl
     notes as the model reads them (project_notes): the skills they name are the person's own, and so are the figures
     they give whole (note_figures; the digits of a year or a date are not one)."""
     flags: list[Flag] = []
-    hints_l, own = hints.lower(), note_figures(notes)
+    hints_l, own = numerals(hints).lower(), note_figures(notes)  # their 'seven' is a '7' in the text
 
     def check_numbers(section: str, text: str) -> None:
         """One flag naming every estimate in the text (a job's first bullet gives its size and its result)."""
@@ -2773,7 +2925,7 @@ def cover_flags(letter: CoverLetter, hints: str, notes: str = "") -> list[Flag]:
     """A letter paragraph with a figure the person did not give: not in the hints, and not whole in their project
     notes (`notes`, see note_figures)."""
     flags: list[Flag] = []
-    hints_l, own = hints.lower(), note_figures(notes)
+    hints_l, own = numerals(hints).lower(), note_figures(notes)
     for paragraph in letter.paragraphs:
         for token, key in _figures_and_keys(paragraph):
             if token.lower() not in hints_l and key not in own:
@@ -2849,6 +3001,7 @@ def note_figures(notes: str) -> frozenset[str]:
     there makes '450' or '450+' in a bullet the person's own, and '$2M' makes '$2 million' theirs; never the '4' or
     the '20' that only sit inside a '450' or a '2024', nor the digits of a date ('2023-24', '3 March', '12/03/2024')
     or a path."""
+    notes = numerals(notes)  # 'seven schools' in the notes makes '7 schools' in a bullet theirs
     return frozenset(figure_key(token) for token in _numbers_in(_short_units(_NOT_FIGURES.sub(" ", notes))) if token)
 
 

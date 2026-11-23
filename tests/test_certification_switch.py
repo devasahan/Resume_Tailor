@@ -10,6 +10,7 @@ before (test_certifications.py switches it on for its own tests).
 import asyncio
 import io
 import json
+from datetime import date
 from types import SimpleNamespace
 
 import pytest
@@ -24,7 +25,7 @@ from app.llm.schema import strict_json_schema
 from app.main import create_app
 from app.pipeline import validate
 from app.pipeline.compare import compare
-from app.pipeline.fit import bullet_budget
+from app.pipeline.page_fit import job_relevance, plan_pages
 from app.pipeline.tailor import run_tailor, write_cover_letter
 from app.prompts import (
     RETRY_MARKER,
@@ -203,7 +204,7 @@ def test_off_no_section_no_rows_and_no_certifications_in_any_prompt(router, regi
     before = certified.model_copy(deep=True)
     client = Recording(FakeClient(registry.get("demo-detailed")))
     router.overrides["demo-detailed"] = client
-    result = tailored(router, certified, "demo-detailed", cover_letter=True)
+    result = tailored(router, certified, "demo-detailed", cover_letter=True, time_limit=0)  # a shorter draft too
     assert result.status == "ok"
     assert {"first", "fix", "shorter", "cover letter"} <= {kind(call) for call in client.calls}
     for call in client.calls:  # every prompt: no list, no rule asking for picks
@@ -266,7 +267,7 @@ def test_on_everything_works_as_before(router, registry, certified):
     router.db.set_settings({"certifications_section": True})
     client = Recording(FakeClient(registry.get("demo-detailed")))
     router.overrides["demo-detailed"] = client
-    result = tailored(router, certified, "demo-detailed")
+    result = tailored(router, certified, "demo-detailed", time_limit=0)  # no limit: a shorter draft too
     assert result.status == "ok"
     listed = ("<candidate_certifications>\n0: Certified Kubernetes Administrator (CKA) | The Linux Foundation | "
               "earned 2024\n1: Google Cloud Professional Data Engineer | Google Cloud | earned 2023\n"
@@ -283,12 +284,12 @@ def test_on_everything_works_as_before(router, registry, certified):
 
 
 def test_off_the_page_plan_keeps_no_room_for_certifications(router, registry, profile):
-    """Room for certifications that are never printed would cost bullets: with nine long jobs, 4 certifications
-    take three bullets' room on two pages."""
+    """Room for certifications that are never printed would cost bullets: with four long jobs on one page, 4
+    certifications take a few bullets' room."""
     long_career = profile.model_copy(deep=True)
     long_career.companies = [Company(name=f"Employer {i}", start=f"Jan {2023 - 4 * i}",
                                      end="Present" if i == 0 else f"Dec {2026 - 4 * i}", location="Austin, TX")
-                             for i in range(9)]
+                             for i in range(4)]
     many = long_career.model_copy(update={"certifications": [
         Certification(name=f"Certification number {i} with a long official name", issuer="Issuer", year="2020")
         for i in range(4)]})
@@ -296,12 +297,16 @@ def test_off_the_page_plan_keeps_no_room_for_certifications(router, registry, pr
     router.overrides["demo-concise"] = client
     assert tailored(router, many).status == "ok"
     planned_off = client.calls[0]["context"]["bullets"]
-    assert planned_off == bullet_budget(long_career)  # as if there were no certifications
+
+    def plan(profile):
+        return plan_pages(profile, "Letter", date.today(), job_relevance(profile, SAMPLE_JD))[1]
+
+    assert planned_off == plan(long_career)  # as if there were no certifications
     router.db.set_settings({"certifications_section": True})
     client.calls.clear()
     assert tailored(router, many).status == "ok"
     planned_on = client.calls[0]["context"]["bullets"]
-    assert planned_on == bullet_budget(many) and sum(planned_on) < sum(planned_off)
+    assert planned_on == plan(many) and sum(planned_on) < sum(planned_off)
 
 
 def test_compare_follows_the_switch(router, certified):

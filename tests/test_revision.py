@@ -119,7 +119,7 @@ def test_the_fix_round_asks_only_for_the_changes(router, db, registry, profile, 
     (first_ask, first_answer), (fix_ask, fix_answer) = client.calls
     assert fix_ask["schema_name"] == "tailor_revision" and fix_ask["system"] == first_ask["system"]
     assert len(fix_answer["bullets"]) == 4 and fix_answer["headline"] == fix_answer["summary"] == ""
-    assert fix_answer["skill_changes"] == [{"old": "High-Quality Code", "new": ""}]
+    assert fix_answer["skill_changes"] == []  # 'High-Quality Code' already left the skills (rules.shape_skills)
     assert len(json.dumps(fix_answer)) < len(json.dumps(first_answer)) / 3  # far less to write
     assert "modern software development" in result.analysis.keywords  # the first draft's analysis is kept
     assert validate.posting_voice_problems(result.resume) == []

@@ -316,7 +316,8 @@ def test_one_cliche_is_only_noted(router, db, registry, profile, jd):
         ("Drove operational excellence across the data platform by introducing weekly incident reviews and runbooks "
          "for every Airflow DAG.")])
     assert len(client.prompts) == 1  # one phrase, one problem: below the fix round's two
-    assert any("'Drove operational excellence' (Northwind Labs)" in w and "'operational excellence'" not in w
+    # the current job's bullet, in the present tense (the app's tense fix)
+    assert any("'Drive operational excellence' (Northwind Labs)" in w and "'operational excellence'" not in w
                for w in result.ats_warnings)
 
 

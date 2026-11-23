@@ -104,8 +104,8 @@ def test_a_sheet_draws_what_it_laid_out(profile):
 
 # ------------------------------------------------------------------ the letter's request before the layout
 def test_the_letters_request_goes_out_before_the_layout_starts(router, db, registry, profile, monkeypatch):
-    """With the owner's settings (no time for a shorter draft) the letter starts right after the draft; the layout's
-    thread starts once the letter's request is on its way, so it never slows the letter's preparation."""
+    """The letter starts right after the draft is fitted to its page (a few milliseconds); the PDF's thread starts
+    once the letter's request is on its way, so it never slows the letter's preparation."""
     db.set_settings({"resume_time_limit_s": 5})
     client = Paced(FakeClient(registry.get("demo-concise")), {"tailor_output": 0.2, "cover_letter": 0.5})
     router.overrides["demo-concise"] = client
@@ -118,23 +118,23 @@ def test_the_letters_request_goes_out_before_the_layout_starts(router, db, regis
     assert layout_start < letter["end"]  # and still being written while the layout ran
 
 
-def test_the_trimming_starts_after_the_letters_request_too(router, db, registry, monkeypatch):
-    """No time limit: a draft too long for two pages is asked again, shorter; still too long, it is trimmed. The
-    letter starts on the final text, and the trimming once the letter's request is on its way."""
+def test_the_letter_starts_after_the_trimming_on_the_final_text(router, db, registry, monkeypatch):
+    """No time limit: a draft that needs bullets removed is asked again, shorter, and fitted again. The letter quotes
+    each job's first bullets, so it starts only on the final text: after the last fitting (which only measures)."""
     client = Paced(FakeClient(registry.get("demo-detailed")), {"cover_letter": 0.3})
     router.overrides["demo-detailed"] = client
-    monkeypatch.setattr(tailor, "try_styles", lambda *args, **kwargs: None)  # nothing fits without trimming
-    trims, real = [], tailor.trim_to_fit
+    fits, real = [], tailor.fit_new
 
-    def trim(*args, **kwargs):
-        trims.append(time.perf_counter())
-        return real(*args, **kwargs)
+    def fit_new(*args, **kwargs):
+        fitted = real(*args, **kwargs)
+        fits.append(time.perf_counter())
+        return fitted
 
-    monkeypatch.setattr(tailor, "trim_to_fit", trim)
+    monkeypatch.setattr(tailor, "fit_new", fit_new)
     result = tailored(router, db, career(9), model="demo-detailed", cover_letter=True, time_limit=0)
-    assert result.status == "ok" and result.cover_letter is not None and len(trims) == 1
+    assert result.status == "ok" and result.cover_letter is not None and len(fits) == 2  # the draft, the shorter one
     second, [letter] = client.of("tailor_output")[-1], client.of("cover_letter")
-    assert second["end"] <= letter["start"] <= trims[0]
+    assert second["end"] <= fits[-1] <= letter["start"]
 
 
 def test_a_letter_slow_to_ask_holds_the_layout_back_only_briefly(router, db, registry, profile, monkeypatch):

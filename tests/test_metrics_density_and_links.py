@@ -54,17 +54,28 @@ def test_has_figure_ignores_plain_years():
 
 def test_density_limits_per_role_and_overall(profile):
     out = make_output()
-    out.sections.experience[0].bullets = ["Cut runtime by 23.4%", "Saved 17.8% of spend", "Served 38 analysts", "Built pipelines"]
+    out.sections.experience[0].bullets = ["Cut runtime by 23.4%", "Saved 17.8% of spend", "Served 38 analysts",
+                                          "Saved $41,300 a year", "Built pipelines"]
+    out.sections.experience[1].bullets = ["Cut runtime by 23.4%", "Saved 17.8% of spend", "Served 38 analysts",
+                                          "Built pipelines"]
     problems = validate.metric_density_problems(validate.build_resume(profile, out))
-    assert any("Northwind Labs: 3 of 4" in p for p in problems)
+    assert any("Northwind Labs: 4 of 5" in p for p in problems)  # the current job may carry 3
+    assert any("Contoso Systems: 3 of 4" in p for p in problems)  # every other job 2
+    assert "5 of the 8 bullets after each job's first have figures" in problems
     out = make_output()
-    out.sections.experience[0].bullets = ["Cut runtime by 23.4%", "Built pipelines"]
+    out.sections.experience[0].bullets = ["Cut runtime by 23.4%", "Saved 17.8% of spend", "Served 38 analysts",
+                                          "Built pipelines", "Moved the loads to Airflow"]  # 3 figures: allowed here
+    out.sections.experience[1].bullets = ["Cut runtime by 23.4%", "Built pipelines", "Moved the loads to dbt"]
     assert validate.metric_density_problems(validate.build_resume(profile, out)) == []
+    out.sections.experience[0].bullets = ["Cut runtime by 23.4%", "Served 7 schools", "Built pipelines"]
+    assert validate.metric_density_problems(validate.build_resume(profile, out)) == []  # a small count is no figure
 
 
 def test_prompt_asks_for_fewer_figures():
     text = tailor_system("estimate")
-    assert "about 2 of every 5 bullets" in text and "at most 2 bullets per employer" in text
+    assert "Every job's first bullet gives two figures, its size and its result" in text
+    assert "The current job also puts one figure in up to 2 more of its bullets" in text
+    assert "every other job has at most one more figure bullet, older or short roles usually none" in text
 
 
 class Dense(LLMClient):

@@ -337,7 +337,7 @@ def test_every_prompt_carries_the_persons_certifications(router, db, registry, c
     client = Recording(FakeClient(registry.get("demo-detailed")))
     router.overrides["demo-detailed"] = client
     result = asyncio.run(run_tailor(router, db, profile=certified, profile_id=None, jd=SAMPLE_JD,
-                                    model_id="demo-detailed"))
+                                    model_id="demo-detailed", time_limit=0))  # no limit: a shorter draft too
     assert result.status == "ok"
     kinds = ["fix" if RETRY_MARKER in p else "shorter" if SHORTEN_NOTE in p else "first" for p in client.prompts]
     assert {"first", "fix", "shorter"} <= set(kinds), kinds
@@ -388,7 +388,7 @@ def test_a_tick_that_needs_room_removes_the_fewest_bullets(certified):
 
 # ------------------------------------------------------------------ prompts
 def test_the_prompts_list_the_persons_certifications_and_the_rule():
-    assert PROMPT_VERSION == "v36"
+    assert PROMPT_VERSION == "v38"
     system = tailor_system()
     assert "CERTIFICATIONS: `certifications` lists the 4 certifications that best support this application" in system
     assert "never name one in the headline, the summary, the skills or the bullets" in system
@@ -487,15 +487,15 @@ def test_a_tick_keeps_a_cover_letter_written_meanwhile_and_says_when_bullets_wen
     run = tailor(client, profile_id=resume_id).json()
     real_refit = main.refit
 
-    async def letter_lands_meanwhile(resume, paper):
+    async def letter_lands_meanwhile(resume, paper, *args):
         assert client.post(f"/api/runs/{run['run_id']}/cover-letter", json={}).status_code == 200
-        fitted = await real_refit(resume, paper)
-        return (*fitted[:5], {"Northwind Labs": 1})  # as if two pages needed one bullet less
+        fitted = await real_refit(resume, paper, *args)
+        return (*fitted[:5], {"Northwind Labs": 1})  # as if one page needed one bullet less
 
     monkeypatch.setattr(main, "refit", letter_lands_meanwhile)
     ticked = ticks(client, run["run_id"], [True, True, True, False]).json()
     assert ticked["cover_letter"] is not None
-    assert ticked["message"] == ("To keep two pages, 1 bullet from Northwind Labs was removed. Untick a "
+    assert ticked["message"] == ("To keep one page, 1 bullet from Northwind Labs was removed. Untick a "
                                  "certification to bring them back.") and ticked["message_kind"] == "warn"
 
 
@@ -505,23 +505,26 @@ def test_unticking_brings_back_the_bullets_a_tick_removed(client, monkeypatch):
     resume_id = upload(client)["id"]
     run = tailor(client, profile_id=resume_id).json()
     whole = [len(e["bullets"]) for e in run["resume"]["experience"]]
-    given = []
+    given, cut = [], []
     real_refit = main.refit
 
-    async def tight_refit(resume, paper):  # as if 4 certifications needed one bullet less on two pages
+    async def tight_refit(resume, paper, *args):  # as if 4 certifications needed one bullet more removed
         given.append([len(e.bullets) for e in resume.experience])
-        fitted = await real_refit(resume, paper)
+        fitted = await real_refit(resume, paper, *args)
         if len(resume.certifications) < 4:
             return fitted
         trimmed = fitted[0].model_copy(deep=True)
-        trimmed.experience[-1].bullets.pop()
-        name = trimmed.profile.companies[trimmed.experience[-1].company_index].name
-        return (trimmed, *fitted[1:5], {name: 1})
+        longest = max(trimmed.experience, key=lambda exp: len(exp.bullets))
+        longest.bullets.pop()
+        name = trimmed.profile.companies[longest.company_index].name
+        removed = {**fitted[5], name: fitted[5].get(name, 0) + 1}
+        cut.append(sum(removed.values()))
+        return (trimmed, *fitted[1:5], removed)
 
     monkeypatch.setattr(main, "refit", tight_refit)
     ticked = ticks(client, run["run_id"], [True, True, True, True]).json()
     assert ticked["message_kind"] == "warn"
-    assert sum(len(e["bullets"]) for e in ticked["resume"]["experience"]) == sum(whole) - 1
+    assert sum(len(e["bullets"]) for e in ticked["resume"]["experience"]) == sum(whole) - cut[-1]
     back = ticks(client, run["run_id"], [True, True, False, False]).json()
     assert given[-1] == whole  # the next tick starts again from the whole text
     assert [len(e["bullets"]) for e in back["resume"]["experience"]] == whole

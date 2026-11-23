@@ -41,6 +41,14 @@ def parse_point(text: str, is_end: bool, today: date | None = None) -> tuple[int
     return None
 
 
+def is_current(company: Company, index: int = 0) -> bool:
+    """The job the person holds now: its end is 'Present' (or 'Current', 'Now', 'Today'), or blank for the most recent
+    job (index 0). A blank end on an older job is a date the reader could not read, not a current job. Its bullets are
+    in the present tense (app/prompts/system.md, app/pipeline/tense.py)."""
+    end = company.end.strip().lower().rstrip(".")
+    return end in CURRENT - {""} or (end == "" and index == 0)
+
+
 def is_expired(expires: str, today: date | None = None) -> bool:
     """True when this expiry date ('Mar 2026', '03/2026', '2026': the end of that year) is before this month. An empty
     or unreadable one ('No Expiration') is not expired."""

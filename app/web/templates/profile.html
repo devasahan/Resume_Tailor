@@ -56,9 +56,10 @@ function resumeCard(r) {
       el('td', { class: 'muted', text: `${job.start || '?'} - ${job.end || 'Present'}` }),
       el('td', { class: 'muted', text: [job.mode, job.location].filter(Boolean).join(', ') }))))),
     p.education.length ? el('div', { class: 'small' }, el('strong', { text: 'Education: ' }),
-      p.education.map(e => [[e.degree, e.field].filter(Boolean).join(', '), e.school, [e.start, e.end].filter(Boolean).join(' - ')]
+      p.education.map(e => [degreeText(e), e.school, e.location, [e.start, e.end].filter(Boolean).join(' - ')]
         .filter(Boolean).join(' | ')).join('; ')) : null,
     projectsBox(r),
+    educationBox(r),
     certificationsBox(r),
     r.warnings.length ? notice('warn', 'Check:', r.warnings) : null);
 }
@@ -171,6 +172,53 @@ function projectsBox(r) {
     el('div', { class: 'row' }, save, status));
 }
 
+// The degree as a new resume prints it (app/render/pdf.py degree_text): 'B.S. in Computer Science', or 'B.S., School of
+// Engineering' when the field is not a subject
+function degreeText(e) {
+  if (!(e.degree && e.field)) return e.degree || e.field || '';
+  if (/\s(in|of)$/i.test(e.degree)) return `${e.degree} ${e.field}`;
+  if (/^(the\s+)?(school|college|faculty|department|institute|division|academy)\b/i.test(e.field)) return `${e.degree}, ${e.field}`;
+  return `${e.degree} in ${e.field}`;
+}
+
+// Each school as new resumes print it: 'B.S. in Computer Science · School · St. Louis, MO'. The degree is written exactly
+// as on the diploma, and the town is the school's.
+const EDUCATION_FIELDS = [
+  ['degree', 'Degree, as on the diploma (B.S.)'], ['field', 'Field (Computer Science)'], ['school', 'School'],
+  ['location', "School's town (St. Louis, MO)"], ['start', 'Start'], ['end', 'End'],
+];
+function educationBox(r) {
+  const schools = r.profile.education || [];
+  if (!schools.length) return null;
+  let loaded = schools.map(e => e.school);  // as shown: the save is refused if the schools changed since (another tab)
+  const rows = schools.map(e => Object.fromEntries(EDUCATION_FIELDS.map(([key, label]) => {
+    const input = el('input', { type: 'text', placeholder: label, 'aria-label': `${label}: ${e.school}` });
+    input.value = input.dataset.saved = e[key] || '';
+    return [key, input];
+  })));
+  const status = el('span', { class: 'small muted' });
+  const save = el('button', { type: 'button', class: 'small primary', text: 'Save education' });
+  save.addEventListener('click', async () => {
+    save.disabled = true;
+    status.textContent = 'Saving…';
+    try {
+      const entries = rows.map(inputs => Object.fromEntries(EDUCATION_FIELDS.map(([key]) => [key, inputs[key].value.trim()])));
+      const data = await api(`/api/resumes/${r.id}/education`, { method: 'PUT', body: { entries, schools: loaded } });
+      const saved = data.resume.profile.education;
+      loaded = saved.map(e => e.school);
+      saved.forEach((e, i) => { if (rows[i]) EDUCATION_FIELDS.forEach(([key]) => { rows[i][key].value = rows[i][key].dataset.saved = e[key] || ''; }); });
+      status.textContent = 'Saved. New resumes print: ' + saved.map(e => [degreeText(e), e.school, e.location].filter(Boolean).join(' · ')).join('; ');
+    } catch (err) { status.textContent = err.message; }
+    finally { save.disabled = false; }
+  });
+  return el('details', { class: 'education-list', 'data-resume': r.id },
+    el('summary', { text: `Education (${schools.length})` }),
+    el('p', { class: 'small muted', text: "Write the degree exactly as on your diploma (for example B.S. or Bachelor of Science) and the school's town (for example St. Louis, MO). New resumes print it as 'B.S. in Computer Science · School · St. Louis, MO'." }),
+    rows.map(inputs => el('div', { class: 'education-row' }, EDUCATION_FIELDS.map(([key, label]) =>
+      el('label', {}, el('span', { text: label.replace(/ \(.*\)$/, '') }), inputs[key])))),
+    el('div', { class: 'row' }, save, status));
+}
+
 async function load() {
   const unsaved = {};  // text typed in a certifications or projects box but not saved yet survives a redraw
   for (const box of $$('.cert-list')) {
@@ -180,6 +228,10 @@ async function load() {
   for (const box of $$('.project-list')) {
     const typed = $$('textarea', box).map(area => (area.value !== area.dataset.saved ? area.value : null));
     if (typed.some(value => value !== null)) unsaved[`projects ${box.dataset.resume}`] = { typed, open: box.open };
+  }
+  for (const box of $$('.education-list')) {
+    const typed = $$('input', box).map(input => (input.value !== input.dataset.saved ? input.value : null));
+    if (typed.some(value => value !== null)) unsaved[`education ${box.dataset.resume}`] = { typed, open: box.open };
   }
   resumes = (await api('/api/resumes')).resumes;
   $('#count').textContent = resumes.length ? `(${resumes.length})` : '';
@@ -194,6 +246,13 @@ async function load() {
     if (!kept) continue;
     const areas = $$('textarea', box);
     if (areas.length === kept.typed.length) kept.typed.forEach((value, i) => { if (value !== null) areas[i].value = value; });
+    box.open = kept.open;
+  }
+  for (const box of $$('.education-list')) {
+    const kept = unsaved[`education ${box.dataset.resume}`];
+    if (!kept) continue;
+    const inputs = $$('input', box);
+    if (inputs.length === kept.typed.length) kept.typed.forEach((value, i) => { if (value !== null) inputs[i].value = value; });
     box.open = kept.open;
   }
 }

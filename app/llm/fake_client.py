@@ -1,9 +1,10 @@
 """Offline demo provider. No network, no key, no cost.
 
 It builds generic but structurally valid output from the job description so the whole app (compare
-mode, review, fit-to-two-pages, export, history) can be tried before any API key exists. Its text
+mode, review, fit-to-one-page, export, history) can be tried before any API key exists. Its text
 is template-based and is NOT a measure of what real models write. Its bullets name only tools that each job
-could have used during its dates.
+could have used during its dates, are 15-22 words with a strong opening verb, in the present tense for the current
+job and the past tense for every other, as the prompt asks; its summary has 2-3 sentences and its skills 3 rows.
 
 Styles:  concise | detailed (too many long bullets, includes one invented number so the check can flag it)
          flaky (returns invalid JSON until the retry feedback appears in the prompt)
@@ -19,10 +20,11 @@ import os
 import re
 
 from ..parsing.heuristic import parse_resume_text
-from ..pipeline.facts import is_expired
+from ..pipeline.facts import is_current, is_expired
 from ..pipeline.notes import clean_notes
 from ..pipeline.validate import same_certification
 from ..prompts import RETRY_MARKER
+from ..schemas import Company
 from .base import LLMClient, LLMResult, Usage
 from .registry import ModelSpec
 
@@ -79,13 +81,16 @@ def job_facts(jd: str) -> dict:
 # Each job's first bullet with estimated figures: the job's biggest win, with its size and its result. The result is
 # written in a different shape each time, as the prompt asks: its base in brackets (once), its base in words, or the
 # real numbers alone.
-LEADS = [
-    ("Rebuilt the {k1} pipeline behind the main customer workflow for {size}, cutting failed nightly runs by {result} (from {was} to {now} a month) with staged rollouts and clear ownership.",
-     "Rebuild the {k1} pipeline behind the main customer workflow for {size}, cutting failed nightly runs by {result} (from {was} to {now} a month) with staged rollouts and clear ownership."),
-    ("Launched {k1} self-service reporting for {size}, so the time from a request to an answer dropped by {result}, from {was} to {now} hours, once shared dashboards replaced spreadsheet hand-offs.",
-     "Launch {k1} self-service reporting for {size}, so the time from a request to an answer drops by {result}, from {was} to {now} hours, as shared dashboards replace spreadsheet hand-offs."),
-    ("Moved {k1} order processing for {size} onto a versioned, tested setup, and support tickets about missing orders fell from {was} to {now} a week within two quarters.",
-     "Move {k1} order processing for {size} onto a versioned, tested setup, so support tickets about missing orders keep falling, from {was} to {now} a week so far this year."),
+LEADS = [  # (past, present): the current job is written in the present tense
+    ("Rebuilt the {k1} pipeline for {size}, cutting failed nightly runs by {result} (from {was} to {now} a month).",
+     "Rebuild the {k1} pipeline for {size}, cutting failed nightly runs by {result} (from {was} to {now} a month)."),
+    ("Launched {k1} self-service reporting for {size}, and answer times dropped by {result}, from {was} to {now} hours.",
+     ("Launch {k1} self-service reporting for {size}, and answer times have dropped by {result}, from {was} to {now} "
+     "hours.")),
+    (("Moved {k1} order processing for {size} to a tested setup, cutting missing-order tickets from {was} to {now} a "
+     "week."),
+     ("Move {k1} order processing for {size} to a tested setup, cutting missing-order tickets from {was} to {now} a "
+     "week.")),
 ]
 LEAD_SIZES = ["38 internal teams", "12.4K active users", "613 stores", "47 partner companies", "83K customers",
               "23 regional offices", "4.6K merchants", "2.3K clinics", "36 product teams"]
@@ -93,6 +98,8 @@ LEAD_RESULTS = ["17.8%", "21%", "12.6%", "8.3%", "19%", "26.1%", "14%", "31.7%",
 # Each result's base, before and after: it agrees with the percentage (101 to 83 is 17.8%), as the prompt asks; a
 # result written as the real numbers alone uses only these
 LEAD_BASES = [(101, 83), (62, 49), (87, 76), (96, 88), (63, 51), (46, 34), (43, 37), (41, 28), (64, 58)]
+# the current job's scale and results beyond its first bullet (estimate mode): one figure each in two more bullets
+CURRENT_COUNTS = ("23", "17")
 LEVELS = ["Junior", "", "Senior", "Lead", "Principal"]
 SCOPES = ["implemented", "built", "designed", "owned", "led"]
 COMPANY_RE = re.compile(
@@ -100,50 +107,62 @@ COMPANY_RE = re.compile(
     r"([A-Z][A-Za-z0-9&'-]*(?:\.[A-Za-z0-9]+)*(?:[ \t]+[A-Z][A-Za-z0-9&'-]*(?:\.[A-Za-z0-9]+)*){0,3})"
 )
 
-CONCISE = [
-    ("Migrated legacy {k1} jobs to a cleaner, versioned setup, running old and new side by side until the results matched so the switch caused no downtime for users.",
-     "Migrate legacy {k1} jobs to a cleaner, versioned setup, running old and new side by side until the results match so each switch causes no downtime for users."),
-    ("Streamlined {k3} reporting by replacing spreadsheet hand-offs with a shared, automated pipeline, so managers saw current numbers each morning instead of weekly exports.",
-     "Streamline {k3} reporting by replacing spreadsheet hand-offs with a shared, automated pipeline, so managers see current numbers each morning instead of weekly exports."),
-    ("Designed {k1} components for the core customer workflow, choosing simple, testable interfaces so cross-functional teams could ship changes with fewer regressions.",
-     "Design {k1} components for the core customer workflow, choosing simple, testable interfaces so cross-functional teams can ship changes with fewer regressions."),
-    ("Built {k2} automation for recurring operational work, replacing manual hand-offs and giving the team reliable, repeatable runs it no longer had to babysit.",
-     "Build {k2} automation for recurring operational work, replacing manual hand-offs and giving the team reliable, repeatable runs it no longer has to babysit."),
-    ("Partnered with product and business stakeholders to turn loosely defined requests into scoped {k3} deliverables with clear acceptance criteria and fewer late changes.",
-     "Partner with product and business stakeholders to turn loosely defined requests into scoped {k3} deliverables with clear acceptance criteria and fewer late changes."),
-    ("Documented {k1} and {k2} conventions and coached teammates through reviews and pairing, making onboarding faster and work across the team more consistent.",
-     "Document {k1} and {k2} conventions and coach teammates through reviews and pairing, making onboarding faster and work across the team more consistent."),
-    ("Reworked {k3} processes that caused repeated rework, tracing failure points with the owning teams and rolling out fixes that kept issues from coming back.",
-     "Rework {k3} processes that cause repeated rework, tracing failure points with the owning teams and rolling out fixes that keep issues from coming back."),
-    ("Introduced {k2} monitoring and alerting for customer-facing services, catching problems before users reported them and feeding post-incident lessons into planning.",
-     "Introduce {k2} monitoring and alerting for customer-facing services, catching problems before users report them and feeding post-incident lessons into planning."),
-    ("Hardened {k2} deployments with staged rollouts, health checks and quick rollback steps, letting the team release during working hours without late-night follow-ups.",
-     "Harden {k2} deployments with staged rollouts, health checks and quick rollback steps, letting the team release during working hours without late-night follow-ups."),
-    ("Standardized how {k1} and {k3} work was reviewed and tested, writing checklists and examples that cut back-and-forth in reviews as the team grew.",
-     "Standardize how {k1} and {k3} work is reviewed and tested, writing checklists and examples that cut back-and-forth in reviews as the team grows."),
+CONCISE = [  # (past, present), 15-22 words, each with its result; one ends with a "so ..." clause
+    ("Migrated legacy {k1} jobs to a versioned setup, running old and new side by side until the results matched.",
+     "Migrate legacy {k1} jobs to a versioned setup, running old and new side by side until the results match."),
+    (("Streamlined {k3} reporting with a shared, automated pipeline, letting managers see current numbers each morning "
+     "instead of weekly exports."),
+     ("Streamline {k3} reporting with a shared, automated pipeline, letting {count1} managers see current numbers each "
+     "morning instead of weekly exports.")),
+    (("Designed {k1} components for the core customer workflow with simple, testable interfaces, cutting regressions "
+     "in each release."),
+     ("Design {k1} components for the core customer workflow with simple, testable interfaces, catching {count2} "
+     "regressions a quarter before release.")),
+    (("Built {k2} automation for recurring operational work, replacing manual hand-offs with reliable runs the team no "
+     "longer had to watch."),
+     ("Build {k2} automation for recurring operational work, replacing manual hand-offs with reliable runs the team no "
+     "longer has to watch.")),
+    (("Turned loosely defined requests into scoped {k3} deliverables with clear acceptance criteria, cutting late "
+     "changes during delivery."),
+     ("Turn loosely defined requests into scoped {k3} deliverables with clear acceptance criteria, cutting late changes "
+     "during delivery.")),
+    (("Documented {k1} and {k2} conventions and coached teammates through reviews, making onboarding faster and the "
+     "team's work more consistent."),
+     ("Document {k1} and {k2} conventions and coach teammates through reviews, making onboarding faster and the team's "
+     "work more consistent.")),
+    (("Reworked {k3} processes that caused repeated rework, tracing failure points and rolling out fixes that kept "
+     "issues from coming back."),
+     ("Rework {k3} processes that cause repeated rework, tracing failure points and rolling out fixes, keeping issues "
+     "from coming back.")),
+    (("Introduced {k2} monitoring and alerting for customer-facing services, catching problems before users reported "
+     "them and feeding fixes into planning."),
+     ("Introduce {k2} monitoring and alerting for customer-facing services, catching problems before users report them "
+     "and feeding fixes into planning.")),
+    (("Hardened {k2} deployments with staged rollouts, health checks and quick rollbacks, letting the team release "
+     "during working hours."),
+     ("Harden {k2} deployments with staged rollouts, health checks and quick rollbacks, letting the team release during "
+     "working hours.")),
+    ("Standardized how {k1} and {k3} work was reviewed and tested, so reviews took fewer rounds as the team grew.",
+     "Standardize how {k1} and {k3} work is reviewed and tested, so reviews take fewer rounds as the team grows."),
 ]
 DETAILED = [
-    ("Migrated a set of legacy {k1} jobs to a versioned, documented setup, running both side by side with the owning teams until every output matched, so the cut-over caused no downtime or data loss.",
-     "Migrate legacy {k1} jobs to a versioned, documented setup, running both side by side with the owning teams until every output matches, so each cut-over causes no downtime or data loss."),
-    ("Streamlined recurring {k3} reporting by replacing manual spreadsheet hand-offs with a shared automated pipeline and clear ownership, so managers saw current numbers every morning instead of stale weekly exports.",
-     "Streamline recurring {k3} reporting by replacing manual spreadsheet hand-offs with a shared automated pipeline and clear ownership, so managers see current numbers every morning instead of stale weekly exports."),
-    ("Cut release lead time from 47 to 36 days, a 23.4% drop, by redesigning {k1} workflows across teams, aligning technical decisions with business goals, documenting trade-offs for stakeholders, and keeping every release predictable and well tested.",
-     "Cut release lead time from 47 to 36 days, a 23.4% drop, by redesigning {k1} workflows across teams, aligning technical decisions with business goals, documenting trade-offs for stakeholders, and keeping every release predictable and well tested."),
-    ("Owned the day-to-day execution of {k2} initiatives from intake to hand-off, coordinating with product, operations and customer-facing teams, tracking risks openly, and communicating status in plain language to leadership.",
-     "Own the day-to-day execution of {k2} initiatives from intake to hand-off, coordinating with product, operations and customer-facing teams, tracking risks openly, and communicating status in plain language to leadership."),
-    ("Partnered with stakeholders to translate ambiguous requirements into clear {k3} deliverables, validating assumptions early, agreeing on acceptance criteria, and reducing late changes during delivery.",
-     "Partner with stakeholders to translate ambiguous requirements into clear {k3} deliverables, validating assumptions early, agreeing on acceptance criteria, and reducing late changes during delivery."),
-    ("Mentored colleagues on {k1} and {k2} practices through reviews, pairing sessions and short written guides, raising consistency and shortening onboarding for new team members.",
-     "Mentor colleagues on {k1} and {k2} practices through reviews, pairing sessions and short written guides, raising consistency and shortening onboarding for new team members."),
-    ("Improved {k3} processes by identifying recurring failure points, proposing practical fixes, and following up with owners until the changes were adopted and measured.",
-     "Improve {k3} processes by identifying recurring failure points, proposing practical fixes, and following up with owners until the changes are adopted and measured."),
-    ("Monitored {k2} health with simple dashboards and alerts, triaged issues quickly, and wrote post-incident notes that fed back into the team's planning.",
-     "Monitor {k2} health with simple dashboards and alerts, triage issues quickly, and write post-incident notes that feed back into the team's planning."),
-    ("Hardened {k2} deployments with staged rollouts, automated health checks and one-step rollbacks agreed with operations, letting the team release during working hours without late-night follow-ups.",
-     "Harden {k2} deployments with staged rollouts, automated health checks and one-step rollbacks agreed with operations, letting the team release during working hours without late-night follow-ups."),
-    ("Standardized how {k1} and {k3} work was reviewed and tested across the group, writing short checklists and worked examples that cut back-and-forth in reviews as the team doubled.",
-     "Standardize how {k1} and {k3} work is reviewed and tested across the group, writing short checklists and worked examples that cut back-and-forth in reviews as the team grows."),
+    "Migrated legacy {k1} jobs to a versioned, documented setup, running both side by side until every output matched, so the cut-over caused no downtime.",
+    "Streamlined recurring {k3} reporting with a shared automated pipeline and clear ownership, so managers saw current numbers every morning instead of weekly exports.",
+    "Cut release lead time from 47 to 36 days, a 23.4% drop, by redesigning {k1} workflows across teams and documenting trade-offs for every release.",
+    "Owned the day-to-day execution of {k2} initiatives from intake to hand-off, tracking risks openly and reporting status to leadership in plain language.",
+    "Partnered with stakeholders to translate ambiguous requirements into clear {k3} deliverables, validating assumptions early, agreeing on acceptance criteria, and reducing late changes during delivery.",
+    "Mentored colleagues on {k1} and {k2} practices through reviews, pairing sessions and short written guides, raising consistency and shortening onboarding for new team members.",
+    "Improved {k3} processes by identifying recurring failure points, proposing practical fixes, and following up with owners until the changes were adopted and measured.",
+    "Monitored {k2} health with simple dashboards and alerts, triaged issues quickly, and wrote post-incident notes that fed back into the team's planning.",
+    "Hardened {k2} deployments with staged rollouts, automated health checks and one-step rollbacks agreed with operations, letting the team release during working hours without late-night follow-ups.",
+    "Standardized how {k1} and {k3} work was reviewed and tested, writing short checklists that cut back-and-forth in reviews as the team doubled.",
 ]
+
+
+def count(text: str, term: str) -> int:
+    """How often the term is in the text as a whole word (case-sensitive for short ones such as 'SQL')."""
+    flags = 0 if len(term) <= 3 else re.IGNORECASE
+    return len(re.findall(rf"(?<![A-Za-z0-9]){re.escape(term)}(?![A-Za-z0-9+#])", text, flags))
 
 
 def extract_keywords(jd: str, limit: int = 16) -> list[str]:
@@ -317,42 +336,55 @@ class FakeClient(LLMClient):
         k = (keywords + GENERIC)[:12]
         titles = _title_ladder(prefix, base, len(companies))
         bank = DETAILED if self.style == "detailed" else CONCISE
-        if self.style == "detailed":  # deliberately too long, to exercise the fit-to-two-pages steps; asked to
+        if self.style == "detailed":  # deliberately too long, to exercise the fit-to-one-page steps; asked to
             # shorten, it follows the smaller budget it is given, as a real model would
             counts = [24, 22, 20] if not ctx.get("shorten") else (ctx.get("bullets") or [8, 6, 5])
         else:  # follows the bullet budget in the prompt, like a real model
             counts = ctx.get("bullets") or [4, 3, 3]
 
+        estimate = ctx.get("metrics", "estimate") == "estimate"
         experience = []
         for index, company in enumerate(companies):
             end = str(company.get("end", ""))
-            present = end.lower() in ("present", "current", "")
             n = counts[min(index, len(counts) - 1)]
-            if len(companies) == 1:  # one job cannot overflow two pages without repeating the whole bank
+            if len(companies) == 1:  # one job cannot overflow its page without repeating the whole bank
                 n = min(n, len(bank))
             mine = [term for term in k if fits_era(term, index, end)] or GENERIC  # only what this job could use
             lead = first_project(str(company.get("projects", "")))  # the person's own work, from their notes
             bullets = []
+            present = is_current(Company.model_validate(company), index)  # the present tense, as the prompt asks
             for j in range(n):
-                past, now = bank[(index * 2 + j) % len(bank)]
-                if j >= len(bank) and "23.4%" in past:  # the one invented figure: once per job
-                    past, now = bank[(index * 2 + j + 1) % len(bank)]
+                template = bank[(index * 2 + j) % len(bank)]
+                if j >= len(bank) and "23.4%" in template:  # the one invented figure: once per job
+                    template = bank[(index * 2 + j + 1) % len(bank)]
                 if j == 0 and ctx.get("metrics", "estimate") == "estimate":  # opens with its size and its result
-                    past, now = LEADS[index % len(LEADS)]
-                template = now if present else past
+                    template = LEADS[index % len(LEADS)]
+                if isinstance(template, tuple):  # (past, present); DETAILED is past only (the app fixes its tense)
+                    template = template[1] if present else template[0]
                 bullets.append(template.format(k1=lead if j == 0 and lead else mine[j % len(mine)],
                                                k2=mine[(j + 1) % len(mine)],
                                                k3=mine[(j + 2) % len(mine)], size=LEAD_SIZES[index % len(LEAD_SIZES)],
                                                result=LEAD_RESULTS[index % len(LEAD_RESULTS)],
                                                was=LEAD_BASES[index % len(LEAD_BASES)][0],
-                                               now=LEAD_BASES[index % len(LEAD_BASES)][1]))
+                                               now=LEAD_BASES[index % len(LEAD_BASES)][1],
+                                               count1=CURRENT_COUNTS[0] if estimate else "the",
+                                               count2=CURRENT_COUNTS[1] if estimate else "most"))
             experience.append({"company_index": index, "job_title": titles[index], "bullets": bullets})
 
-        groups = [
-            {"category": "Core Skills", "skills": k[:6]},
-            {"category": "Tools and Platforms", "skills": k[6:12] or k[:3]},
-            {"category": "Ways of Working", "skills": ["Cross-functional collaboration", "Clear documentation", "Continuous improvement"]},
-        ]
+        summary = (  # 2-3 sentences: the experience, the current focus, one result from a bullet
+            f"{target} with hands-on experience delivering {k[0]} and {k[1]} work for product and operations "
+            "organizations. "
+            f"Focuses on {k[2]} pipelines in the current role, "
+            + (f"cutting failed nightly runs from {LEAD_BASES[0][0]} to {LEAD_BASES[0][1]} a month."
+               if estimate and companies else "making nightly runs reliable for the teams that depend on them."))
+        shown = " ".join([summary] + [b for exp in experience for b in exp["bullets"]])
+        # its must-haves: the keywords it shows at least twice (a real model writes the posting's must-haves in), so a
+        # test that swaps one bullet never takes away a must-have's only mention
+        must = [term for term in keywords if count(shown, term) >= 2]
+        # at most 3 rows of 6, the posting's own keywords (the must-haves first), as the prompt asks
+        listed = must + [term for term in keywords if term not in must] or k[:6]
+        groups = [{"category": name, "skills": listed[i:i + 6]}
+                  for name, i in (("Core Skills", 0), ("Tools and Platforms", 6), ("Practices", 12)) if listed[i:i + 6]]
         return {
             "jd_analysis": {
                 "company": guess_company(jd),
@@ -360,8 +392,8 @@ class FakeClient(LLMClient):
                 "general_role": base,
                 "seniority": seniority,
                 "domain": "General",
-                "must_have_skills": keywords[:6],
-                "nice_to_have_skills": keywords[6:10],
+                "must_have_skills": must[:6],  # what it shows in the summary or a bullet, as a real model does
+                "nice_to_have_skills": [term for term in keywords if term not in must[:6]][:4],
                 "keywords": keywords,
             },
             # none while the Certifications section is off (Settings): a real model then lists only the job post's
@@ -375,14 +407,7 @@ class FakeClient(LLMClient):
             ],
             "sections": {
                 "headline": base,
-                "summary": (
-                    f"{target} with hands-on experience delivering {k[0]}, {k[1]} and {k[2]} work for product and "
-                    f"operations teams in fast-moving organizations. Strong in {k[3]}, {k[4]} and {k[5]}, with a habit of "
-                    "turning loosely defined requirements into simple, well-tested deliverables that others can build "
-                    "on. Has made day-to-day operations more reliable by automating repetitive steps and adding "
-                    "monitoring where problems used to go unnoticed. Brings ownership from planning to hand-off and "
-                    "close collaboration with stakeholders and customer-facing teams."
-                ),
+                "summary": summary,
                 "skills": groups,
                 "experience": experience,
             },

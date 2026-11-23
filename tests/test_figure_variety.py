@@ -12,6 +12,7 @@ from app.llm.base import LLMClient
 from app.llm.fake_client import FakeClient
 from app.pipeline import validate
 from app.pipeline.tailor import run_tailor
+from app.pipeline.tense import present_opening
 from app.prompts import RETRY_MARKER, cover_system, tailor_system
 from app.schemas import Company, CoverLetter, Profile
 
@@ -509,7 +510,9 @@ def test_the_prompts_teach_varied_shapes_not_brackets():
                     "reduced cloud spend by 17.8%, or $41,000 a year",
                     "83K concurrent players in Java on AWS, cutting queue-to-lobby time from 41 to 32 seconds"):
         assert example in estimate
-    assert "about 2 of every 5 bullets" in estimate and "never use numbers ending in 0 or 5" in estimate  # still there
+    # one page: each job's first bullet carries its figures, so the old share of 2 in 5 bullets is gone
+    assert "about 2 of every 5 bullets" not in estimate and "never use numbers ending in 0 or 5" in estimate
+    assert "The current job also puts one figure in up to 2 more of its bullets" in estimate
     assert '"by 18%, or $41K a year"' in words
     assert "in brackets at most once in the letter" in letter and "as the real numbers alone" in letter
 
@@ -607,8 +610,8 @@ def test_a_demo_resume_prints_at_most_one_base_in_brackets(router, db, model, jo
 def test_the_demo_shows_the_mix_itself(router, db, profile):
     leads = [exp.bullets[0] for exp in run(router, db, profile).resume.experience]
     assert "by 17.8% (from 101 to 83 a month)" in leads[0]  # its one base in brackets
-    assert "by 21%, from 62 to 49 hours," in leads[1]  # a base in words
-    assert "fell from 87 to 76 a week" in leads[2] and "%" not in leads[2]  # the real numbers alone
+    assert "by 21%, from 62 to 49 hours" in leads[1]  # a base in words
+    assert "tickets from 87 to 76 a week" in leads[2] and "%" not in leads[2]  # the real numbers alone
 
 
 def test_a_first_draft_with_brackets_everywhere_is_fixed_at_no_cost(router, db, registry, profile):
@@ -617,11 +620,11 @@ def test_a_first_draft_with_brackets_everywhere_is_fixed_at_no_cost(router, db, 
     result = run(router, db, profile)
     assert result.status == "ok" and len(client.prompts) == 1 and result.retries == 0
     assert [exp.bullets[0] for exp in result.resume.experience] == [
-        BRACKETS[0],
+        present_opening(BRACKETS[0]),  # the current job's bullet, in the present tense
         ("Launched self-service reporting for 12.4K active users, cutting the time to an answer from 62 to 49 hours "
          "with shared dashboards."),
         ("Moved order processing for 613 stores onto a tested setup, cutting missing-order tickets by 12.6%, from 87 "
-         "to 76 a week, within two quarters.")]
+         "to 76 a week, within 2 quarters.")]  # a number as a numeral
 
 
 def test_the_fix_rounds_answer_is_varied_too(router, db, registry, profile):
@@ -631,14 +634,14 @@ def test_the_fix_rounds_answer_is_varied_too(router, db, registry, profile):
     result = run(router, db, profile)
     assert result.status == "ok" and len(client.prompts) == 2  # the two bare percentages cost the fix round
     assert bracketed(texts_of(result.resume)) == 1 and validate.unbased_percentage_problems(result.resume) == []
-    assert result.resume.experience[0].bullets[0] == BRACKETS[0]  # now the first base in brackets
+    assert result.resume.experience[0].bullets[0] == present_opening(BRACKETS[0])  # now the first base in brackets
 
 
 def test_the_shorter_draft_is_varied_too(router, db, registry, profile):
     client = Rewrites(FakeClient(registry.get("demo-detailed")), first=BRACKETS)
     router.overrides["demo-detailed"] = client
-    result = run(router, db, profile, model="demo-detailed")
-    assert "The model shortened the bullets to fit two pages." in result.notes
+    result = run(router, db, profile, model="demo-detailed", time_limit=0)  # a shorter draft only with no limit
+    assert "The model shortened the resume to fit one page." in result.notes
     assert bracketed(texts_of(result.resume)) == 1 and validate.unbased_percentage_problems(result.resume) == []
 
 
@@ -667,7 +670,7 @@ def test_a_run_keeps_the_candidates_own_figure_in_the_resume_and_the_letter(rout
     result = run(router, db, profile, hints=hints, cover_letter=True)
     assert result.status == "ok" and result.resume.experience[1].bullets[0] == (
         "Built the self-serve help center for 4.6K merchants, cutting weekly support tickets by 41.2%, from 97 to 57, "
-        "within two quarters.")
+        "within 2 quarters.")
     assert result.cover_letter.paragraphs[1] == (
         "At Contoso Systems I cut weekly support tickets by 41.2%, from 97 to 57, with a help center.")
 

@@ -55,8 +55,10 @@ def test_system_prompt_rules_per_metrics_mode():
     for text in (estimate, strict):
         assert "{{" not in text
         assert "years of experience EXACTLY as given in <candidate_facts>" in text
-        assert "domain or industry" in text
-        assert "closely related skills that SUPPORT the required ones" in text
+        assert "domains or industries" in text
+        # only what the bullets show (the one-page rule): no filler of related skills any more
+        assert "List only languages, tools, platforms and methods that the bullets or the summary show" in text
+        assert "closely related skills that SUPPORT the required ones" not in text
     assert "realistic, conservative estimates" in estimate and "do NOT invent numbers" not in estimate
     assert "do NOT invent numbers" in strict and "realistic, conservative estimates" not in strict
     with pytest.raises(ValueError):
@@ -123,19 +125,21 @@ def test_metrics_setting_is_validated(client):
 
 
 
-def test_summary_rule_is_richer_but_bounded():
+def test_summary_rule_is_short_and_concrete():
+    """The reviewer's rule (prompt v38): 2-3 lines, the experience, the current focus and one result; no praise."""
     text = tailor_system("estimate")
-    assert "SUMMARY: 3-4 sentences, 60-85 words" in text
-    assert "core technical strengths" in text and "what the candidate brings to this particular role" in text
+    assert "SUMMARY: 2-3 sentences, 30-48 words (three lines at most)" in text
+    assert "shown as one concrete result from the current job" in text and "Never praise the candidate" in text
+    assert "what the candidate brings to this particular role" not in text and "60-85 words" not in text
 
 
 def test_summary_length_warnings(profile):
     out = make_output()
     out.sections.summary = "Short summary."
     assert any("Summary is short" in w for w in validate.ats_lint(validate.build_resume(profile, out)))
-    out.sections.summary = " ".join(["word"] * 70)
+    out.sections.summary = " ".join(["word"] * 40)
     assert not any("Summary is" in w for w in validate.ats_lint(validate.build_resume(profile, out)))
-    out.sections.summary = " ".join(["word"] * 100)
+    out.sections.summary = " ".join(["word"] * 70)  # the old rule's length: 4-5 lines now
     assert any("Summary is long" in w for w in validate.ats_lint(validate.build_resume(profile, out)))
 
 

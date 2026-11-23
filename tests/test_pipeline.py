@@ -18,11 +18,11 @@ def tailor(router, db, profile, jd, model="demo-concise", **kw):
     return run(run_tailor(router, db, profile=profile, profile_id=None, jd=jd, model_id=model, **kw))
 
 
-def test_demo_run_is_ok_within_two_pages_and_keeps_fixed_facts(router, db, profile, jd):
+def test_demo_run_is_ok_on_one_page_and_keeps_fixed_facts(router, db, profile, jd):
     result = tailor(router, db, profile, jd)
-    assert result.status == "ok" and result.fits and result.pages == 2
-    assert (result.style.font_pt, result.style.margin_in) == LADDER[0]  # two well-filled pages at the design's sizes
-    assert [len(e.bullets) for e in result.resume.experience] == [8, 6, 5]  # the recent roles get the most detail
+    assert result.status == "ok" and result.fits and result.pages == 1 and result.page_target == 1
+    assert (result.style.font_pt, result.style.margin_in) == LADDER[0]  # one well-filled page at the design's sizes
+    assert [len(e.bullets) for e in result.resume.experience] == [5, 3, 3]  # the most recent role gets the most
     assert [s.product for s in result.career_plan] == ["", "", ""]  # the demo knows no companies: generic context
     assert result.resume.profile == profile  # name, contact, companies, dates, education untouched
     assert [e.company_index for e in result.resume.experience] == [0, 1, 2]
@@ -53,9 +53,9 @@ def test_a_long_career_with_the_long_demo_is_shortened_not_trimmed_one_bullet_at
         Company(name=f"Employer {i}", start=f"Jan {2023 - 3 * i}", end="Present" if i == 0 else f"Dec {2025 - 3 * i}")
         for i in range(9)])
     started = time.perf_counter()
-    result = tailor(router, db, jobs, jd, model="demo-detailed")
+    result = tailor(router, db, jobs, jd, model="demo-detailed", time_limit=0)  # a shorter draft needs no limit
     assert result.status == "ok" and result.fits and result.pages <= 2
-    assert "The model shortened the bullets to fit two pages." in result.notes
+    assert "The model shortened the resume to fit two pages." in result.notes
     assert not any(n.startswith("Removed") for n in result.notes) and time.perf_counter() - started < 10
 
 

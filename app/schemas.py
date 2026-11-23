@@ -40,23 +40,26 @@ class Company(BaseModel):
     projects: SkipJsonSchema[str] = ""
 
 
-class Education(BaseModel):
-    school: str
-    degree: str = ""
-    field: str = ""
-    start: str = ""
-    end: str = ""
-    details: str = ""
-
-
-MAX_CERTIFICATIONS = 4  # the model picks this many per job; a resume prints at most this many
-
-
 def _as_text(value):
     """A model may send null or a number ("year": 2021) for a text field: read as text instead of failing the answer."""
     if value is None:
         return ""
     return str(value) if isinstance(value, (int, float)) and not isinstance(value, bool) else value
+
+
+class Education(BaseModel):
+    school: str
+    degree: str = ""  # as on the diploma ("B.S."), printed 'B.S. in Computer Science' (app/render/pdf.py)
+    field: str = ""
+    start: str = ""
+    end: str = ""
+    details: str = ""
+    location: str = ""  # the school's town ("St. Louis, MO"); "" in profiles saved before, and when not given
+
+    _text = field_validator("school", "degree", "field", "start", "end", "details", "location", mode="before")(_as_text)
+
+
+MAX_CERTIFICATIONS = 4  # the model picks this many per job; a resume prints at most this many
 
 
 class Certification(BaseModel):
@@ -290,12 +293,16 @@ class FitStyle(BaseModel):
     `spacing` scales the gaps between the body's parts (sections, jobs, bullets, rows; not the header, not letter
     spacing): 1 is the design, and only the ladder's last two steps bring them closer. `inline_skills` puts each skills
     label in line with its values, which then wrap across the full width instead of in the design's column: only the
-    ladder's very last step does. Runs saved without these fields load with the design's (1 and False)."""
+    ladder's very last step does. Runs saved without these fields load with the design's (1 and False).
+    `layout` 1 (runs made since the one-page rule, app/pipeline/page_fit.py): a job's title line and all its bullets
+    stay on one page, and an education row reads 'B.S. in Computer Science · School · Town'. 0 (the default, and every
+    run saved before): a job keeps only its first bullet with its title line, and 'B.S., Computer Science · School'."""
     font_pt: float = 9.1
     margin_in: float = 0.67
     paper: Literal["Letter", "A4"] = "Letter"
     spacing: float = Field(1.0, gt=0, le=1)
     inline_skills: bool = False
+    layout: int = Field(0, ge=0, le=1)
 
 
 class CallTime(BaseModel):
@@ -332,6 +339,10 @@ class TailorResult(BaseModel):
     ats_warnings: list[str] = Field(default_factory=list)
     pages: int = 0
     fits: bool = False
+    # The pages the run was planned for (app/pipeline/page_fit.py plan_pages): 1, or 2 when even one bullet per older
+    # job does not fit on one. A hand edit or a certification tick fits to it again. 0 in runs saved before: they keep
+    # the old fitting (up to two pages, app/pipeline/fit.py).
+    page_target: int = 0
     style: FitStyle = Field(default_factory=FitStyle)
     notes: list[str] = Field(default_factory=list)  # what the fit step did (shrunk font, trimmed bullets, ...)
     input_tokens: int = 0
@@ -359,7 +370,7 @@ class TailorResult(BaseModel):
     # them. Never printed and never rows to tick: the checks only keep these names out of the text, as they do the
     # rows' names. [] while it is on (the rows hold the picks) and in older runs.
     posting_certifications: list[str] = Field(default_factory=list)
-    # The jobs' bullets as they were before a tick on the Tailor page removed some to keep two pages ([] when none
+    # The jobs' bullets as they were before a tick on the Tailor page removed some to keep its pages ([] when none
     # did): each later tick starts from them again, so unticking brings those bullets back.
     untrimmed: list[ResumeExperience] = Field(default_factory=list)
     created_at: str = ""

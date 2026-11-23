@@ -78,12 +78,14 @@ MAX_PAGES = 2
 MIN_LAST_PAGE_FILL = 0.25  # a second page less full than this looks unfinished: one page at a smaller step is better
 
 
-def styles(paper: str) -> list[FitStyle]:
+def styles(paper: str, layout: int = 0) -> list[FitStyle]:
     """The size ladder, largest first: the LADDER steps, then the compact step (the floor's sizes, closer gaps), then
-    the compact step with the skills in line."""
-    plain = [FitStyle(font_pt=f, margin_in=m, paper=paper) for f, m in LADDER]  # type: ignore[arg-type]
+    the compact step with the skills in line. `layout`: FitStyle.layout of every step (1 for runs made since the
+    one-page rule, see page_fit.py)."""
+    plain = [FitStyle(font_pt=f, margin_in=m, paper=paper, layout=layout) for f, m in LADDER]  # type: ignore[arg-type]
     font_pt, margin_in = LADDER[-1]
-    compact = FitStyle(font_pt=font_pt, margin_in=margin_in, paper=paper, spacing=COMPACT)  # type: ignore[arg-type]
+    compact = FitStyle(font_pt=font_pt, margin_in=margin_in, paper=paper, spacing=COMPACT,  # type: ignore[arg-type]
+                       layout=layout)
     return plain + [compact, compact.model_copy(update={"inline_skills": True})]
 
 
@@ -273,14 +275,15 @@ def _pick(resume: Resume, ladder: list[FitStyle], pages: int | None, document: s
     return ruled or largest_within
 
 
-def try_styles(resume: Resume, paper: str = "Letter",
-               document: str = "Resume") -> tuple[FitStyle, int, bytes, list[str]] | None:
+def try_styles(resume: Resume, paper: str = "Letter", document: str = "Resume",
+               layout: int = 0) -> tuple[FitStyle, int, bytes, list[str]] | None:
     """The largest style that fits on at most MAX_PAGES pages, or None. The page count is the one the resume had before
     the restyle (old_pages), and the largest calibrated step that keeps it is used (_pick); when that is
     LADDER[CALIBRATED], the design's own sizes are used if they need no more pages, so the restyle never adds a page.
     A note says when the font is smaller than LADDER[CALIBRATED] (as large as before the restyle). `document`
-    ("Resume", or "CV" in EU style) names the PDF file in its title and language, as the preview does."""
-    ladder = styles(paper)
+    ("Resume", or "CV" in EU style) names the PDF file in its title and language, as the preview does. `layout`: as in
+    styles (a new run's last resort, page_fit.fit_new)."""
+    ladder = styles(paper, layout)
     found = _pick(resume, ladder, old_pages(resume, paper), document)
     if found is None:
         return None
@@ -297,10 +300,11 @@ def try_styles(resume: Resume, paper: str = "Letter",
     return style, pages, pdf, notes
 
 
-def render_smallest(resume: Resume, paper: str = "Letter", document: str = "Resume") -> tuple[FitStyle, int, bytes]:
+def render_smallest(resume: Resume, paper: str = "Letter", document: str = "Resume",
+                    layout: int = 0) -> tuple[FitStyle, int, bytes]:
     """The resume at the smallest size, for one no step fits: of the last two steps (the compact one, then with the
-    skills in line), the one with fewer pages, the compact step on a tie (see COMPACT)."""
-    sheets = [(style, resume_sheet(resume, style, document)) for style in styles(paper)[len(LADDER):]]
+    skills in line), the one with fewer pages, the compact step on a tie (see COMPACT). `layout`: as in styles."""
+    sheets = [(style, resume_sheet(resume, style, document)) for style in styles(paper, layout)[len(LADDER):]]
     style, sheet = min(sheets, key=lambda laid_out: laid_out[1].pdf.page)  # min keeps the first on a tie
     pdf, pages = sheet.finish()
     return style, pages, pdf

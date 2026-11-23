@@ -13,6 +13,7 @@ from pathlib import Path
 from ..pipeline.facts import (
     bullet_caps,
     experience_before,
+    is_current,
     is_expired,
     months_phrase,
     stay_months,
@@ -20,17 +21,17 @@ from ..pipeline.facts import (
 from ..pipeline.notes import clean_notes
 from ..schemas import CareerStep, Certification, Company, JDAnalysis, Resume
 
-PROMPT_VERSION = "v36"
+PROMPT_VERSION = "v38"
 RETRY_MARKER = "Your previous answer was rejected"
 
 _DIR = Path(__file__).parent
 _TOKEN = re.compile(r"\{\{(\w+)\}\}")
 
 SHORTEN_NOTE = (
-    " The previous draft did not fit on two pages, so some employers above now get one bullet fewer. Keep every "
-    "bullet at most 28 words and the summary at 60-75 words, but keep the same quality: each bullet still says "
-    "what was done, how, and what changed, each percentage keeps its base, and every must-have phrase from the job "
-    "description still appears word for word in the summary or a bullet."
+    " The previous draft did not fit its page plan, so some employers above now get fewer bullets. Keep every bullet "
+    "15-22 words and the summary at 30-40 words, but keep the same quality: each bullet still says what was done, how, "
+    "and what changed, each percentage keeps its base, and every must-have phrase from the job description still "
+    "appears word for word in the summary or a bullet."
 )
 
 
@@ -54,8 +55,6 @@ def _fill(template: str, **values: str) -> str:
     return _TOKEN.sub(lambda m: values.get(m.group(1), m.group(0)), template)
 
 
-def is_current(company: Company) -> bool:
-    return company.end.strip().lower() in ("", "present", "current", "now", "today")
 
 
 def describe_companies(
@@ -63,11 +62,12 @@ def describe_companies(
 ) -> str:
     """One line per employer: dates, work mode, how long the stay was and how much experience came before it
     (computed, so the model never does date arithmetic when choosing titles), and how many bullets to write
-    (computed so the resume fits on two pages at most)."""
+    (computed so the resume fits on one page, app/pipeline/page_fit.py). The current job (facts.is_current) is marked
+    "Present (current role)": its bullets are in the present tense."""
     bullets = bullets or bullet_caps(companies, today)
     lines = []
     for index, c in enumerate(companies):
-        end = "Present (current role)" if is_current(c) else c.end
+        end = "Present (current role)" if is_current(c, index) else c.end
         parts = [c.name, f"{c.start or '?'} - {end}", c.mode or "work mode not stated"]
         if c.location:
             parts.append(c.location)

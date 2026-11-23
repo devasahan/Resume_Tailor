@@ -253,8 +253,9 @@ def _skills(doc, resume: Resume, body: float, width: float, unit: float, in_line
         _add_run(paragraph, Run("\t" + ", ".join(group.skills)), body)
 
 
-def _bullet(doc, text: str, body: float, last: bool, unit: float) -> None:
-    """A bullet in the built-in List Bullet style, its marker gray and where the PDF draws it."""
+def _bullet(doc, text: str, body: float, last: bool, unit: float, whole_job: bool = False) -> None:
+    """A bullet in the built-in List Bullet style, its marker gray and where the PDF draws it. `whole_job` (layout 1):
+    kept with the next bullet unless it is the job's last, so Word never splits a job across pages either."""
     paragraph = doc.add_paragraph(style="List Bullet")
     _add_run(paragraph, Run(text), body)
     fmt = paragraph.paragraph_format
@@ -263,6 +264,8 @@ def _bullet(doc, text: str, body: float, last: bool, unit: float) -> None:
     fmt.left_indent, fmt.first_line_indent = Pt(text_x), Pt(marker_x - text_x)
     fmt.space_after = Pt(0.0 if last else BULLET_GAP * unit)
     fmt.keep_together = True
+    if whole_job and not last:
+        fmt.keep_with_next = True
     mark = OxmlElement("w:rPr")  # the paragraph mark's colour, which Word gives the bullet
     color = OxmlElement("w:color")
     color.set(qn("w:val"), MARKER.lstrip("#"))
@@ -301,12 +304,12 @@ def resume_docx(resume: Resume, style: FitStyle, document: str = "Resume") -> by
         row.paragraph_format.space_after = Pt(BULLETS_GAP * unit if exp.bullets else 0.0)
         row.paragraph_format.keep_with_next = True  # a job's line stays with its first bullet
         for number, bullet in enumerate(exp.bullets):
-            _bullet(doc, bullet, body, last=number == len(exp.bullets) - 1, unit=unit)
+            _bullet(doc, bullet, body, last=number == len(exp.bullets) - 1, unit=unit, whole_job=bool(style.layout))
 
     if p.education:
         _heading(doc, "EDUCATION", body, width, unit)
         for index, edu in enumerate(p.education):
-            row = _row(doc, education_runs(edu), fmt_dates(edu.start, edu.end), width, body, body)
+            row = _row(doc, education_runs(edu, style.layout), fmt_dates(edu.start, edu.end), width, body, body)
             row.paragraph_format.space_before = Pt(ENTRY_GAP * unit if index else 0.0)
             row.paragraph_format.keep_with_next = bool(edu.details)
             if edu.details:

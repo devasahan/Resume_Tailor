@@ -198,6 +198,7 @@ def test_the_one_fix_round_removes_copied_sentences_and_phrase_skills(router, db
     assert result.status == "ok" and result.retries == 1 and len(client.prompts) == 2
     feedback = client.prompts[1]
     assert "copy the job description word for word" in feedback and "Match the keyword, not the sentence" in feedback
+    # the current job's bullets stay in the present tense, as the posting writes them: still found as copied
     assert "'Debug complex issues across frontend, backend, and data boundaries' (Northwind Labs)" in feedback
     assert "'Use AI tools like Copilot, Cursor, or Claude Code daily' (Northwind Labs)" in feedback
     assert "phrases from the job description, not keywords: 'AWS-hosted systems'" in feedback

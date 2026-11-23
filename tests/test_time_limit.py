@@ -153,14 +153,13 @@ def test_one_slow_rewrite_does_not_block_every_later_one(router, db, registry, p
     assert generate._FOLLOW_UP_SECONDS[("demo-concise", "tailor_revision")] == 40.0  # shrinks each time it blocks
 
 
-def test_no_shorter_draft_without_a_drafts_time_left(router, db, registry, profile, monkeypatch):
-    """A shorter draft is a whole new draft: after a 1 s first draft with about 0.6 s left, none is started, and the
-    text is trimmed to two pages at once."""
-    monkeypatch.setattr(tailor, "MIN_SHORTER_SECONDS", 0.1)
+def test_with_a_time_limit_no_shorter_draft_is_asked(router, db, registry, profile, monkeypatch):
+    """A shorter draft is a whole new draft (another AI call): with a time limit none is asked, and a draft too long
+    for its page loses bullets at once (a few milliseconds)."""
     result, client, took = tailor_with(router, db, registry, profile, limit=1.6, delay=0, first=1.0, minimum=60,
                                        monkeypatch=monkeypatch, model="demo-detailed")
-    assert client.calls == ["tailor_output"] and result.fits and took < 4
-    assert any("no time left" in n for n in result.notes)
+    assert client.calls == ["tailor_output"] and result.fits and result.pages == 1 and took < 4
+    assert any(note.startswith("Removed") and "to fit one page" in note for note in result.notes)
 
 
 def test_the_bake_off_compares_models_without_a_time_limit(router, db, registry, profile, monkeypatch):

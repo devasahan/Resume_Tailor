@@ -431,30 +431,24 @@ def test_a_letter_note_quotes_the_busy_answer_it_waited_out(router, registry, db
     assert letters == [(MAIN, "failed"), (BACKUP, "failed")]
 
 
-def test_a_time_limit_during_a_pause_bills_no_call(router, registry, db, profile, monkeypatch):
-    """The shorter draft answered "busy" and the time limit ran out during the pause before it was asked again: no
-    request was on its way, so nothing more is billed or shown as stopped."""
-    monkeypatch.setattr(tailor, "MIN_SHORTER_SECONDS", 0.1)
-    first_layout = []
+def test_a_shorter_draft_that_stays_busy_keeps_the_trimmed_draft(router, registry, db, profile, monkeypatch):
+    """No time limit, a first draft longer than its plan (bullets are removed to fit one page), and the shorter draft
+    answered "busy" in every round: the trimmed first draft is kept, and the note says why."""
+    monkeypatch.setattr(tailor, "plan_pages", lambda *args, **kwargs: (1, [8] * len(profile.companies)))
 
-    def try_styles(*args, **kwargs):  # the first draft does not fit two pages, so a shorter one is asked for
-        first_layout.append(1)
-        return None if len(first_layout) == 1 else real_try_styles(*args, **kwargs)
+    async def no_pause(seconds):
+        return None
 
-    real_try_styles = tailor.try_styles
-    monkeypatch.setattr(tailor, "try_styles", try_styles)
-
-    async def long_pause(seconds):
-        await asyncio.sleep(30)
-
-    monkeypatch.setattr(generate, "_sleep", long_pause)
+    monkeypatch.setattr(generate, "_sleep", no_pause)
     router.overrides[MAIN] = ByKind(registry, {"tailor_output": ["ok", busy()], "tailor_revision": ["ok"]})
     result = asyncio.run(run_tailor(router, db, profile=profile, profile_id=None, jd=SAMPLE_JD, model_id=MAIN,
-                                    save=False, allow_fallback=False, time_limit=5.5))  # 1.5 s after the checks
-    assert router.overrides[MAIN].sent == ["tailor_output", "tailor_output"]
+                                    save=False, allow_fallback=False, time_limit=0))
+    sent = router.overrides[MAIN].sent
+    assert result.status == "ok" and result.pages == 1 and sent.count("tailor_output") > 2  # asked again in rounds
+    assert "Asking the model for a shorter draft failed, so bullets were removed instead." in result.notes
+    assert any(note.startswith("Removed") and "to fit one page" in note for note in result.notes)
     drafts = [call.result for call in result.timing.calls if call.kind == "tailor_output"]
-    assert drafts == ["ok", "failed"]  # no "stopped" call that was never sent
-    assert any(note.startswith("Asking the model for shorter bullets ran past the time limit") for note in result.notes)
+    assert drafts[0] == "ok" and "stopped" not in drafts  # nothing was on its way when it gave up
 
 
 def test_run_check_asks_a_busy_model_once_more(client, registry, monkeypatch):

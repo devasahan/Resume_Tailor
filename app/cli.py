@@ -110,13 +110,13 @@ async def _bakeoff(args, registry: Registry, db: Database, router: Router, profi
         writer.writeheader()
         writer.writerows(rows)
     lines = ["# Bake-off summary", "", f"{len(jds)} job description(s), {len(ids)} model(s).", "",
-             "| Model | OK runs | Within two pages | Keyword match | To verify (avg) | Rewrite rate | Cost per resume | Seconds (avg) | Failures |",
+             "| Model | OK runs | On one page | Keyword match | To verify (avg) | Rewrite rate | Cost per resume | Seconds (avg) | Failures |",
              "|---|---|---|---|---|---|---|---|---|"]
     for model_id in ids:
         mine = [r for r in rows if r["model"] == model_id]
         ok = [r for r in mine if r["status"] == "ok"]
         lines.append(
-            f"| {model_id} | {len(ok)}/{len(mine)} | {sum(r['fits'] for r in ok)}/{len(ok)} | {_mean(ok, 'keyword_match'):.0%} | "
+            f"| {model_id} | {len(ok)}/{len(mine)} | {sum(r['pages'] == 1 for r in ok)}/{len(ok)} | {_mean(ok, 'keyword_match'):.0%} | "
             f"{_mean(ok, 'to_verify'):.1f} | {sum(r['retries'] > 0 for r in ok)}/{len(ok)} | "
             f"${_mean(mine, 'cost_usd'):.4f} | {_mean(ok, 'seconds'):.1f} | {len(mine) - len(ok)} |"
         )

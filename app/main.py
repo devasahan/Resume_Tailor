@@ -12,8 +12,8 @@ import logging
 import math
 import re
 import secrets
-import unicodedata
 import time
+import unicodedata
 from collections import OrderedDict
 from datetime import timedelta
 from pathlib import Path
@@ -33,15 +33,29 @@ from .llm.base import CostCapError, LLMError
 from .llm.registry import ModelSpec, Registry
 from .llm.router import Router
 from .parsing.heuristic import MAX_OWN_CERTIFICATIONS, read_certification_list
-from .parsing.resume_parser import MAX_BYTES, extract_text, parse_resume, profile_warnings, read_resume
+from .parsing.resume_parser import (
+    MAX_BYTES,
+    extract_text,
+    parse_resume,
+    profile_warnings,
+    read_resume,
+)
 from .pipeline import validate
 from .pipeline.facts import is_expired, parse_point
 from .pipeline.fit import saved_resume_pdf, saved_style
 from .pipeline.generate import GenerationFailed
 from .pipeline.job_facts import check_job_facts
+from .pipeline.page_fit import pages_word
+from .pipeline.tailor import (
+    analysis_terms,
+    fit_report,
+    refit,
+    run_checks,
+    run_tailor,
+    write_cover_letter,
+)
 from .prompts import METRICS_MODES
 from .prompts import read_all as read_prompt_files
-from .pipeline.tailor import analysis_terms, fit_report, refit, run_checks, run_tailor, write_cover_letter
 from .render.docx import cover_docx, resume_docx
 from .render.pdf import (
     cover_pdf,
@@ -128,6 +142,24 @@ class ProjectNotes(BaseModel):
     # resume uploaded again in another tab) is refused, never saved against the wrong employer
     projects: list[Annotated[str, Field(max_length=MAX_PROJECT_CHARS)]] = Field(max_length=100)
     names: list[str] = Field(max_length=100)
+
+
+class EducationEntry(BaseModel):
+    """One school as the Profile page's Education box edits it: the degree as on the diploma ("B.S."), its field, the
+    school, its town ("St. Louis, MO") and the dates."""
+    school: str = Field(max_length=200)
+    degree: str = Field("", max_length=120)
+    field: str = Field("", max_length=120)
+    location: str = Field("", max_length=120)
+    start: str = Field("", max_length=40)
+    end: str = Field("", max_length=40)
+
+
+class EducationList(BaseModel):
+    # the entries in the order the Profile page showed them, and their schools then: a changed list (the resume
+    # uploaded again in another tab) is refused, never saved against the wrong school
+    entries: list[EducationEntry] = Field(max_length=20)
+    schools: list[str] = Field(max_length=20)
 
 
 class StaleList(Exception):
@@ -336,6 +368,35 @@ def carry_project_notes(profile: Profile, earlier: list[Profile]) -> list[str]:
             if old.projects.strip() and not company.projects.strip():
                 company.projects = old.projects
                 kept.append(company.name)
+    return list(dict.fromkeys(kept))
+
+
+def carry_education(profile: Profile, earlier: list[Profile]) -> list[str]:
+    """A resume uploaded again keeps what the Profile page's Education box added: for each school (the name, whatever
+    its case and spacing) the new file leaves without a town, degree or field, the newest earlier upload of the same
+    person (the same name) that lists the school gives it. What the new file says wins. Returns the schools changed."""
+    person = _same_name(profile.name)
+    mine = [old for old in earlier if _same_name(old.name) == person]  # newest first
+    kept: list[str] = []
+    paired: set[int] = set()  # earlier entries already given (two degrees from one school pair once each)
+    for edu in profile.education:
+        name = _same_name(edu.school)
+        upload = next((old for old in mine if any(_same_name(e.school) == name for e in old.education)), None)
+        if upload is None:
+            continue
+        left = [e for e in upload.education if _same_name(e.school) == name and id(e) not in paired]
+        # the same end date first, then the same degree, then the first one left
+        source = (next((e for e in left if e.end.strip() and _same_name(e.end) == _same_name(edu.end)), None)
+                  or next((e for e in left if e.degree.strip() and _same_name(e.degree) == _same_name(edu.degree)),
+                          None)
+                  or (left[0] if left else None))
+        if source is None:
+            continue
+        paired.add(id(source))
+        for key in ("location", "degree", "field"):
+            if not getattr(edu, key).strip() and getattr(source, key).strip():
+                setattr(edu, key, getattr(source, key))
+                kept.append(edu.school)
     return list(dict.fromkeys(kept))
 
 
@@ -1092,7 +1153,9 @@ def create_app(db: Database | None = None, registry: Registry | None = None, rou
             tip = (" Try a PDF or DOCX with selectable text, or a different Base-resume reader in Settings."
                    if method == "rules" and user.is_admin else " Try a PDF or DOCX with selectable text.")
             raise PlainError(422, f"Could not find {missing} in {filename}, so it was not saved.{tip}")
-        kept = carry_project_notes(profile, [entry["profile"] for entry in db.list_profiles(user_id=user.id)])
+        earlier = [entry["profile"] for entry in db.list_profiles(user_id=user.id)]
+        kept = carry_project_notes(profile, earlier)
+        carry_education(profile, earlier)
         if kept:
             notes.append(KEPT_NOTES + ", ".join(kept) + ".")
         profile_id = db.save_profile(profile, user_id=user.id, filename=filename, method=method, notes=notes)
@@ -1150,6 +1213,33 @@ def create_app(db: Database | None = None, registry: Registry | None = None, rou
         except StaleList:
             raise HTTPException(409, "The employers of this resume changed in another tab. Reload this page and "
                                      "save again.") from None
+        if changed is None:
+            raise HTTPException(404, "Resume not found.")
+        entry = db.profile_entry(profile_id, user_id=user.id)
+        assert entry is not None
+        return {"resume": resume_entry(entry, registry, user.is_admin)}
+
+    @app.put("/api/resumes/{profile_id}/education")
+    def api_resume_education(profile_id: int, body: EducationList, user: auth.User = Depends(current_user)):
+        """Each school as typed in the Profile page's Education box: the degree exactly as on the diploma ("B.S."),
+        its field, the school, its town ("St. Louis, MO") and the dates. Every new resume prints them as 'B.S. in
+        Computer Science · School · St. Louis, MO'."""
+        entries = [{key: " ".join(value.split()) for key, value in entry.model_dump().items()} for entry in body.entries]
+        if any(not entry["school"] for entry in entries):
+            raise HTTPException(422, "Each school needs its name.")
+
+        def replace(profile: Profile) -> None:
+            if [e.school for e in profile.education] != body.schools or len(entries) != len(body.schools):
+                raise StaleList
+            for edu, entry in zip(profile.education, entries):
+                for key, value in entry.items():
+                    setattr(edu, key, value)
+
+        try:
+            changed = db.change_profile(profile_id, user_id=user.id, change=replace)
+        except StaleList:
+            raise HTTPException(409, "The schools of this resume changed in another tab. Reload this page and save "
+                                     "again.") from None
         if changed is None:
             raise HTTPException(404, "Resume not found.")
         entry = db.profile_entry(profile_id, user_id=user.id)
@@ -1286,7 +1376,8 @@ def create_app(db: Database | None = None, registry: Registry | None = None, rou
         except ValueError as exc:
             raise HTTPException(422, str(exc)) from exc
         result.resume = merged
-        style, pages, fits, notes = await fit_report(merged, db.get_settings()["paper_size"])
+        style, pages, fits, notes = await fit_report(merged, db.get_settings()["paper_size"], result.page_target,
+                                                     result.style)
         latest = db.get_run(run_id)  # a cover letter may have been written while this edit was in flight
         if latest is not None:
             result.job_link = latest.job_link  # with a corrected job link, recorded by that letter's request
@@ -1303,8 +1394,8 @@ def create_app(db: Database | None = None, registry: Registry | None = None, rou
         """The "I have it" ticks on the Tailor page, one per certification the AI picked for this job. A ticked one
         is printed on the resume (after Education) and remembered on the base resume for the next jobs; an
         unticked one comes off both. Only ticks that changed are applied, so an older run's rows never undo a tick
-        made on another run. The page is fitted again: a bullet is removed only if two pages need it (and the
-        reply says so)."""
+        made on another run. The page is fitted again: a bullet is removed only if the run's page (one page, or
+        two for an older run) needs it, and the reply says so."""
         result = load_run(run_id, user, write=True)
         if result.status != "ok" or result.resume is None or result.analysis is None or not result.certifications:
             raise HTTPException(409, "This resume has no certifications to choose from.")
@@ -1328,7 +1419,8 @@ def create_app(db: Database | None = None, registry: Registry | None = None, rou
         resume.certifications = validate.printed_certifications(rows)
         validate.assert_certifications_held(resume)
         whole = [exp.model_copy(deep=True) for exp in resume.experience]
-        resume, style, pages, fits, notes, removed = await refit(resume, result.style.paper)
+        resume, style, pages, fits, notes, removed = await refit(resume, result.style.paper, result.page_target,
+                                                                 result.analysis)
         fresh = db.get_run(run_id) or result  # a cover letter may have been written while this was in flight
         fresh.resume, fresh.certifications = resume, rows
         fresh.untrimmed = whole if removed else []
@@ -1340,8 +1432,8 @@ def create_app(db: Database | None = None, registry: Registry | None = None, rou
         if removed:
             total = sum(removed.values())
             parts = [f"{count} bullet{'' if count == 1 else 's'} from {name}" for name, count in removed.items()]
-            view["message"] = (f"To keep two pages, {' and '.join(parts)} {'was' if total == 1 else 'were'} "
-                               "removed. Untick a certification to bring them back.")
+            view["message"] = (f"To keep {pages_word(result.page_target or 2)}, {' and '.join(parts)} "
+                               f"{'was' if total == 1 else 'were'} removed. Untick a certification to bring them back.")
             view["message_kind"] = "warn"
         elif result.untrimmed:
             view["message"], view["message_kind"] = "The bullets removed earlier are back.", "ok"

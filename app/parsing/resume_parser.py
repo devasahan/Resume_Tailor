@@ -149,6 +149,9 @@ def profile_warnings(profile: Profile) -> list[str]:
             warnings.append(f"{company.name}: work mode (Remote / Onsite / Hybrid) is blank, so it won't be shown.")
     if not profile.education:
         warnings.append("No education found.")
+    elif any(not edu.location for edu in profile.education):
+        warnings.append("Education: add each school's town (for example St. Louis, MO) and the degree exactly as on "
+                        "your diploma in the Education box.")
     return warnings
 
 

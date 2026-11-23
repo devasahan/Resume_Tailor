@@ -61,8 +61,8 @@ class Paced(LLMClient):
 
 
 def slow_layout(monkeypatch, seconds):
-    """try_styles taking `seconds` longer (a slow host); each layout's start and end are kept."""
-    real, times = tailor.try_styles, []
+    """Making the PDF (tailor.make_pdf) taking `seconds` longer (a slow host); each one's start and end are kept."""
+    real, times = tailor.make_pdf, []
 
     def layout(*args, **kwargs):
         began = time.perf_counter()
@@ -71,7 +71,7 @@ def slow_layout(monkeypatch, seconds):
         times.append((began, time.perf_counter()))
         return found
 
-    monkeypatch.setattr(tailor, "try_styles", layout)
+    monkeypatch.setattr(tailor, "make_pdf", layout)
     return times
 
 
@@ -89,8 +89,8 @@ def career(jobs: int) -> Profile:
 
 # ------------------------------------------------------------------ the letter runs alongside the layout
 def test_the_letter_is_written_while_the_layout_runs(router, db, registry, profile, monkeypatch):
-    """At the time limit no shorter draft fits after the draft, so the letter starts right after the AI step: the
-    job then waits for the longer of the layout and the letter, not for both."""
+    """The letter starts once the text is final (fitting it to its page only measures, a few milliseconds), and the
+    PDF is made while it is written: the job then waits for the longer of the two, not for both."""
     db.set_settings({"resume_time_limit_s": 5})
     client = Paced(FakeClient(registry.get("demo-concise")), {"tailor_output": 0.3, "cover_letter": 0.6})
     router.overrides["demo-concise"] = client
@@ -114,10 +114,10 @@ def test_the_letter_is_written_while_the_layout_runs(router, db, registry, profi
 
 
 def test_a_letter_waits_for_the_shorter_draft_and_quotes_it(router, db, registry):
-    """Without a time limit a draft too long for two pages is written again, shorter: a whole new draft, with new
-    figures. The letter starts only after it and quotes the resume as it stays."""
-    marker = ("Rebuilt the Quillmark ledger service with staged rollouts and clear ownership, so finance teams closed "
-              "each month without manual fixes or late corrections.")
+    """Without a time limit a draft that needs bullets removed to fit its page is written again, shorter: a whole new
+    draft, with new figures. The letter starts only after it and quotes the resume as it stays."""
+    marker = ("Rebuild the Quillmark ledger service with staged rollouts and clear ownership, letting finance teams "
+              "close each month without manual fixes.")  # the current job: the present tense
 
     class MarksTheShorterDraft(Paced):
         async def generate_structured(self, **kwargs):
@@ -129,13 +129,14 @@ def test_a_letter_waits_for_the_shorter_draft_and_quotes_it(router, db, registry
     client = MarksTheShorterDraft(FakeClient(registry.get("demo-detailed")))
     router.overrides["demo-detailed"] = client
     result = tailored(router, db, career(9), model="demo-detailed", cover_letter=True, time_limit=0)
-    assert result.status == "ok" and "The model shortened the bullets to fit two pages." in result.notes
+    assert result.status == "ok" and "The model shortened the resume to fit two pages." in result.notes
     assert [call["kind"] for call in client.calls] == ["tailor_output", "tailor_revision", "tailor_output",
                                                        "cover_letter"]  # the same order as before
     [letter], second = client.of("cover_letter"), client.of("tailor_output")[1]
     assert "Quillmark" in letter["user"] and letter["start"] >= second["end"]
     assert result.resume.experience[0].bullets[0] == marker and result.cover_letter is not None
-    assert [name for name, _ in result.timing.steps][-4:] == ["layout", "shorter draft", "cover letter wait", "checks"]
+    assert [name for name, _ in result.timing.steps][-5:] == ["layout", "shorter draft", "pdf", "cover letter wait",
+                                                              "checks"]
 
 
 def test_the_bake_off_keeps_its_order_and_keeps_no_time_free(router, db, registry, profile):
@@ -194,7 +195,7 @@ def test_a_resume_that_fails_after_its_letter_started_stops_the_letter(router, d
         time.sleep(0.2)  # the letter is on its way by now
         raise RuntimeError("the layout broke")
 
-    monkeypatch.setattr(tailor, "try_styles", broken)
+    monkeypatch.setattr(tailor, "make_pdf", broken)
 
     async def run():
         result = await run_tailor(router, db, profile=profile, profile_id=None, jd=SAMPLE_JD, model_id="demo-concise",
@@ -306,8 +307,8 @@ def test_one_job_brings_both_documents_with_its_timing_for_the_admin_only(client
     assert run["status"] == "ok" and run["cover_letter"]["paragraphs"] and run["resume"]
     line = finished_line(caplog, "tailor")
     names = [name for name, _ in steps_of(line)]
-    assert names == ["setup", "models", "thread wait", "bullet plan", "prompts", "AI", "layout", "cover letter wait",
-                     "checks", "saving"]
+    assert names == ["setup", "models", "thread wait", "bullet plan", "prompts", "AI", "layout", "pdf",
+                     "cover letter wait", "checks", "saving"]
     add_up(line)
     timing = run["timing"]
     assert [name for name, _ in timing["steps"]] == names[:-1]  # saved before the saving step
@@ -425,25 +426,18 @@ def test_a_call_with_no_answer_in_time_and_a_stopped_follow_up_are_recorded(rout
                                                                                  ("job_facts_fix", "stopped")]
 
 
-def test_a_shorter_draft_stopped_at_the_limit_is_recorded_and_paid_for(router, db, registry, profile, monkeypatch):
-    monkeypatch.setattr(tailor, "MIN_SHORTER_SECONDS", 0.1)
-    monkeypatch.setattr(tailor, "CHECKS_RESERVE_SECONDS", 0.0)
+def test_with_a_time_limit_a_long_draft_is_trimmed_without_a_second_draft(router, db, registry, profile,
+                                                                          monkeypatch):
+    """Under a time limit a draft too long for its page loses its least relevant bullets: removing them costs a few
+    milliseconds, a second draft would cost another AI call."""
     monkeypatch.setattr(generate, "MIN_FOLLOW_UP_SECONDS", 60)  # no rewrite pass
-    db.set_settings({"resume_time_limit_s": 3})
-
-    class SlowShorter(Paced):
-        async def generate_structured(self, **kwargs):
-            if kwargs["schema_name"] == "tailor_output" and self.of("tailor_output"):
-                self.delays["tailor_output"] = 5.0  # the second draft
-            return await super().generate_structured(**kwargs)
-
-    router.overrides["demo-detailed"] = SlowShorter(FakeClient(registry.get("demo-detailed")))
+    db.set_settings({"resume_time_limit_s": 30})
+    client = Paced(FakeClient(registry.get("demo-detailed")))
+    router.overrides["demo-detailed"] = client
     result = tailored(router, db, profile, model="demo-detailed")
-    assert result.status == "ok" and result.fits
-    assert any("shorter bullets ran past the time limit" in note for note in result.notes)
-    first, stopped = result.timing.calls
-    assert (stopped.kind, stopped.result) == ("tailor_output", "stopped") and 0.2 < stopped.seconds < 3.5
-    assert stopped.input > 1000 and result.input_tokens == first.input + stopped.input
+    assert result.status == "ok" and result.fits and result.pages == 1
+    assert [call["kind"] for call in client.calls] == ["tailor_output"]  # one draft, no shorter one
+    assert any(note.startswith("Removed") and "to fit one page" in note for note in result.notes)
 
 
 def test_an_older_run_without_a_timing_record_still_loads():
@@ -475,19 +469,19 @@ def test_a_run_saved_with_responsibilities_still_loads_and_uses_them(router, db,
     run_id = db.save_run(old, None, "")
     assert db.get_run(run_id).analysis.key_responsibilities == ["Run the monthly payroll close"]
     new = tailored(router, db, profile)
-    assert new.analysis.key_responsibilities == [] and new.prompt_version == "v36"
+    assert new.analysis.key_responsibilities == [] and new.prompt_version == "v38"
 
 
 # ------------------------------------------------------------------ the fitted PDF reads like the preview
 def test_the_fitted_pdf_is_titled_cv_in_eu_style(router, db, profile, monkeypatch):
-    documents = []
-    real = tailor.try_styles
+    documents, made = [], tailor.make_pdf
+    real = fit.try_styles
 
-    def layout(resume, paper, document="Resume"):
+    def layout(resume, style, document="Resume"):
         documents.append(document)
-        return real(resume, paper, document)
+        return made(resume, style, document)
 
-    monkeypatch.setattr(tailor, "try_styles", layout)
+    monkeypatch.setattr(tailor, "make_pdf", layout)
     for style in ("eu", "us"):
         assert tailored(router, db, profile, spelling=style).status == "ok"
     assert documents == ["CV", "Resume"]
@@ -553,4 +547,4 @@ def test_with_no_time_limit_a_silent_shorter_draft_still_ends(router, db, regist
     started = time.perf_counter()
     result = tailored(router, db, career(9), model="demo-detailed", time_limit=0)
     assert time.perf_counter() - started < 8 and result.status == "ok"
-    assert "Asking the model for shorter bullets failed, so the text was trimmed instead." in result.notes
+    assert "Asking the model for a shorter draft failed, so bullets were removed instead." in result.notes

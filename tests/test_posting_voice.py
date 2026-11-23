@@ -117,7 +117,9 @@ def test_the_one_rewrite_pass_fixes_copied_posting_text(router, db, registry, pr
     feedback = client.prompts[1]
     assert "copy the posting's own voice" in feedback and "Refine your craft" in feedback
     assert "'modern software development' (3 times)" in feedback and "at most twice" in feedback
-    assert "qualities, not skills: 'High-Quality Code'" in feedback
+    # a quality listed as a skill that no bullet shows has already left the skills, for free (rules.shape_skills)
+    assert "qualities, not skills" not in feedback
+    assert "High-Quality Code" not in [skill for group in result.resume.skills for skill in group.skills]
     assert validate.posting_voice_problems(result.resume) == []
     assert validate.quality_skill_problems(result.resume) == []
     assert validate.repeated_phrase_problems(result.resume, result.analysis) == []

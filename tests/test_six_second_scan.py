@@ -11,6 +11,7 @@ from app.llm.base import LLMClient
 from app.llm.fake_client import FakeClient
 from app.pipeline import validate
 from app.pipeline.fit import bullet_budget
+from app.pipeline.page_fit import job_relevance, plan_pages
 from app.pipeline.tailor import run_tailor
 from app.prompts import RETRY_MARKER, tailor_system
 from app.render.docx import resume_docx
@@ -31,7 +32,7 @@ def test_prompt_opens_each_job_with_its_biggest_win():
     for text in (estimate, words_only):
         assert "reads only the first bullet of each job" in text and "never a general duty" in text
         assert "Check that each job's first bullet is its strongest achievement" in text
-    assert "Every job's first bullet is always one of them, and it gives two figures" in estimate
+    assert "Every job's first bullet gives two figures, its size and its result" in estimate
     assert "83K concurrent players" in estimate and "at most one figure in any other bullet" in estimate
     assert "first bullet shows its size and its result" in words_only and "83K" not in words_only
 
@@ -122,8 +123,9 @@ def test_a_long_career_keeps_every_bullet(router, db, jd):
         Company(name=f"Employer {i}", start=f"Jan {2023 - 3 * i}", end="Present" if i == 0 else f"Dec {2025 - 3 * i}")
         for i in range(9)])
     result = asyncio.run(run_tailor(router, db, profile=jobs, profile_id=None, jd=jd, model_id="demo-concise"))
-    assert result.status == "ok" and result.fits and result.pages == 2  # two full pages
-    assert [len(exp.bullets) for exp in result.resume.experience] == bullet_budget(jobs)
+    assert result.status == "ok" and result.fits and result.pages == 2  # one page cannot hold nine jobs
+    assert [len(exp.bullets) for exp in result.resume.experience] == plan_pages(
+        jobs, "Letter", date.today(), job_relevance(jobs, jd))[1]  # the plan, kept whole
 
 
 # ------------------------------------------------------------------ the title line under the name

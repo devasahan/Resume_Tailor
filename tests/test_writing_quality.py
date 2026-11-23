@@ -15,6 +15,7 @@ from app.pipeline.fit import (
     smaller_budget,
     try_styles,
 )
+from app.pipeline.page_fit import job_relevance, plan_pages
 from app.pipeline.tailor import run_checks, run_tailor
 from app.prompts import (
     RETRY_MARKER,
@@ -121,18 +122,18 @@ def test_prompt_states_the_bullet_count_per_employer():
 def test_rules_ask_for_specific_bullets_and_a_full_summary():
     text = tailor_system("estimate")
     assert "write exactly the number of bullets given for each employer" in text
-    assert "20-32 words" in text and "WHAT, specifically" in text and "HOW" in text and "RESULT" in text
-    assert "at most two pages" in text and "Name the stack in detail" in text and "TECH STACK" not in text
+    assert "15-22 words" in text and "WHAT, specifically" in text and "HOW" in text and "RESULT" in text
+    assert "one page" in text and "about 450 words" in text and "TECH STACK" not in text
     assert "a must-have listed only in SKILLS does not count" in text and "tech line" not in text
-    assert "24-32 items" in text and "Do NOT invent client or product names, certifications" in text
-    assert '"Build and maintain"' in text and "Weak:" in text and "Strong:" in text
+    assert "12-18 items" in text and "Do NOT invent client or product names, certifications" in text
+    assert '"Build and maintain"' in text and "Weak:" in text and "Strong (the current job):" in text
     assert "Never write a string of short fragments" in text
     assert "Check before answering" in text
 
 
 def test_shorten_note_no_longer_asks_for_thin_text():
     assert "18 words" not in SHORTEN_NOTE and "under 60 words" not in SHORTEN_NOTE
-    assert "60-75 words" in SHORTEN_NOTE and "same quality" in SHORTEN_NOTE
+    assert "15-22 words" in SHORTEN_NOTE and "30-40 words" in SHORTEN_NOTE and "same quality" in SHORTEN_NOTE
 
 
 # ------------------------------------------------------------------ thin-text check
@@ -174,13 +175,14 @@ def test_a_thin_draft_is_rewritten_once(router, db, registry, profile, jd):
     assert result.status == "ok" and result.retries == 1 and len(client.prompts) == 2
     assert "too thin" in client.prompts[1] and "summary has only" in client.prompts[1]
     assert validate.thin_text_problems(result.resume) == []
-    assert validate.word_count(result.resume.summary) >= 60
+    assert 30 <= validate.word_count(result.resume.summary) <= 48  # 2-3 lines, the one-page rule
 
 
 def test_demo_run_follows_the_budget_without_shortening(router, db, profile, jd):
     result = asyncio.run(run_tailor(router, db, profile=profile, profile_id=None, jd=jd, model_id="demo-concise"))
     assert result.status == "ok" and result.fits and result.retries == 0
-    assert [len(e.bullets) for e in result.resume.experience] == bullet_budget(profile, "Letter")
+    assert [len(e.bullets) for e in result.resume.experience] == plan_pages(
+        profile, "Letter", date.today(), job_relevance(profile, jd))[1]
     assert not any("shortened" in n or "Removed" in n for n in result.notes)
 
 

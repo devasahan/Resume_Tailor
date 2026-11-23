@@ -1,4 +1,4 @@
-"""The whole run for one model: prompt -> validate -> merge locked fields -> fit two pages -> checks -> save."""
+"""The whole run for one model: prompt -> validate -> merge locked fields -> fit one page -> checks -> save."""
 from __future__ import annotations
 
 import asyncio
@@ -18,7 +18,7 @@ from ..prompts import (
     tailor_system,
     tailor_user,
 )
-from ..render.pdf import remember_resume_pdf
+from ..render.pdf import remember_resume_pdf, resume_sheet
 from ..schemas import (
     MAX_CERTIFICATIONS,
     CoverLetter,
@@ -35,13 +35,11 @@ from ..schemas import (
 )
 from ..storage.db import Database
 from ..timing import Steps
-from . import spelling, validate
+from . import rules, spelling, validate
 from .facts import candidate_facts
 from .fit import (
     MAX_PAGES,
-    bullet_budget,
     render_smallest,
-    smaller_budget,
     trim_to_fit,
     try_styles,
 )
@@ -53,6 +51,15 @@ from .generate import (
     generate_validated,
     record_sent,
 )
+from .page_fit import (
+    TWO_PAGES,
+    design_style,
+    fit_new,
+    job_relevance,
+    measure,
+    pages_word,
+    plan_pages,
+)
 
 log = logging.getLogger(__name__)
 
@@ -60,14 +67,16 @@ log = logging.getLogger(__name__)
 # pass. 1 means every required term is covered automatically; 2 roughly halves how often the rewrite runs.
 MIN_UNCOVERED_FOR_RETRY = 1
 # The time limit for a resume (Settings, default 30 s): the AI calls must end this much earlier, leaving time for the
-# layout, the checks and saving; the shorter-draft call is not started with less than MIN_SHORTER_SECONDS left.
+# layout, the checks and saving.
 CHECKS_RESERVE_SECONDS = 4.0
-MIN_SHORTER_SECONDS = 10.0
+# A draft that needed this many bullets removed to fit its page is asked for once more, with that many bullets, but
+# only with no time limit (a compare run, or Settings > Time limit 0): trimming is free and keeps the time limit.
+MIN_REMOVED_FOR_SHORTER = 2
 # A slow answer is waited for, never given up to save time (the owner: wait until it is tailored, and most resumes
 # should come from the chosen model): a model gets SWITCH_AFTER_SECONDS before the next model in the chain (Settings >
 # Fallback models) is tried, and the last model LAST_MODEL_SECONDS, a little longer than the connection itself waits
 # for an answer (app/llm/openai_compat_client.py TIMEOUT). The time limit (Settings) never ends a draft: it decides
-# only whether a polishing pass or a shorter draft is started, and how much time is kept free for the cover letter.
+# only whether a polishing pass is started, and how much time is kept free for the cover letter.
 SWITCH_AFTER_SECONDS = 120.0
 LAST_MODEL_SECONDS = 250.0
 # A resume waits at most this long for the cover letter written alongside it: it is then saved without the letter, with
@@ -78,8 +87,8 @@ LETTER_WAIT_SECONDS = 120.0
 # successful call, in this process), or LETTER_SECONDS_DEFAULT before the first one.
 LETTER_SECONDS_DEFAULT = 8.0
 _LETTER_SECONDS: dict[str, float] = {}
-# The layout and the trimming start once the letter's request is on its way (they run in a thread, which would slow the
-# letter's preparation down, and the letter takes longer), waiting at most this long for it
+# The PDF is made once the letter's request is on its way (in a thread, which would slow the letter's preparation down,
+# and the letter takes longer), waiting at most this long for it
 LETTER_START_SECONDS = 1.0
 LETTER_NOTES = ("Cover letter failed", "Cover letter not written")  # how a note about a missing letter starts
 
@@ -108,12 +117,6 @@ def _stopped(out: Outcome, router: Router, kind: str, system: str, user: str) ->
     add_call(out, out.asking, kind, max(0.0, time.perf_counter() - out.asking_since), sent, "stopped")
 
 
-def shorter_fits(time_left: float | None, first_call_seconds: float) -> bool:
-    """Whether a shorter draft may still be asked for with `time_left` seconds left (None: no time limit): it is a
-    whole new draft, which takes about as long as the first one did, and never less than MIN_SHORTER_SECONDS."""
-    return time_left is None or time_left >= max(MIN_SHORTER_SECONDS, first_call_seconds)
-
-
 def draft_text(resume: Resume) -> str:
     """The editable sections of a draft as plain text, so a fix request can show the model what to revise. Bullets
     are numbered from 0 within each employer: a fix names the bullets it changes by these numbers."""
@@ -140,10 +143,46 @@ def coverage_feedback(resume: Resume, analysis: JDAnalysis) -> str | None:
                      "summary or a bullet: " + ", ".join(f'"{t}"' for t in listed_only) + ".")
     return " ".join(parts) + (
         " Put each one in word for word, in the summary or in one existing bullet of the employer where it fits "
-        "best (usually the most recent role), replacing weaker words so each bullet stays 20-32 words and the "
-        "summary 60-85 words. Do not add or remove bullets: each employer keeps exactly the number given in "
+        "best (usually the most recent role), as part of the work that bullet describes (a soft skill such as "
+        "\"stakeholder management\" goes in the summary or in a bullet about that work, never as a closing \"with "
+        "stakeholders\" phrase), replacing weaker words so each bullet stays 15-22 words and the summary 30-48 "
+        "words. Do not add or remove bullets: each employer keeps exactly the number given in "
         "<employers>. Use at most two of these phrases per bullet, never as a list."
     )
+
+
+def make_pdf(resume: Resume, style: FitStyle, document: str = "Resume") -> tuple[bytes, int]:
+    """The fitted resume's PDF and its pages, made in a thread while the cover letter is written (the slow part of the
+    layout: the fitting itself only measures)."""
+    return resume_sheet(resume, style, document).finish()
+
+
+def reviewer_warnings(resume: Resume, paper: str = "Letter") -> list[str]:
+    """The one-page rules (rules.py) a resume still breaks, for the admin: after a hand edit too, whose words are never
+    changed for the person."""
+    warnings = []
+    weak = rules.weak_openers(resume)
+    if weak:
+        warnings.append("Bullets that open with a weak verb: " + "; ".join(f"'{b[:60]}...'" for b in weak[:4])
+                        + ". Start each with a strong verb that says what was built, changed or decided.")
+    long, summary_lines = rules.long_text(resume, paper)
+    if long:
+        warnings.append(f"{len(long)} bullet(s) run to 3 lines: aim for 15-22 words (1-2 lines) each.")
+    if summary_lines:
+        warnings.append(f"The summary takes {summary_lines} lines: aim for 2-3 lines (experience, current focus, "
+                        "one result).")
+    praise = rules.self_praise(resume.summary)
+    if praise:
+        warnings.append("The summary praises the candidate (" + "; ".join(f"'{s.strip()[:60]}'" for s in praise[:2])
+                        + "): show it in the bullets instead.")
+    for company, bullets in rules.so_endings(resume):
+        warnings.append(f"{company}: {len(bullets)} bullets end with \"so ...\": vary how their results are said.")
+    written = rules.number_words(resume)
+    if written:
+        warnings.append("Numbers written as words or in another format: " + "; ".join(f"'{t[:60]}...'" for t in
+                                                                                     written[:3])
+                        + ". Write every number as a numeral (7 schools, under 5 days), the same way throughout.")
+    return warnings
 
 
 def analysis_terms(analysis: JDAnalysis) -> str:
@@ -175,6 +214,11 @@ def run_checks(result: TailorResult, jd_text: str) -> None:
     if plain:
         result.ats_warnings.append("Wording that can sound machine-written: " + "; ".join(plain[:6])
                                    + ". Plain words read as your own.")
+    weak = validate.weak_bullets(result.resume)
+    if weak:
+        result.ats_warnings.append("Bullets that do not say how the work was done or what changed: "
+                                   + validate.weak_bullet_list(weak) + ". Recruiters look for the tool and the result.")
+    result.ats_warnings += reviewer_warnings(result.resume, result.style.paper)
     letter_plain = validate.cover_plain_problems(result.cover_letter, result.analysis) if result.cover_letter else []
     if letter_plain:
         result.ats_warnings.append("Cover letter wording that can sound machine-written: " + "; ".join(letter_plain[:6])
@@ -257,8 +301,19 @@ def run_checks(result: TailorResult, jd_text: str) -> None:
         result.flags += validate.cover_flags(result.cover_letter, result.hints, own)
 
 
-async def fit_report(resume: Resume, paper: str) -> tuple[FitStyle, int, bool, list[str]]:
-    """Fit check for a hand-edited resume: never changes the text, only picks the style."""
+async def fit_report(resume: Resume, paper: str, page_target: int = 0,
+                     style: FitStyle | None = None) -> tuple[FitStyle, int, bool, list[str]]:
+    """Fit check for a hand-edited resume: never changes the text, only picks the style. A run made since the one-page
+    rule (`page_target` 1 or 2) stays at the design's own sizes on its own paper (`style`): the font is never reduced,
+    and a note says when the text runs past its page. An older run (0) keeps the old fitting: the largest size that
+    keeps two pages."""
+    if page_target:
+        paper = style.paper if style is not None else paper
+        pages = await asyncio.to_thread(measure, resume, paper)
+        notes = [] if pages <= page_target else [
+            (f"Still {pages} pages at the design's own sizes: the resume is meant to fit {pages_word(page_target)}. "
+             "Shorten the text.")]
+        return design_style(paper), pages, pages <= TWO_PAGES, notes
     found = await asyncio.to_thread(try_styles, resume, paper)
     if found:
         style, pages, _pdf, notes = found
@@ -267,21 +322,30 @@ async def fit_report(resume: Resume, paper: str) -> tuple[FitStyle, int, bool, l
     return style, pages, False, [f"Still {pages} pages at the smallest font (the limit is two). Shorten the text."]
 
 
-async def refit(resume: Resume, paper: str) -> tuple[Resume, FitStyle, int, bool, list[str], dict[str, int]]:
-    """Fit after the printed certifications changed (ticked on the Tailor page): the largest style that keeps two
-    pages, or else the fewest bullets removed (the last bullets of the jobs with the most). Returns (resume, style,
-    pages, fits, notes, {employer: bullets removed}); the resume given is never changed."""
-    found = await asyncio.to_thread(try_styles, resume, paper)
-    if found:
-        style, pages, _pdf, notes = found
-        return resume, style, pages, True, notes, {}
-    trimmed, style, pages, _pdf, notes = await asyncio.to_thread(trim_to_fit, resume, paper)
+async def refit(resume: Resume, paper: str, page_target: int = 0,
+                analysis: JDAnalysis | None = None) -> tuple[Resume, FitStyle, int, bool, list[str], dict[str, int]]:
+    """Fit after the printed certifications changed (ticked on the Tailor page). A run made since the one-page rule
+    (`page_target` 1 or 2): its pages at the design's own sizes, with the fewest bullets removed (page_fit.fit_new;
+    `analysis` keeps the posting's must-haves). An older run (0): the largest style that keeps two pages, or else the
+    fewest bullets removed (the last bullets of the jobs with the most). Returns (resume, style, pages, fits, notes,
+    {employer: bullets removed}); the resume given is never changed."""
+    if page_target:
+        fitted = await asyncio.to_thread(fit_new, resume, paper, page_target, analysis)
+        trimmed, style, pages, notes = fitted.resume, fitted.style, fitted.pages, fitted.notes
+        fits = pages <= TWO_PAGES
+    else:
+        found = await asyncio.to_thread(try_styles, resume, paper)
+        if found:
+            style, pages, _pdf, notes = found
+            return resume, style, pages, True, notes, {}
+        trimmed, style, pages, _pdf, notes = await asyncio.to_thread(trim_to_fit, resume, paper)
+        fits = pages <= MAX_PAGES
     removed: dict[str, int] = {}
     for before, after in zip(resume.experience, trimmed.experience):
         if len(after.bullets) < len(before.bullets):
             name = resume.profile.companies[before.company_index].name
             removed[name] = removed.get(name, 0) + len(before.bullets) - len(after.bullets)
-    return trimmed, style, pages, pages <= MAX_PAGES, notes, removed
+    return trimmed, style, pages, fits, notes, removed
 
 
 @keeps_settings  # the Settings are read once, for the whole run
@@ -350,11 +414,11 @@ async def run_tailor(
         # the page plan leaves room for the person's certifications only while they can be printed
         planned = profile if certifications_on else profile.model_copy(update={"certifications": []})
 
-        def plan_bullets() -> list[int]:
+        def plan_bullets() -> tuple[int, list[int]]:
             steps.mark("thread wait")  # from the request for a worker thread until this line runs in it
-            return bullet_budget(planned, paper, today)
+            return plan_pages(planned, paper, today, job_relevance(profile, jd))
 
-        budget = await asyncio.to_thread(plan_bullets)  # bullets per employer that fit
+        target, budget = await asyncio.to_thread(plan_bullets)  # pages (1 unless it cannot be), bullets per employer
         steps.mark("bullet plan")
         context = {"profile": profile.model_dump(), "jd": jd, "hints": hints, "bullets": budget, "metrics": metrics_mode,
                    "spelling": spelling, "certifications_section": certifications_on}
@@ -378,6 +442,12 @@ async def run_tailor(
             validate.general_role_fixes(resume, out.jd_analysis)  # 'Voice AI Engineer' -> 'AI Engineer'
             notes = validate.fix_title_regressions(resume)
             notes += validate.role_level_fixes(resume, out.jd_analysis)
+            notes += rules.official_names(resume, out.jd_analysis, jd)  # PostgreSQL, pytest; the posting's form wins
+            notes += validate.tense_bullets(resume, out.jd_analysis)  # present: the current job; past: the rest
+            notes += validate.trim_teamwork_tails(resume, out.jd_analysis)  # no bullet ends on who it was done with
+            notes += rules.fix_numbers(resume, out.jd_analysis)  # '7 schools', '500K+': before the figure checks
+            notes += rules.summary_trim(resume, out.jd_analysis)  # no self-praise, at most 3 sentences
+            notes += rules.shape_skills(resume, out.jd_analysis)  # at most 3 rows, what the bullets show
             validate.vary_figures(resume, own_text)  # the candidate's own figures are never dropped
             validate.spell_resume(resume, spelling, out.jd_analysis, (company_name, hiring_manager))
             return out, resume, notes
@@ -402,6 +472,46 @@ async def run_tailor(
                 "keywords": [k for k in out.jd_analysis.keywords if not validate.names_certification(k, names)]})
 
         allowed_figures = f"{hints}\n{facts}"  # and the figures own_notes give whole
+
+        def reviewer_feedback(resume: Resume, asked: bool) -> list[str]:
+            """The one-page rules' rewrite instructions (rules.py): each line when its problem is clear on its own
+            (2 weak openings or 3-line bullets, a 4-line summary, self-praise, 3 "so" endings in a job), else all of
+            them only with a fix round asked anyway (`asked`): most rules are kept in code for free, and under the time
+            limit the rewrite pass is often skipped."""
+            strong, soft = [], []
+            weak = rules.weak_openers(resume)
+            if weak:
+                (strong if len(weak) >= rules.MIN_WEAK_OPENERS_FOR_RETRY else soft).append(
+                    "These bullets open with a weak verb: " + "; ".join(f"'{b}'" for b in weak[:6]) + ". Start each "
+                    "with a strong, specific verb that says what was built, changed or decided (BULLETS rule), in its "
+                    "job's tense, keeping what it says.")
+            long, summary_lines = rules.long_text(resume, paper)
+            if long:
+                (strong if len(long) >= rules.MIN_LONG_BULLETS_FOR_RETRY else soft).append(
+                    "These bullets run to 3 lines: " + "; ".join(f"'{b}'" for b in long[:6]) + ". Cut each to one "
+                    "sentence of 15-22 words, keeping its what, how and result and its must-have phrases.")
+            if summary_lines:
+                strong.append(f"The summary takes {summary_lines} lines. Rewrite it as 2-3 sentences of 30-48 words: "
+                              "the experience, the current focus and one result (SUMMARY rule).")
+            praise = rules.self_praise(resume.summary)
+            if praise:
+                strong.append("The summary praises the candidate: " + "; ".join(f"'{s.strip()}'" for s in praise[:2])
+                              + ". Remove the praise and show it as what the candidate did (SUMMARY rule).")
+            listed = rules.summary_skill_items(resume)
+            if len(listed) > rules.MAX_SUMMARY_SKILLS:
+                soft.append("The summary lists the skills again (" + ", ".join(listed[:8]) + "). Name at most the "
+                            "two or three its result needs; the SKILLS section lists the rest.")
+            for company, bullets in rules.so_endings(resume):
+                (strong if len(bullets) > 2 else soft).append(
+                    f"{company}: {len(bullets)} bullets end with a \"so ...\" clause: "
+                    + "; ".join(f"'{b}'" for b in bullets[:4]) + ". Keep at most one; lead the others with their "
+                    "result or join it with \"cutting\", \"saving\", \"letting\" or \"to\".")
+            figures = rules.current_job_figures(resume) if metrics_mode == "estimate" else None
+            if figures:
+                soft.append(f"{figures[0]}, the current job, has only {figures[1]} bullet(s) with a figure: give its "
+                            "scale and results as figures (users or runs per day, tests run and regressions caught, a "
+                            "cost saved), the candidate's own numbers first (METRICS rule).")
+            return strong + soft if strong or asked else []
 
         def refine(value) -> Ask | None:
             """Ask once to fix the draft if it uses too many figures, round guesses, thin text, leaves must-have
@@ -454,9 +564,9 @@ async def run_tailor(
             thin = validate.thin_text_problems(value[1])
             if thin:
                 feedback.append(
-                    "The draft is too thin: " + "; ".join(thin) + ". Rewrite the summary as 3-4 flowing sentences "
-                    "of 60-85 words, and every weak bullet as 20-32 words that say specifically what was done, how, "
-                    "and what changed, following the SUMMARY and BULLETS rules."
+                    "The draft is too thin: " + "; ".join(thin) + ". Rewrite the summary as 2-3 flowing sentences "
+                    "of 30-48 words, and every weak bullet as 15-22 words that open with a strong verb and say "
+                    "specifically what was done, how, and what changed, following the SUMMARY and BULLETS rules."
                 )
             coverage = coverage_feedback(value[1], value[0].jd_analysis)
             if coverage:
@@ -543,6 +653,15 @@ async def run_tailor(
                     "The job titles do not read as a believable career path: " + " ".join(titles) + " Choose the "
                     "titles again following the JOB TITLES rule, using the stay lengths given in <employers>."
                 )
+            weak = validate.weak_bullets(value[1])  # two or more, or along with a fix round asked anyway
+            if weak and (len(weak) >= validate.MIN_WEAK_BULLETS_FOR_RETRY or feedback):
+                feedback.append(
+                    "These bullets do not say how the work was done or what changed: " + validate.weak_bullet_list(weak)
+                    + ". Rewrite each one following the BULLETS rule: the tool or method used and what changed for "
+                    "the business, its users or the team, in its job's tense and 15-22 words; drop an ending that only "
+                    "says who the work was done with. Keep the must-have phrases each one shows."
+                )
+            feedback += reviewer_feedback(value[1], bool(feedback))
             if not feedback:
                 return None
             output, resume, first_notes = value
@@ -617,11 +736,11 @@ async def run_tailor(
             return letter, why, time.perf_counter() - began
 
         async def start_letter(final: Resume, out: TailorOutput) -> None:
-            """Start writing the letter (once), now that no shorter draft can come: that would be a whole new draft
-            with new figures, which a letter written before it would not have. The layout and the trimming only read
-            the text, and trimming keeps all the letter reads (see trim_to_fit). Returns once the letter's request is
-            on its way (or the letter has ended; at most LETTER_START_SECONDS), so the layout's thread does not slow
-            its preparation down: the letter takes longer than the layout, so the run ends sooner."""
+            """Start writing the letter (once), from the final text: after the trimming (the letter quotes each job's
+            first bullets) and any shorter draft (a whole new draft with new figures, which a letter written before it
+            would not have). Returns once the letter's request is on its way (or the letter has ended; at most
+            LETTER_START_SECONDS), so the PDF's thread does not slow its preparation down: the letter takes longer than
+            the PDF, so the run ends sooner."""
             nonlocal letter_task
             if cover_letter and letter_task is None:
                 # the draft's cost is not saved until the run is: the letter's cost-cap check counts it
@@ -633,63 +752,55 @@ async def run_tailor(
                 finally:
                     sending.cancel()
 
-        time_left = None if deadline is None else deadline - time.perf_counter()
-        if not shorter_fits(time_left, outcome.first_call_seconds):
-            await start_letter(resume, output)  # the usual case with a time limit: written during the layout
-
-        # --- fit two pages at most: pick the style -> ask once more with a smaller bullet budget -> trim bullets
-        fit = await asyncio.to_thread(try_styles, resume, paper, document)
+        # --- one page (page_fit.py): measure at the design's own sizes and trim bullets (a few milliseconds) -> a
+        # shorter draft only with no time limit -> the letter, from the final text -> the PDF, made while it is written
+        fitted = await asyncio.to_thread(fit_new, resume, paper, target, output.jd_analysis, document)
         steps.mark("layout")
-        if fit:
-            await start_letter(resume, output)
-        time_left = None if deadline is None else deadline - time.perf_counter()
-        if fit is None and not shorter_fits(time_left, outcome.first_call_seconds):
-            notes.append("There was no time left (Settings > Time limit) to ask the model for shorter bullets, so the "
-                         "text was trimmed to fit two pages.")
-        elif fit is None:
+        if fitted.removed >= MIN_REMOVED_FOR_SHORTER and deadline is None:
+            # no time limit (a compare run, or Settings > Time limit 0): the model may say more in fewer bullets than
+            # trimming leaves, so it is asked once for a draft with as many bullets as the trimmed one keeps
             second = Outcome()
-            smaller = smaller_budget(budget)
+            smaller = [0] * len(profile.companies)
+            for exp in fitted.resume.experience:
+                smaller[exp.company_index] = len(exp.bullets)
             shorter_system = tailor_system(metrics_mode, spelling, certifications_section=certifications_on)
             shorter_user = tailor_user(jd, profile.companies, hints, facts, shorten=True, bullets=smaller, today=today,
                                        certifications=profile.certifications, certifications_section=certifications_on)
             try:
-                shorter = generate_validated(
+                await generate_validated(
                     router, [outcome.final_model_id], system=shorter_system, user=shorter_user,
                     schema=schema, schema_name="tailor_output", parse=parse,
                     context={**context, "shorten": True, "bullets": smaller}, outcome=second,
                     refine=None,  # the shorten call is already the extra call; never let it ask a third time
-                    last_after=LAST_MODEL_SECONDS,  # bounded with no time limit too (its chain is one model)
+                    last_after=LAST_MODEL_SECONDS,  # bounded (its chain is one model)
                 )
-                await (asyncio.wait_for(shorter, time_left) if time_left is not None else shorter)
                 _absorb(outcome, second)
                 short_output, short_resume, short_title_notes = second.value  # type: ignore[misc]
                 short_doubled = validate.fix_repeated_words(short_resume)
-                fit = await asyncio.to_thread(try_styles, short_resume, paper, document)
-                if fit:
-                    output, resume, title_notes = short_output, short_resume, short_title_notes
-                    doubled = short_doubled
-                    notes.append("The model shortened the bullets to fit two pages.")
+                short = await asyncio.to_thread(fit_new, short_resume, paper, target, short_output.jd_analysis,
+                                                document)
+                # kept when it reaches the page with fewer bullets removed: its bullets are the model's own choice
+                # for the smaller budget, which beats removing many from a draft that ignored the plan
+                if short.pages <= target and short.removed < fitted.removed:
+                    output, resume, title_notes, doubled, fitted = (short_output, short_resume, short_title_notes,
+                                                                    short_doubled, short)
+                    notes.append(f"The model shortened the resume to fit {pages_word(target)}.")
             except GenerationFailed as exc:
                 _absorb(outcome, exc.outcome)
-                notes.append("Asking the model for shorter bullets failed, so the text was trimmed instead.")
-            except TimeoutError:
-                _stopped(second, router, "tailor_output", shorter_system, shorter_user)  # billed anyway
-                _absorb(outcome, second)
-                notes.append("Asking the model for shorter bullets ran past the time limit (Settings), so the text was "
-                             "trimmed instead.")
+                notes.append("Asking the model for a shorter draft failed, so bullets were removed instead.")
             steps.mark("shorter draft")
-        await start_letter(resume, output)  # the final text: a shorter draft is used only when it fits
+        resume, style, pages = fitted.resume, fitted.style, fitted.pages
+        notes += fitted.notes
+        if fitted.removed:  # a tool only a removed bullet showed leaves the skills too
+            notes += rules.shape_skills(resume, output.jd_analysis)
+        tip = rules.notes_figure_tip(profile)
+        if tip:
+            notes.append(tip)
+        await start_letter(resume, output)  # the final text: trimmed, or the shorter draft when it fits
         # fitted_pdf: the final resume's PDF as it was laid out to fit, with the preview's title and language
-        if fit:
-            style, pages, fitted_pdf, fit_notes = fit
-            notes += fit_notes
-            fits = True
-        else:
-            resume, style, pages, fitted_pdf, trim_notes = await asyncio.to_thread(
-                trim_to_fit, resume, paper, document)
-            notes += trim_notes
-            fits = pages <= MAX_PAGES
-            steps.mark("trimming")
+        fitted_pdf, pages = await asyncio.to_thread(make_pdf, resume, style, document)
+        fits = pages <= TWO_PAGES
+        steps.mark("pdf")
 
         if outcome.input_tokens == 0 and outcome.output_tokens == 0:
             try:
@@ -710,7 +821,7 @@ async def run_tailor(
         listed = [name for name in (validate.clean_text(pick.name)[:validate.CERT_NAME_LIMIT].strip()
                                     for pick in output.certifications) if name]
         result.posting_certifications = [] if certifications_on else listed[:MAX_CERTIFICATIONS]
-        result.style, result.pages, result.fits = style, pages, fits
+        result.style, result.pages, result.fits, result.page_target = style, pages, fits, target
         # the final text and style, as saved: the preview and the first download are served without a new layout
         remember_resume_pdf(resume, style, document, fitted_pdf)
         result.served_model = outcome.served_model
@@ -747,7 +858,7 @@ async def run_tailor(
     if result.status != "ok":
         steps.mark("until it failed")
 
-    result.notes = notes
+    result.notes = list(dict.fromkeys(notes))  # a fix noted on the draft and again on its rewrite: once
     result.attempts = outcome.attempts
     result.retries = outcome.retries
     result.fallback_chain = outcome.chain
@@ -794,6 +905,7 @@ async def _write_letter(
     def parse(data: dict) -> CoverLetter:
         raw = CoverLetterOut.model_validate(data)
         greeting, paragraphs, closing = validate.clean_cover_letter(raw.greeting, raw.paragraphs, raw.closing)
+        paragraphs = rules.letter_fixes(paragraphs, analysis, jd, [c.name for c in resume.profile.companies])
         letter = CoverLetter(
             greeting=greeting, paragraphs=paragraphs, closing=closing,
             company_name=company_name, hiring_manager=hiring_manager,

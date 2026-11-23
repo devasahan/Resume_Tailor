@@ -55,6 +55,9 @@ def test_education_dates_keep_their_months_and_leave_the_school_name():
     def read(*lines):
         return [(e.school, e.degree, e.field, e.start, e.end) for e in _parse_education(list(lines))]
 
+    def town(*lines):
+        return [e.location for e in _parse_education(list(lines))]
+
     assert read("Lakeside University Aug 2016 – Aug 2020", "Bachelor's Degree in Computer Science") == [
         ("Lakeside University", "Bachelor's Degree", "Computer Science", "Aug 2016", "Aug 2020")]
     # the dates on their own line under the school
@@ -64,7 +67,8 @@ def test_education_dates_keep_their_months_and_leave_the_school_name():
     assert read("University of Texas at Austin", "B.S. in Computer Science, May 2016") == [
         ("University of Texas at Austin", "B.S.", "Computer Science", "", "May 2016")]
     assert read("Lakeside University, St. Louis, MO   08/2016 – 05/2020") == [
-        ("Lakeside University, St. Louis, MO", "", "", "08/2016", "05/2020")]
+        ("Lakeside University", "", "", "08/2016", "05/2020")]  # the town is kept apart (the new education row)
+    assert town("Lakeside University, St. Louis, MO   08/2016 – 05/2020") == ["St. Louis, MO"]
     assert read("Lakeside University Aug 2022 - Present")[0][3:] == ("Aug 2022", "Present")
 
 

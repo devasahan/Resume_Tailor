@@ -82,7 +82,7 @@ def test_profile_validation(client):
 def test_full_flow_pdf_docx_and_edit(client):
     save_profile(client)
     run = tailor(client, cover_letter=True, company_name="Acme").json()
-    assert run["status"] == "ok" and run["fits"] and run["pages"] == 2  # three long-stay jobs: a full two pages
+    assert run["status"] == "ok" and run["fits"] and run["pages"] == 1  # three jobs: one page
     run_id = run["run_id"]
 
     pdf = client.get(f"/api/runs/{run_id}/resume.pdf")

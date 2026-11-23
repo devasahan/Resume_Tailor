@@ -285,9 +285,9 @@ def test_an_edit_saved_while_the_letter_is_written_keeps_the_letter(client, monk
     run = tailor(client).json()
     real_fit = main.fit_report
 
-    async def slow_fit(resume, paper):  # the letter lands while the edit is being checked
+    async def slow_fit(resume, paper, *args):  # the letter lands while the edit is being checked
         assert client.post(f"/api/runs/{run['run_id']}/cover-letter", json={}).status_code == 200
-        return await real_fit(resume, paper)
+        return await real_fit(resume, paper, *args)
 
     monkeypatch.setattr(main, "fit_report", slow_fit)
     exp = [{"company_index": e["company_index"], "job_title": e["job_title"], "bullets": e["bullets"]}

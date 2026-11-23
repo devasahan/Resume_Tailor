@@ -700,12 +700,33 @@ def split_job_line(company: Company, title: str, size: float, width: float) -> t
     return first, rest
 
 
-def education_runs(edu: Education) -> list[Run]:
-    """An education line: 'Degree, Field' (SemiBold, dark) then ' · School' in gray, or the school alone."""
-    main = ", ".join(x for x in (edu.degree, edu.field) if x)
+# A field that is a school or a faculty, not a subject ('Master of Science, School of Engineering'): 'in' would misread
+_NOT_SUBJECT = re.compile(r"^(?:the\s+)?(?:school|college|faculty|department|institute|division|academy)\b",
+                          re.IGNORECASE)
+
+
+def degree_text(edu: Education, layout: int = 0) -> str:
+    """The degree as printed: in layout 1 'B.S. in Computer Science' (the degree as on the diploma, then its subject),
+    'B.S., School of Engineering' when the field is not a subject, and 'Degree, Field' in layout 0 (runs saved before);
+    the degree or the field alone when only one is known."""
+    if not (edu.degree and edu.field):
+        return edu.degree or edu.field
+    if layout and re.search(r"\s(?:in|of)$", edu.degree):  # 'Bachelor of Science in' + 'Biology'
+        return f"{edu.degree} {edu.field}"
+    if layout and not _NOT_SUBJECT.match(edu.field):
+        return f"{edu.degree} in {edu.field}"
+    return f"{edu.degree}, {edu.field}"
+
+
+def education_runs(edu: Education, layout: int = 0) -> list[Run]:
+    """An education line: the degree (degree_text, SemiBold, dark) then ' · School' in gray (and ' · Town' in layout
+    1), or the school alone."""
+    main = degree_text(edu, layout)
+    place = [edu.school] + ([edu.location] if layout and edu.location else [])
     if main:
-        return [Run(main, weight=SEMIBOLD, color=INK), Run(f" · {edu.school}", color=SOFT)]
-    return [Run(edu.school, weight=SEMIBOLD, color=INK)]
+        return [Run(main, weight=SEMIBOLD, color=INK), Run("".join(f" · {part}" for part in place), color=SOFT)]
+    return [Run(edu.school, weight=SEMIBOLD, color=INK)] + ([Run(f" · {place[1]}", color=SOFT)] if len(place) > 1
+                                                             else [])
 
 
 def certification_runs(cert: Certification) -> list[Run]:
@@ -766,19 +787,23 @@ def resume_sheet(resume: Resume, style: FitStyle, document: str = "Resume") -> S
     sheet.heading("SKILLS")
     draw_skills(sheet, resume.skills, style.inline_skills)
 
-    jobs = []  # (line beside the dates, line under it, dates, bullets, height kept together: the job line + 1st bullet)
+    # (line beside the dates, line under it, dates, bullets, height kept together): in layout 1 the whole job (its line
+    # and every bullet: two pages never split a job), else its line and first bullet
+    jobs = []
     for exp in resume.experience:
         company = p.companies[exp.company_index]
         dates = fmt_dates(company.start, company.end)
         left, rest = sheet.job_line(company, exp.job_title, dates)
         start = sheet.row_height(left, dates, rest, JOB_SIZE * size)
-        if exp.bullets:
-            start += BULLETS_GAP * unit + sheet.bullet_height(exp.bullets[0])
+        kept = exp.bullets if style.layout else exp.bullets[:1]
+        if kept:
+            start += BULLETS_GAP * unit + sum(sheet.bullet_height(bullet) for bullet in kept)
+            start += BULLET_GAP * unit * (len(kept) - 1)
         jobs.append((left, rest, dates, exp.bullets, start))
     sheet.heading("EXPERIENCE", keep=jobs[0][4] if jobs else 0.0)
     for index, (left, rest, dates, bullets, start) in enumerate(jobs):
         sheet.space(JOB_GAP * unit if index else 0.0)
-        sheet.keep(start)  # a job line never sits alone at the bottom of a page
+        sheet.keep(start)  # a job line never sits alone at the bottom of a page (layout 1: a job is never split)
         sheet.row(left, dates, rest, JOB_SIZE * size)
         if bullets:
             sheet.space(BULLETS_GAP * unit)
@@ -788,7 +813,7 @@ def resume_sheet(resume: Resume, style: FitStyle, document: str = "Resume") -> S
     if p.education:
         entries = []
         for edu in p.education:
-            left, dates = education_runs(edu), fmt_dates(edu.start, edu.end)
+            left, dates = education_runs(edu, style.layout), fmt_dates(edu.start, edu.end)
             extra = [Run(edu.details)] if edu.details else []
             height = sheet.row_height(left, dates) + (sheet.para_height(extra) if extra else 0.0)
             entries.append((left, dates, extra, height))
