@@ -909,6 +909,23 @@ def test_trimming_keeps_the_language_the_post_names_only_in_its_text():
         assert validate.missing_language(page_fit._without(resume, order, k), analysis, jd) is None, (k, order)
 
 
+def test_a_certification_tick_keeps_the_language_its_post_names_only_in_its_text():
+    """A tick refits with the post's text too (refit's `jd`, passed by the certifications endpoint): the current job's
+    only bullet naming the language the post names only in its text stays, as on the run's first fit."""
+    resume = resume_with(career(5), [10, 2, 1, 1, 1], bullet=PLAIN_BULLET)
+    resume.experience[0].bullets[2] = ("Write the release tooling in Python with tests on every change, letting 23 "
+                                       "teams ship weekly without rollbacks.")
+    resume.experience[0].bullets[9] = ("Write the deploy controller services in Go with retries and health checks, "
+                                       "cutting stuck deploys from 31 to 3 a month.")
+    analysis = JDAnalysis(target_role="Senior Platform Engineer", general_role="Platform Engineer", seniority="",
+                          domain="", must_have_skills=["Kafka"], nice_to_have_skills=[], keywords=[])
+    jd = "Senior Platform Engineer. You will run our Kafka platform. Our services are written in Go."
+    blind = asyncio.run(tailor.refit(resume, "Letter", 1, analysis))[0]
+    assert validate.missing_language(blind, analysis, jd) == ("Employer 0", "Go")  # without the text: Go went first
+    fitted = asyncio.run(tailor.refit(resume, "Letter", 1, analysis, jd))[0]
+    assert len(fitted.experience[0].bullets) < 10 and validate.missing_language(fitted, analysis, jd) is None
+
+
 def test_trimming_holds_the_current_jobs_last_bullet_naming_the_language():
     """Two of the current job's bullets name the post's language: once one has gone, the other is held (the hold
     follows the bullets left), so trimming never takes both while another bullet can go."""

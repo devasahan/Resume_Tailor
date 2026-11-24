@@ -1500,7 +1500,7 @@ def create_app(db: Database | None = None, registry: Registry | None = None, rou
         validate.assert_certifications_held(resume)
         whole = [exp.model_copy(deep=True) for exp in resume.experience]
         resume, style, pages, fits, notes, removed = await refit(resume, result.style.paper, result.page_target,
-                                                                 result.analysis)
+                                                                 result.analysis, result.jd)
         fresh = db.get_run(run_id) or result  # a cover letter may have been written while this was in flight
         fresh.resume, fresh.certifications = resume, rows
         fresh.untrimmed = whole if removed else []

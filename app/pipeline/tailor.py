@@ -433,15 +433,16 @@ async def fit_report(resume: Resume, paper: str, page_target: int = 0,
     return style, pages, False, [f"Still {pages} pages at the smallest font (the limit is two). Shorten the text."]
 
 
-async def refit(resume: Resume, paper: str, page_target: int = 0,
-                analysis: JDAnalysis | None = None) -> tuple[Resume, FitStyle, int, bool, list[str], dict[str, int]]:
+async def refit(resume: Resume, paper: str, page_target: int = 0, analysis: JDAnalysis | None = None,
+                jd: str = "") -> tuple[Resume, FitStyle, int, bool, list[str], dict[str, int]]:
     """Fit after the printed certifications changed (ticked on the Tailor page). A run made since the one-page rule
     (`page_target` 1 or 2): its pages at the design's own sizes, with the fewest bullets removed (page_fit.fit_new;
-    `analysis` keeps the posting's must-haves). An older run (0): the largest style that keeps two pages, or else the
-    fewest bullets removed (the last bullets of the jobs with the most). Returns (resume, style, pages, fits, notes,
-    {employer: bullets removed}); the resume given is never changed."""
+    `analysis` and the post's text `jd` keep the posting's must-haves and its language at the current job). An older
+    run (0): the largest style that keeps two pages, or else the fewest bullets removed (the last bullets of the jobs
+    with the most). Returns (resume, style, pages, fits, notes, {employer: bullets removed}); the resume given is never
+    changed."""
     if page_target:
-        fitted = await asyncio.to_thread(fit_new, resume, paper, page_target, analysis)
+        fitted = await asyncio.to_thread(fit_new, resume, paper, page_target, analysis, jd=jd)
         trimmed, style, pages, notes = fitted.resume, fitted.style, fitted.pages, fitted.notes
         fits = pages <= TWO_PAGES
     else:
