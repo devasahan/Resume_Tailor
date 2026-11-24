@@ -61,6 +61,7 @@ from .page_fit import (
     on_the_ladder,
     pages_word,
     plan_pages,
+    planned_removals,
     shortest_over_two,
 )
 
@@ -75,8 +76,9 @@ STRONG_SUMMARY_LINES = 5
 # The time limit for a resume (Settings, default 30 s): the AI calls must end this much earlier, leaving time for the
 # layout, the checks and saving.
 CHECKS_RESERVE_SECONDS = 4.0
-# A draft that needed this many bullets removed to fit its page is asked for once more, with that many bullets, but
-# only with no time limit (a compare run, or Settings > Time limit 0): trimming is free and keeps the time limit.
+# A draft that needed this many bullets removed to fit its page, beyond the one a filled one-page plan builds in
+# (page_fit.planned_removals), is asked for once more, with the bullets left, but only with no time limit (a compare
+# run, or Settings > Time limit 0): trimming is free and keeps the time limit.
 MIN_REMOVED_FOR_SHORTER = 2
 # A slow answer is waited for, never given up to save time (the owner: wait until it is tailored, and most resumes
 # should come from the chosen model): a model gets SWITCH_AFTER_SECONDS before the next model in the chain (Settings >
@@ -379,11 +381,14 @@ def _layout_rank(fitted: Fitted) -> tuple[int, float, float, bool]:
     return fitted.pages, -fitted.style.font_pt, -fitted.style.spacing, fitted.style.inline_skills
 
 
-def keeps_as_much(trimmed: Fitted, shorter: Fitted, analyses: list[JDAnalysis]) -> bool:
+def keeps_as_much(trimmed: Fitted, shorter: Fitted, analyses: list[JDAnalysis], jd: str = "") -> bool:
     """Whether a shorter draft, fitted to its page, is kept over the trimmed first draft (both from fit_new): laid out
     better (fewer pages, or as many at a larger size), or as well with fewer bullets removed and at least as many left,
-    so more bullets never make up for an extra page or a smaller font; and showing every must-have (of either draft's
-    analysis) the trimmed draft shows in its summary or a bullet."""
+    so more bullets never make up for an extra page or a smaller font; showing every must-have (of either draft's
+    analysis) the trimmed draft shows in its summary or a bullet; and naming the post's programming language at the
+    current job where the trimmed draft does (validate.missing_language with the post's text `jd`, the owner's rule
+    since prompt v39), each draft read by its own analysis (the trimmed draft's first in `analyses`, the shorter
+    draft's last), as the checks read the one kept: the shorter draft had no fix round to ask for it."""
     def bullets(fitted: Fitted) -> int:
         return sum(len(exp.bullets) for exp in fitted.resume.experience)
 
@@ -392,7 +397,10 @@ def keeps_as_much(trimmed: Fitted, shorter: Fitted, analyses: list[JDAnalysis]) 
         return False
     before, after = validate.evidence_text(trimmed.resume), validate.evidence_text(shorter.resume)
     terms = dict.fromkeys(term for analysis in analyses for term in analysis.must_have_skills)
-    return all(validate.mentions(after, term) for term in terms if validate.mentions(before, term))
+    if not all(validate.mentions(after, term) for term in terms if validate.mentions(before, term)):
+        return False
+    return not (analyses and validate.missing_language(trimmed.resume, analyses[0], jd) is None
+                and validate.missing_language(shorter.resume, analyses[-1], jd) is not None)
 
 
 async def fit_report(resume: Resume, paper: str, page_target: int = 0,
@@ -888,9 +896,15 @@ async def run_tailor(
 
         # --- one page (page_fit.py): measure at the design's own sizes and trim bullets (a few milliseconds) -> a
         # shorter draft only with no time limit -> the letter, from the final text -> the PDF, made while it is written
-        fitted = await asyncio.to_thread(fit_new, resume, paper, target, output.jd_analysis, document)
+        fitted = await asyncio.to_thread(fit_new, resume, paper, target, output.jd_analysis, document, jd=jd)
         steps.mark("layout")
-        if fitted.removed >= MIN_REMOVED_FOR_SHORTER and deadline is None:
+        beyond_plan = fitted.removed  # the bullets removed, less any the plan builds in
+        if deadline is None and beyond_plan >= MIN_REMOVED_FOR_SHORTER and fitted.pages <= target:
+            # a one-page plan that fills its page runs over by less than one bullet, so a draft as long as its plan
+            # loses that one by design (page_fit.planned_removals): never a reason for a whole new (paid) draft. On
+            # two pages instead (one page out of reach), the shorter draft is its only way back, so it all counts
+            beyond_plan -= await asyncio.to_thread(planned_removals, planned, budget, target, paper)
+        if beyond_plan >= MIN_REMOVED_FOR_SHORTER and deadline is None:
             # no time limit (a compare run, or Settings > Time limit 0): the model may say more in fewer bullets than
             # trimming leaves, so it is asked once for a draft with as many bullets as the trimmed one keeps
             second = Outcome()
@@ -913,13 +927,14 @@ async def run_tailor(
                 short_output, short_resume, short_title_notes = second.value  # type: ignore[misc]
                 short_doubled = validate.fix_repeated_words(short_resume)
                 short = await asyncio.to_thread(fit_new, short_resume, paper, target, short_output.jd_analysis,
-                                                document)
+                                                document, jd=jd)
                 # kept when it reaches the page laid out better (fewer pages, or a larger size), or as well with fewer
-                # bullets removed and as many left, and still shows every must-have the trimmed draft shows (it had no
-                # fix round): its bullets are the model's own choice for the smaller budget, which beats removing many
-                # from a draft that ignored the plan
+                # bullets removed and as many left, and still shows every must-have the trimmed draft shows and the
+                # post's language at the current job where it names it (it had no fix round): its bullets are the
+                # model's own choice for the smaller budget, which beats removing many from a draft that ignored the
+                # plan
                 analyses = [output.jd_analysis, short_output.jd_analysis]
-                if short.pages <= target and keeps_as_much(fitted, short, analyses):
+                if short.pages <= target and keeps_as_much(fitted, short, analyses, jd):
                     output, resume, title_notes, doubled, fitted = (short_output, short_resume, short_title_notes,
                                                                     short_doubled, short)
                     notes.append(f"The model shortened the resume to fit {pages_word(target)}.")

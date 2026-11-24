@@ -1,6 +1,7 @@
 """One page, cut words not the font (a reviewer's rule, the owner's choice): the plan, the trimming, whole jobs on a page
 break, and the run end to end with the demo model. Every person, employer and school here is invented."""
 import asyncio
+import dataclasses
 import io
 import math
 import re
@@ -11,7 +12,8 @@ from docx import Document
 
 from app.llm.base import LLMClient
 from app.llm.fake_client import FakeClient
-from app.pipeline import page_fit, tailor, validate
+from app.pipeline import languages, page_fit, tailor, validate
+from app.pipeline.facts import RECENCY_CAPS
 from app.pipeline.fit import LADDER, styles
 from app.pipeline.page_fit import (
     LAYOUT,
@@ -317,8 +319,8 @@ def test_a_shorter_draft_is_kept_only_with_as_many_bullets_and_every_must_have(r
     monkeypatch.setattr(tailor, "plan_pages", lambda *args, **kwargs: (1, [8] * len(profile.companies)))
     fits, analyses, real = [], [], tailor.fit_new
 
-    def watch(resume, paper, target, analysis=None, document="Resume"):
-        fits.append(real(resume, paper, target, analysis, document))
+    def watch(resume, paper, target, analysis=None, document="Resume", **kwargs):
+        fits.append(real(resume, paper, target, analysis, document, **kwargs))
         analyses.append(analysis)
         return fits[-1]
 
@@ -499,8 +501,8 @@ def test_a_shorter_draft_is_judged_by_its_pages_and_font_before_its_bullets(rout
     monkeypatch.setattr(tailor, "plan_pages", lambda *args, **kwargs: (target, list(counts)))
     fits, real = [], tailor.fit_new
 
-    def watch(resume, paper, target, analysis=None, document="Resume"):
-        fits.append(real(resume, paper, target, analysis, document))
+    def watch(resume, paper, target, analysis=None, document="Resume", **kwargs):
+        fits.append(real(resume, paper, target, analysis, document, **kwargs))
         return fits[-1]
 
     monkeypatch.setattr(tailor, "fit_new", watch)
@@ -667,12 +669,14 @@ def test_on_two_pages_the_current_job_takes_its_extras_first():
 
 
 def removals_follow_the_half_rule(counts: list[int], order: list[tuple[int, int]]) -> None:
-    """Each bullet comes from the current job while it holds more than half and keeps its lead, or when no older job
-    has one to give; else from the older job with the most bullets, between equal ones the older."""
+    """Each bullet comes from the current job while it holds more than half, or more than 8 (the most any job gets),
+    and keeps its lead, or when no older job has one to give; else from the older job with the most bullets, between
+    equal ones the older."""
     left = list(counts)
     for position, _index in order:
         older = [i for i in range(1, len(left)) if left[i] > 1]
-        current_gives = 2 * left[0] > sum(left) and left[0] - 1 > max(left[1:], default=0)
+        current_gives = ((2 * left[0] > sum(left) or left[0] > RECENCY_CAPS[0])
+                         and left[0] - 1 > max(left[1:], default=0))
         if position == 0:
             assert current_gives or not older, (order, left)
         else:
@@ -724,8 +728,8 @@ def test_trimming_keeps_the_current_jobs_only_bullet_naming_the_language(posting
 
 def test_a_draft_as_long_as_its_plan_loses_one_bullet_and_the_current_job_keeps_half():
     """A draft as long as the placeholder plan (every bullet two full lines, the longest summary and skills) is over by
-    less than one bullet: one bullet is removed (fewer than the 2 that ask the model for a shorter draft), from an
-    older job, so the current job keeps its half."""
+    less than one bullet: one bullet is removed, from an older job, so the current job keeps its half. The plan builds
+    that one in (page_fit.planned_removals), so it never counts toward asking the model for a shorter draft."""
     profile = person("mixed stays")
     _pages, planned = plan_pages(profile, today=NOW)
     trimmed = trim_to_page(page_fit._plan_resume(profile, planned), "Letter", 1)
@@ -747,3 +751,280 @@ def test_a_demo_run_gives_the_current_job_about_half_of_a_full_page(router, db):
     sheet = resume_sheet(result.resume, result.style)
     two_line_bullet = 2 * sheet.size * sheet.line + BULLET_GAP * sheet.gap_unit
     assert sheet.bottom - sheet.y < 2 * two_line_bullet
+
+
+# ------------------------------------------------------------------ review fixes (two pages, the shorter draft, the
+# post's language)
+def test_on_two_pages_trimming_takes_the_current_jobs_bullets_above_its_cap_first():
+    """A two-page plan gives the current job its cap (8, the most any job gets), less than half of the bullets. A draft
+    that writes more there loses those first, before any older job goes below its plan; a draft longer everywhere
+    keeps at most 8 there while the older jobs give."""
+    profile = career(10)
+    pages, plan = plan_pages(profile, today=TODAY)
+    assert pages == 2 and plan[0] == RECENCY_CAPS[0] == 8 and 2 * plan[0] < sum(plan), plan
+    extra = 1  # a few bullets more than planned at the current job, so the draft is over two pages
+    while measure(resume_with(profile, [plan[0] + extra, *plan[1:]])) <= 2:
+        extra += 1
+    draft = resume_with(profile, [plan[0] + extra, *plan[1:]])
+    assert removal_order(draft)[:extra] == [(0, plan[0] + extra - k) for k in range(1, extra + 1)]
+    fitted = fit_new(draft, "Letter", 2)
+    counts = [len(e.bullets) for e in fitted.resume.experience]
+    assert fitted.pages == 2 and counts[1:] == plan[1:] and plan[0] <= counts[0] < plan[0] + extra, counts
+    for longer_draft in ([12, 4, 3, 3, 3, 3, 3, 3, 3, 3], [18, 6, 5, 5, 5, 5, 5, 5, 5, 5]):
+        fitted = fit_new(resume_with(profile, longer_draft), "Letter", 2)
+        counts = [len(e.bullets) for e in fitted.resume.experience]
+        assert fitted.pages == 2 and RECENCY_CAPS[0] >= counts[0] > max(counts[1:]) and min(counts[1:]) >= 2, counts
+        removals_follow_the_half_rule(longer_draft, removal_order(resume_with(profile, longer_draft)))
+
+
+def test_only_a_filled_one_page_plan_builds_in_a_removed_bullet():
+    """A filled one-page plan runs over its page by less than one bullet, so a draft as long as its plan loses one by
+    design (page_fit.planned_removals); a career of one job keeps room to spare, and a two-page plan has no such
+    allowance."""
+    for stays, certifications in (("mixed stays", 0), ("three", 0), ("seven", 0), ("mixed stays", 1)):
+        profile = person(stays, certifications)
+        pages, plan = plan_pages(profile, today=NOW)
+        assert pages == 1 and page_fit.planned_removals(profile, plan, pages) == 1, (stays, plan)
+    alone = person("one")
+    assert page_fit.planned_removals(alone, plan_pages(alone, today=NOW)[1], 1) == 0
+    pages, plan = plan_pages(career(10), today=TODAY)
+    assert pages == 2 and page_fit.planned_removals(career(10), plan, pages) == 0
+
+
+PLATFORM_POST = (
+    "Contoso is hiring a Senior AI Platform Engineer. You will build LLM inference services and retrieval pipelines in "
+    "Python on Kubernetes, manage infrastructure with Terraform on AWS, store embeddings in PostgreSQL, run CI/CD with "
+    "GitHub Actions, add observability with OpenTelemetry and mentor engineers. Requirements: Python, Kubernetes, "
+    "Terraform, AWS, PostgreSQL. 6+ years of experience.")
+THREE_LINES = ("Re-architected Kubernetes-orchestrated multi-tenant observability infrastructure with OpenTelemetry "
+               "instrumentation and Prometheus federation, reducing incident-detection latency from 14 minutes to 83 "
+               "seconds.")  # 20 words of long ones: three lines
+PLAN_SUMMARY = ("Senior AI Platform Engineer with 9+ years of software experience across logistics and healthcare "
+                "platforms. Builds Python inference services on Kubernetes and Terraform for product teams. Cut model "
+                "rollout failures from 23 to 4 a month at the current job.")
+NOW_BULLETS = (
+    ("Build Python inference services on Kubernetes for 6 product teams, cutting p95 latency from 847 to 312ms at "
+     "peak traffic."),
+    ("Scale retrieval pipelines on PostgreSQL with pgvector and Terraform, keeping nightly index refreshes under 43 "
+     "minutes for 2.3M documents."),
+    "Lead the move of 14 batch scoring jobs to AWS Step Functions, cutting failed nightly runs from 23 to 4 a month.",
+)
+PLAN_TITLES = ["Senior AI Platform Engineer", "AI Platform Engineer", "Platform Engineer", "Backend Engineer",
+               "Software Engineer II", "Software Engineer", "Junior Software Engineer"]
+PLAN_ROWS = [["Python", "Kubernetes", "Terraform", "PostgreSQL", "AWS", "CI/CD"],
+             ["GitHub Actions", "OpenTelemetry", "Docker", "Redis", "Kafka", "Grafana"],
+             ["Code Review", "Mentoring", "Incident Response", "REST APIs", "pytest", "TDD"]]
+
+
+class PlanLengthDraft(LLMClient):
+    """The demo model, whose first draft is as long as its plan (every bullet two lines, a summary of three, three
+    skill rows), but for one bullet of three lines at the job before the current one; its rewrite pass changes
+    nothing."""
+
+    def __init__(self, inner):
+        self.inner, self.kinds = inner, []
+
+    async def generate_structured(self, **kwargs):
+        result = await self.inner.generate_structured(**kwargs)
+        self.kinds.append(kwargs["schema_name"])
+        if kwargs["schema_name"] == "tailor_output" and self.kinds.count("tailor_output") == 1:
+            result.data["jd_analysis"]["must_have_skills"] = ["Python", "Kubernetes", "Terraform", "AWS", "PostgreSQL"]
+            sections = result.data["sections"]
+            sections["headline"], sections["summary"] = PLAN_TITLES[0], PLAN_SUMMARY
+            sections["skills"] = [{"category": category, "skills": row}
+                                  for category, row in zip(("Languages", "Tools", "Practices"), PLAN_ROWS)]
+            for i, exp in enumerate(sections["experience"]):
+                exp["job_title"] = PLAN_TITLES[i]
+                exp["bullets"] = [NOW_BULLETS[j % 3] if i == 0 else PLAIN_BULLET.replace("Rebuilt", "Built")
+                                  for j in range(len(exp["bullets"]))]
+            sections["experience"][1]["bullets"][0] = THREE_LINES
+        if kwargs["schema_name"] == "tailor_revision":
+            result.data.update(headline="", summary="", titles=[], bullets=[], skill_changes=[])
+        return result
+
+
+def test_the_bullet_a_filled_plan_builds_in_never_asks_for_a_shorter_draft(router, db, registry, monkeypatch):
+    """No time limit: a draft as long as its filled one-page plan, but for one bullet of three lines (within the
+    prompt's words), loses two bullets: the one the plan builds in and one more. Only removals beyond the plan's own
+    count toward a whole new (paid) draft, so the trimmed draft is kept without asking for one."""
+    fits, real = [], tailor.fit_new
+
+    def watch(*args, **kwargs):
+        fits.append(real(*args, **kwargs))
+        return fits[-1]
+
+    monkeypatch.setattr(tailor, "fit_new", watch)
+    client = PlanLengthDraft(FakeClient(registry.get("demo-concise")))
+    router.overrides["demo-concise"] = client
+    profile = person("seven")
+    result = asyncio.run(run_tailor(router, db, profile=profile, profile_id=None, jd=PLATFORM_POST,
+                                    model_id="demo-concise", save=False, time_limit=0))
+    assert result.status == "ok" and result.pages == 1 and fits[0].pages == 1
+    assert fits[0].removed == tailor.MIN_REMOVED_FOR_SHORTER == 2, fits[0].removed  # the plan's own, and one more
+    assert client.kinds.count("tailor_output") == 1 and len(fits) == 1, client.kinds  # no shorter draft asked
+    assert not any("shortened" in note for note in result.notes)
+    planned = plan_pages(profile, today=date.today(), relevance=job_relevance(profile, PLATFORM_POST))[1]
+    assert page_fit.planned_removals(profile, planned, 1) == 1
+
+
+def test_a_draft_one_page_cannot_hold_still_asks_for_a_shorter_draft(router, db, registry, profile, monkeypatch):
+    """The bullet a filled one-page plan builds in counts only on the page it was planned for: a draft laid out on two
+    pages instead (one page out of reach even with each job at its first bullet), with two bullets removed, still asks
+    once for a shorter draft, its only way back to one page."""
+    planned = [8] * len(profile.companies)
+    monkeypatch.setattr(tailor, "plan_pages", lambda *args, **kwargs: (1, list(planned)))
+    fits, real = [], tailor.fit_new
+
+    def watch(*args, **kwargs):  # the first draft as fit_new lays out one that one page cannot hold
+        fitted = real(*args, **kwargs)
+        fits.append(dataclasses.replace(fitted, pages=2, removed=2) if not fits else fitted)
+        return fits[-1]
+
+    monkeypatch.setattr(tailor, "fit_new", watch)
+    client = ShorterDraft(FakeClient(registry.get("demo-concise")), lambda sections: None)
+    router.overrides["demo-concise"] = client
+    result = asyncio.run(run_tailor(router, db, profile=profile, profile_id=None, jd=SAMPLE_JD,
+                                    model_id="demo-concise", save=False, time_limit=0))
+    assert page_fit.planned_removals(profile, planned, 1) == 1
+    assert result.status == "ok" and client.kinds.count("tailor_output") == 2 and len(fits) == 2, client.kinds
+
+
+def test_trimming_keeps_the_language_the_post_names_only_in_its_text():
+    """A post that names its language only in its text (its analysis lists none): trimming holds the current job's
+    only bullet naming it, the language validate.missing_language reads with the same text, though another bullet
+    names another language."""
+    resume = resume_with(career(5), [6, 2, 1, 1, 1], bullet=PLAIN_BULLET)
+    resume.experience[0].bullets[2] = ("Write the release tooling in Python with tests on every change, letting 23 "
+                                       "teams ship weekly without rollbacks.")
+    resume.experience[0].bullets[5] = ("Write the deploy controller services in Go with retries and health checks, "
+                                       "cutting stuck deploys from 31 to 3 a month.")
+    analysis = JDAnalysis(target_role="Senior Platform Engineer", general_role="Platform Engineer", seniority="",
+                          domain="", must_have_skills=["Kafka"], nice_to_have_skills=[], keywords=[])
+    jd = "Senior Platform Engineer. You will run our Kafka platform. Our services are written in Go."
+    assert languages.wanted_language(analysis) is None and languages.wanted_language(analysis, jd) == "Go"
+    assert validate.missing_language(resume, analysis, jd) is None
+    order = removal_order(resume, analysis, jd=jd)
+    assert order[0] == (0, 4) and order[-1] == (0, 5), order  # held: it goes last
+    for k in range(len(order)):
+        assert validate.missing_language(page_fit._without(resume, order, k), analysis, jd) is None, (k, order)
+
+
+def test_trimming_holds_the_current_jobs_last_bullet_naming_the_language():
+    """Two of the current job's bullets name the post's language: once one has gone, the other is held (the hold
+    follows the bullets left), so trimming never takes both while another bullet can go."""
+    resume = resume_with(career(5), [6, 2, 1, 1, 1], bullet=PLAIN_BULLET)
+    for j in (4, 5):
+        resume.experience[0].bullets[j] = (f"Write partner sync worker {j} in Python with idempotent retries, cutting "
+                                           "duplicate orders from 23 to 4 a week.")
+    analysis = JDAnalysis(target_role="Backend Engineer", seniority="", domain="", must_have_skills=["Kafka"],
+                          nice_to_have_skills=["Python"], keywords=[])
+    order = removal_order(resume, analysis)
+    assert order[0] == (0, 5) and order[-1] == (0, 4), order
+    for k in range(len(order)):
+        assert validate.missing_language(page_fit._without(resume, order, k), analysis) is None, (k, order)
+
+
+GO_POST = ("Senior Platform Engineer at Contoso. You will own our deployment platform on Kubernetes and Terraform, run "
+           "incident response and mentor engineers. Our services are written in Go.")
+GO_JOB = [  # the current job: Python in one bullet, Go (the post's language) only in its last
+    ("Run the deployment platform on Kubernetes and Terraform for 40 teams, cutting failed rollouts from 23 to 4 a "
+     "month."),
+    "Lead incident response for the payments platform, cutting time to recover from 95 to 30 minutes for 12 services.",
+    "Write the release tooling in Python with tests on every change, letting 23 teams ship weekly without rollbacks.",
+    "Mentor 6 engineers through reviews and pairing on Kubernetes operators, shortening onboarding from 8 to 5 weeks.",
+    "Move the build pipelines to GitHub Actions with cached layers, cutting build time from 41 to 12 minutes.",
+    ("Automate certificate rotation across 300 Kubernetes services with Terraform modules, ending expired-certificate "
+     "outages."),
+    "Shape the on-call rotation and its runbooks for 5 platform teams, cutting pages after midnight from 19 to 6.",
+    "Design the cost dashboards for the shared clusters, helping 12 teams trim idle capacity by 140 nodes.",
+    ("Write the deploy controller services in Go with retries and health checks, cutting stuck deploys from 31 to 3 a "
+     "month."),
+]
+
+
+class NoLanguageListed(LLMClient):
+    """The demo model, whose analysis lists no programming language (the post names Go only in its text) and whose
+    current job writes GO_JOB; its rewrite pass changes nothing."""
+
+    def __init__(self, inner):
+        self.inner = inner
+
+    async def generate_structured(self, **kwargs):
+        result = await self.inner.generate_structured(**kwargs)
+        if kwargs["schema_name"] == "tailor_output":
+            result.data["jd_analysis"].update(must_have_skills=["Kubernetes", "Terraform"], nice_to_have_skills=[],
+                                              keywords=["Kubernetes", "Terraform", "incident response"])
+            result.data["sections"]["experience"][0]["bullets"] = list(GO_JOB)
+        if kwargs["schema_name"] == "tailor_revision":
+            result.data.update(headline="", summary="", titles=[], bullets=[], skill_changes=[])
+        return result
+
+
+def test_a_run_keeps_the_language_its_post_names_only_in_its_text(router, db, registry, profile):
+    """End to end: the trimming reads the post's text as the check does, so the current job's only bullet naming Go,
+    the language the post's text names and its analysis lists nowhere, stays while other bullets go."""
+    router.overrides["demo-concise"] = NoLanguageListed(FakeClient(registry.get("demo-concise")))
+    result = asyncio.run(run_tailor(router, db, profile=profile, profile_id=None, jd=GO_POST, model_id="demo-concise",
+                                    save=False))
+    current = result.resume.experience[0].bullets
+    assert result.status == "ok" and result.pages == 1 and len(current) < len(GO_JOB), current
+    assert languages.wanted_language(result.analysis) is None
+    assert validate.missing_language(result.resume, result.analysis, GO_POST) is None, current
+    assert not any("programming language" in warning for warning in result.ats_warnings), result.ats_warnings
+
+
+def without_python_at_the_current_job(sections):  # the post's language, still in the summary and an older job
+    for exp in sections["experience"]:
+        if exp["company_index"] == 0:
+            exp["bullets"] = [b.replace(" in Python", "").replace("Python", "the pipeline code")
+                              for b in exp["bullets"]]
+
+
+def test_a_shorter_draft_that_drops_the_language_at_the_current_job_is_not_kept(router, db, registry, profile,
+                                                                                 monkeypatch):
+    """No time limit: the shorter draft has no fix round, so it is kept only while its current job still names the
+    post's language (prompt v39) where the trimmed draft's does, even when its summary or an older job names it."""
+    monkeypatch.setattr(tailor, "plan_pages", lambda *args, **kwargs: (1, [8] * len(profile.companies)))
+    fits, analyses, real = [], [], tailor.fit_new
+
+    def watch(resume, paper, target, analysis=None, document="Resume", **kwargs):
+        fits.append(real(resume, paper, target, analysis, document, **kwargs))
+        analyses.append(analysis)
+        return fits[-1]
+
+    monkeypatch.setattr(tailor, "fit_new", watch)
+    client = ShorterDraft(FakeClient(registry.get("demo-concise")), without_python_at_the_current_job)
+    router.overrides["demo-concise"] = client
+    result = asyncio.run(run_tailor(router, db, profile=profile, profile_id=None, jd=SAMPLE_JD,
+                                    model_id="demo-concise", save=False, time_limit=0))
+    first, short = fits
+    assert result.status == "ok" and client.kinds.count("tailor_output") == 2 and short.removed < first.removed
+    assert validate.missing_language(first.resume, analyses[0], SAMPLE_JD) is None
+    assert validate.missing_language(short.resume, analyses[1], SAMPLE_JD) == ("Northwind Labs", "Python")
+    assert validate.mentions(validate.evidence_text(short.resume), "Python")  # the must-have check alone keeps it
+    assert not any("shortened" in note for note in result.notes)
+    assert validate.missing_language(result.resume, result.analysis, SAMPLE_JD) is None
+    assert not any("programming language" in warning for warning in result.ats_warnings)
+
+
+def test_a_shorter_draft_is_read_by_the_language_its_own_analysis_wants():
+    """keeps_as_much: a shorter draft whose current job no longer names the post's language (a nice-to-have here) is
+    not kept over a trimmed draft that names it there. Each draft is read by its own analysis, as the checks read the
+    one kept: a shorter draft that would get the language warning where the trimmed one would not is not kept."""
+    def draft(last: str, removed: int) -> page_fit.Fitted:
+        resume = resume_with(career(2), [3, 1], bullet=PLAIN_BULLET)
+        resume.experience[0].bullets[2] = last
+        return page_fit.Fitted(resume, design_style("Letter"), 1, [], removed)
+
+    python = "Write the deploy tooling in Python with tests on every change, letting 23 teams ship weekly."
+    plain = "Own the deploy tooling with tests on every change, letting 23 teams ship weekly without rollbacks."
+    wants_python = JDAnalysis(target_role="Platform Engineer", seniority="", domain="", must_have_skills=["Kafka"],
+                              nice_to_have_skills=["Python"], keywords=[])
+    wants_go = wants_python.model_copy(update={"nice_to_have_skills": ["Go"]})
+    assert tailor.keeps_as_much(draft(python, 2), draft(python, 0), [wants_python])  # as many bullets, fewer removed
+    assert not tailor.keeps_as_much(draft(python, 2), draft(plain, 0), [wants_python])
+    assert tailor.keeps_as_much(draft(plain, 2), draft(plain, 0), [wants_python])  # neither names it: no worse
+    # the shorter draft's own analysis wants Go, which neither draft names: it would warn, the trimmed one would not
+    assert not tailor.keeps_as_much(draft(python, 2), draft(python, 0), [wants_python, wants_go])
+    # the trimmed draft's own analysis wants Go: it would warn anyway, and the shorter draft would not
+    assert tailor.keeps_as_much(draft(python, 2), draft(python, 0), [wants_go, wants_python])
