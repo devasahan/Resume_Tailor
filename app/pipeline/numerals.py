@@ -5,9 +5,11 @@ days", never "seven" or "five"; "500K+" (never "500k+"), "$1.2M", "$2M" (never "
 Only lowercase number words from two to ninety-nine are changed: never "one" (except in a range such as "one or two"),
 "zero", an ordinal ("first"), a capitalised name ("Two Sigma", "Three.js"), a compound ("two-factor", "one-on-one",
 "three-tier"), a word that is part of a name, a bigger number or a fraction ("three.js", "two's complement", "two
-hundred", "two thirds", "a two million-dollar contract") or a phrase the caller keeps (the posting's own terms). The
-trust checks read the person's hints and notes through numerals() too, so a "7" written for their "seven" is still their
-figure (app/pipeline/validate.py).
+hundred", "two or three million", "two million, three hundred thousand", "two thirds", "a two million-dollar contract")
+or a phrase the caller keeps (the posting's own terms). One word before a plain thousand, million or billion is a
+figure: "eight million" -> "8M". The trust checks read the person's hints and notes through numerals() too, so a "7"
+written for their "seven" is still their figure, and their notes' "a two million-dollar contract" their "$2M"
+(app/pipeline/validate.py).
 """
 from __future__ import annotations
 
@@ -27,11 +29,23 @@ _NUMBER_WORD = re.compile(
     rf"|(?<![\w-])(?P<tens>{'|'.join(_TENS)})(?:[- ](?P<ones>{'|'.join(_ONES)}|one))?(?![\w-])"
     rf"|(?<![\w-])(?P<word>{_WORD})(?![\w-])"
 )
+# a number that goes on after a scale word, on the same line and in lower case: 'two million five hundred', 'two
+# thousand and five', 'two million, three hundred thousand' ('twenty thousand\nTwo regions' is two numbers)
+_GOES_ON = (r"[^\S\n]+and[^\S\n]+(?-i:" + _WORD + r"|a)\b|(?:[^\S\n]|-)+(?-i:" + _WORD + r"|hundred)\b"
+            r"|,[^\S\n]+(?-i:" + _WORD + r")(?:[ -](?-i:" + _WORD + r"))?[^\S\n]+(?:hundred|thousand)\b")
 # what makes a number word part of more: a name ('three.js'), a possessive ("two's complement"), a bigger number ('two
-# hundred', 'two million-dollar') or a fraction ('two thirds'; but 'two third-party APIs' are two)
+# hundred', 'two thousands', 'two million-dollar', 'a five million dollar budget', a number that goes on) or a fraction
+# ('two thirds'; but 'two third-party APIs' are two). A plain thousand, million or billion is a figure: 'eight million'
+# -> '8 million' ('8M')
 _PART_OF_MORE = re.compile(
-    r"\.[A-Za-z]|['’]s\b|\s+(?:(?:hundreds?|thousands?|millions?|billions?)\b|(?:dozens?|score|half|halves|thirds?"
-    r"|quarter|fifths?|sixths?|sevenths?|eighths?|ninths?|tenths?|hundredths?|thousandths?)(?![\w-]))", re.IGNORECASE)
+    r"\.[A-Za-z]|['’]s\b|\s+(?:(?:hundreds?|thousands|millions|billions)\b"
+    r"|(?:thousand|million|billion)(?:[-‐]\w|\s+(?:dollar|euro|pound)\b|" + _GOES_ON + r")"
+    r"|(?:dozens?|score|half|halves|thirds?|quarter|fifths?|sixths?|sevenths?|eighths?|ninths?|tenths?|hundredths?"
+    r"|thousandths?)(?![\w-]))", re.IGNORECASE)
+_SCALE = re.compile(r"\s+(?:hundred|thousand|million|billion)s?\b", re.IGNORECASE)  # 'two or three million': a range
+# in the person's notes, which are never shown, a word or a range before thousand, million or billion is a figure even
+# in a compound: 'a two million-dollar contract' is their $2M, 'two or three million users' their 3M
+_FIGURE_SCALE = re.compile(r"\s+(?:thousand|million|billion)\b(?!" + _GOES_ON + r")", re.IGNORECASE)
 # quarters are a time span ('within two quarters' -> 'within 2 quarters') unless they can be a fraction: 'three
 # quarters' (3/4, or 9 months), 'two quarters of the budget'
 _QUARTERS = re.compile(r"\s+quarters(?![\w-])(?P<of>\s+of\b)?", re.IGNORECASE)
@@ -48,13 +62,18 @@ def _value(match: re.Match) -> int | None:
     return None if word == "one" else _ALL[word]
 
 
-def _part_of_more(match: re.Match) -> bool:
-    """The number word (or range) belongs to a name, a bigger number or a fraction: it stays as written."""
+def _part_of_more(match: re.Match, figures: bool = False) -> bool:
+    """The number word (or range) belongs to a name, a bigger number or a fraction: it stays as written. `figures`:
+    read for the figures alone (see _FIGURE_SCALE)."""
     text, start = match.string, match.start()
+    after_scale = _AFTER_SCALE.search(text, max(0, start - 40), start) is not None
+    if figures and _FIGURE_SCALE.match(text, match.end()) and not after_scale:
+        return False
     quarters = _QUARTERS.match(text, match.end())
     return (_PART_OF_MORE.match(text, match.end()) is not None
+            or (match.group("low") is not None and _SCALE.match(text, match.end()) is not None)
             or (quarters is not None and (quarters.group("of") is not None or match.group(0).endswith("three")))
-            or _AFTER_SCALE.search(text, max(0, start - 40), start) is not None)
+            or after_scale)
 
 
 def _kept_spans(text: str, keep: list[str]) -> list[tuple[int, int]]:
@@ -67,15 +86,18 @@ def _kept_spans(text: str, keep: list[str]) -> list[tuple[int, int]]:
     return spans
 
 
-def numerals(text: str, keep: list[str] | None = None) -> str:
+def numerals(text: str, keep: list[str] | None = None, figures: bool = False) -> str:
     """The text with its number words as numerals: 'seven international schools' -> '7 international schools',
-    'one or two releases' -> '1 or 2 releases'. Never 'one' alone, 'zero', a capitalised word, a compound
-    ('two-factor'), a word that is part of more ('three.js', 'two hundred', 'two thirds'), or a word inside a phrase of
-    `keep` (the posting's own terms, the skills)."""
+    'one or two releases' -> '1 or 2 releases', 'eight million' -> '8 million'. Never 'one' alone, 'zero', a
+    capitalised word, a compound ('two-factor'), a word that is part of more ('three.js', 'two hundred', 'two thirds',
+    'two or three million'), or a word inside a phrase of `keep` (the posting's own terms, the skills). `figures`: the
+    text is read for its figures alone and never shown (the person's notes), so a word or a range before thousand,
+    million or billion is a figure even in a compound ('a two million-dollar contract' -> 'a 2 million-dollar
+    contract')."""
     kept = _kept_spans(text, keep or [])
 
     def written(match: re.Match) -> str:
-        if _part_of_more(match) or any(s < match.end() and match.start() < e for s, e in kept):
+        if _part_of_more(match, figures) or any(s < match.end() and match.start() < e for s, e in kept):
             return match.group(0)
         if match.group("low"):
             if match.group("low") == match.group("high") == "one":  # 'one to one' stays

@@ -22,6 +22,7 @@ from . import tense
 from .facts import is_current
 from .numerals import normal
 from .page_fit import design_style
+from .spelling import us_word
 from .validate import (
     _sentence_pieces,
     evidence_text,
@@ -146,12 +147,23 @@ def official_names(resume: Resume, analysis: JDAnalysis | None = None, posting: 
 
 
 # ---------------------------------------------------------------------- numbers
+def _number_keep(analysis: JDAnalysis | None, companies: list[str], skills: list[str]) -> list[str]:
+    """The phrases whose number words stay as written, in the resume, its warnings and the letter alike: the posting's
+    terms ('three lines of defense'), the employers' names and the skills items ('five whys')."""
+    return [*_terms(analysis), *companies, *skills]
+
+
+def _resume_keep(resume: Resume, analysis: JDAnalysis | None) -> list[str]:
+    """_number_keep with the resume's own employers and skills items (fix_numbers and number_words)."""
+    return _number_keep(analysis, [company.name for company in resume.profile.companies],
+                        [item for group in resume.skills for item in group.skills])
+
+
 def fix_numbers(resume: Resume, analysis: JDAnalysis | None = None) -> list[str]:
     """Numbers as numerals and figures one way (numerals.normal) in the headline, summary and bullets; a posting term
     or a skills item that holds a number word keeps it ('five whys'; 'two-phase commit' is a compound anyway). Returns
     no notes: how a number is written, never what it says."""
-    keep = (_terms(analysis) + [company.name for company in resume.profile.companies]
-            + [item for group in resume.skills for item in group.skills])
+    keep = _resume_keep(resume, analysis)
     resume.headline, resume.summary = normal(resume.headline, keep), normal(resume.summary, keep)
     for exp in resume.experience:
         exp.bullets = [normal(bullet, keep) for bullet in exp.bullets]
@@ -161,9 +173,9 @@ def fix_numbers(resume: Resume, analysis: JDAnalysis | None = None) -> list[str]
 def letter_fixes(paragraphs: list[str], analysis: JDAnalysis | None = None, posting: str = "",
                  companies: list[str] | None = None, skills: list[str] | None = None) -> list[str]:
     """A cover letter's paragraphs with the resume's official names and numbers (official_names, fix_numbers), so the
-    two documents write them the same way; `skills`: the resume's skills items."""
+    two documents write them the same way; `companies` and `skills`: the resume's employers and skills items."""
     writing = _writing(analysis, posting)
-    keep = _terms(analysis) + list(companies or []) + list(skills or [])
+    keep = _number_keep(analysis, list(companies or []), list(skills or []))
     return [normal(_named(paragraph, writing), keep) for paragraph in paragraphs]
 
 
@@ -171,15 +183,16 @@ def number_words(resume: Resume, analysis: JDAnalysis | None = None) -> list[str
     """Texts that still write a number as a word or a figure another way (a hand edit): for the admin's warnings. What
     fix_numbers keeps on purpose is never listed: a posting term ('three lines of defense', from `analysis`), an
     employer's name or a skills item ('five whys')."""
-    keep = (_terms(analysis) + [company.name for company in resume.profile.companies]
-            + [item for group in resume.skills for item in group.skills])
+    keep = _resume_keep(resume, analysis)
     texts = [resume.summary, *(bullet for exp in resume.experience for bullet in exp.bullets)]
     return [text for text in texts if normal(text, keep) != text]
 
 
 # ---------------------------------------------------------------------- the summary
-SELF_PRAISE = re.compile(  # 'Brings 8 years of ... experience', 'Recognized with the 2025 ... Award': facts, no praise
-    r"^\s*(?:brings|bringing)\b(?!\s+(?:[\w-]+\s+){0,2}(?:\d|experience\b|decades?\b))"
+# 'Brings 8 years of ... experience', 'Brings nearly a decade of ...', 'Recognized with the 2025 ... Award': facts, no
+# praise ('Brings deep experience ...' says nothing measured: it is praise)
+SELF_PRAISE = re.compile(
+    r"^\s*(?:brings|bringing)\b(?!\s+(?:[\w-]+\s+){0,2}(?:\d|decades?\b))"
     r"|^\s*(?:recognized|recognised)\b(?!\s+(?:with|by)\b|\s+(?:[\w-]+\s+){0,2}\d)"
     r"|^\s*(?:known|passionate|dedicated|proven)\b"
     r"|\b(?:sound|strong|excellent|exceptional|outstanding|proven|solid|keen|superb)\s+(?:[\w-]+\s+){0,2}"
@@ -201,29 +214,73 @@ def _sentence_parts(text: str) -> list[list[str]]:
     pieces = _sentence_pieces(text)
     parts: list[list[str]] = []
     for index in range(0, len(pieces), 2):
+        if not pieces[index].strip():  # the space at the end: no piece
+            continue
         if parts and _ABBREVIATION.search(parts[-1][-1]):
             parts[-1] += [pieces[index - 1], pieces[index]]
-        elif pieces[index].strip():
+        else:
             parts.append([pieces[index]])
     return parts
 
 
-def _sentences(text: str) -> list[str]:
-    return ["".join(parts) for parts in _sentence_parts(text)]
+_OPENING_WORD = re.compile(r"\s*([A-Z][a-z]+)(?=\s)")  # never a name's possessive ('T. Read's team')
+_TITLE = re.compile(r"(?<![\w.])(?:Mt|St|Dr|Mr|Mrs|Ms)\.$")  # a name follows a title ('Dr. Read'), never a sentence
+
+
+def _past_verb_opens(piece: str) -> bool:
+    """The piece opens with a listed verb in the past tense, a word on its own ('Built the', 'Led 9', 'Cut
+    settlement'): a sentence of its own."""
+    word = _OPENING_WORD.match(piece)
+    return word is not None and (us_word(word.group(1)) in tense.PAST_TO_BASE or word.group(1).lower() in tense.SAME)
+
+
+def _summary_parts(text: str) -> list[list[str]]:
+    """_sentence_parts, with a sentence that opens with praise cut where a piece after its abbreviation opens with a
+    past-tense verb ('Known for calm leadership at Contoso Inc. Built the ledger API ...': a new sentence began at
+    'Built' for sure); never after a title ('... with Dr. Read on the ledger API')."""
+    parts = []
+    for pieces in _sentence_parts(text):
+        while SELF_PRAISE.search(pieces[0]):
+            cut = next((k for k in range(2, len(pieces), 2)
+                        if _past_verb_opens(pieces[k]) and not _TITLE.search(pieces[k - 2])), None)
+            if cut is None:
+                break
+            parts.append(pieces[:cut - 1])
+            pieces = pieces[cut:]
+        parts.append(pieces)
+    return parts
 
 
 def self_praise(summary: str) -> list[str]:
-    """The summary's sentences that praise the candidate or name qualities instead of showing them."""
-    return [sentence for sentence in _sentences(summary) if SELF_PRAISE.search(sentence)]
+    """The summary's sentences (as summary_trim reads them, _summary_parts) that praise the candidate or name qualities
+    instead of showing them. A sentence that runs on after an abbreviation or an initial counts when any of its pieces
+    praises ('... in Python and R. Known for ...': SELF_PRAISE's openers count at the start of a piece only), and it is
+    named whole."""
+    return ["".join(parts) for parts in _summary_parts(summary)
+            if any(SELF_PRAISE.search(piece) for piece in parts[0::2])]
+
+
+MAX_NOTE_QUOTE = 80
+
+
+def _quote(sentence: str) -> str:
+    """A removed sentence as the note names it: whole up to 80 characters, else cut after a whole word, with '...'
+    ('from 140 to 12' is never shown as 'from 14')."""
+    text = sentence.strip()
+    if len(text) <= MAX_NOTE_QUOTE:
+        return f"'{text}'"
+    return "'" + text[:MAX_NOTE_QUOTE + 1].rsplit(" ", 1)[0].rstrip(",;:") + "...'"
 
 
 def summary_trim(resume: Resume, analysis: JDAnalysis | None = None) -> list[str]:
     """A summary of at most 3 sentences without self-praise: a praising sentence ('Brings strong judgment to every
     project.'), then any sentence after the 3rd, is removed whole unless it holds a must-have's only mention in the
     summary and the bullets; at least 2 sentences always stay. An abbreviation or an initial ends no sentence ('U.S.
-    Army'), and praise after one stays for the rewrite pass: whether a new sentence began there is unknown. Returns a
-    note when one went."""
-    parts = _sentence_parts(resume.summary)
+    Army'), unless praise ends with it and a past-tense verb follows ('... at Contoso Inc. Built the ledger API ...',
+    see _summary_parts). Other praise that runs on after one into more than praise stays for the rewrite pass
+    (self_praise names it), as whether a new sentence began there is unknown; past 3 sentences, though, a sentence that
+    opens with praise goes before the last real one. Returns a note when one went."""
+    parts = _summary_parts(resume.summary)
     sentences = ["".join(pieces) for pieces in parts]
     must = list(analysis.must_have_skills) if analysis else []
     bullets = "\n".join(bullet for exp in resume.experience for bullet in exp.bullets)
@@ -234,8 +291,15 @@ def summary_trim(resume: Resume, analysis: JDAnalysis | None = None) -> list[str
 
     kept = list(range(len(sentences)))
     removed = []
-    for index in [i for i in kept if SELF_PRAISE.search(parts[i][0])]:  # in its first piece: a sentence for sure
+    # praise and nothing else: a sentence on its own, or praise that runs on into more praise after an abbreviation
+    for index in [i for i in kept if all(SELF_PRAISE.search(piece) for piece in parts[i][0::2])]:
         if len(kept) > 2 and not needed(index, kept):
+            kept.remove(index)
+            removed.append(sentences[index])
+    # past 3 sentences, one that opens with praise and runs on goes first: a sentence has to go, and the rewrite pass
+    # would change that one anyway
+    for index in [i for i in kept if len(parts[i]) > 1 and SELF_PRAISE.search(parts[i][0])]:
+        if len(kept) > MAX_SUMMARY_SENTENCES and not needed(index, kept):
             kept.remove(index)
             removed.append(sentences[index])
     for index in reversed(kept[MAX_SUMMARY_SENTENCES:]):
@@ -245,8 +309,7 @@ def summary_trim(resume: Resume, analysis: JDAnalysis | None = None) -> list[str
     if not removed:
         return []
     resume.summary = " ".join(sentences[i].strip() for i in kept)
-    return ["Summary: removed " + "; ".join(f"'{s.strip()[:80]}'" for s in removed)
-            + " (self-praise, or more than 3 sentences)."]
+    return ["Summary: removed " + "; ".join(_quote(s) for s in removed) + " (self-praise, or more than 3 sentences)."]
 
 
 def summary_skill_items(resume: Resume) -> list[str]:
@@ -276,8 +339,10 @@ MAX_SKILL_ITEMS = 18
 
 def _shown(evidence: str, item: str) -> bool:
     """The summary or a bullet shows the skills item: as `mentions` finds it, or with a version right after it ('C++17',
-    'C#11', 'Python3'), after a dotted prefix ('ASP.NET' shows '.NET'), or as the noun of an '-ing' method, plural
-    too ('unit tests' shows 'Unit Testing', 'A/B tests' 'A/B Testing')."""
+    'C#11', 'Python3'), after a dotted prefix ('ASP.NET' shows '.NET'; a domain such as 'northwind.net' does not),
+    or, for a method of two words or more, as the noun of its '-ing' word, plural too ('unit tests' shows 'Unit
+    Testing', 'A/B tests' 'A/B Testing'; one word is a field of its own: 'accounts' never shows 'Accounting', nor
+    'engineers' 'Engineering')."""
     name = item.strip()
     if not name:
         return False
@@ -288,10 +353,11 @@ def _shown(evidence: str, item: str) -> bool:
     if (not name[-1].isalnum() or len(name) >= 3) and re.search(  # never 'R2' for R
             rf"(?<![A-Za-z0-9]){re.escape(name)}\d+(?:\.\d+)*{after}", evidence, flags):
         return True
-    if name.startswith(".") and re.search(rf"(?<=[A-Za-z]){re.escape(name)}{after}", evidence, flags):
+    if name.startswith(".") and any(not found.group(0).islower() for found in re.finditer(  # '.net': a domain
+            rf"(?<=[A-Za-z]){re.escape(name)}{after}", evidence, flags)):
         return True
     head, _space, last = name.rpartition(" ")
-    if not last.lower().endswith("ing") or len(last) < 6:  # never 'Swing' or 'Ping'
+    if not head or not last.lower().endswith("ing") or len(last) < 6:  # never 'Swing' or 'Ping'
         return False
     stem = last[:-3]
     nouns = {stem, stem + "e"} | ({stem[:-1]} if stem[-1] == stem[-2] else set())  # test, cache, log (logging)
@@ -361,7 +427,8 @@ _WEAK_BASE = {"used": "use", "uses": "use", "using": "use", "supported": "suppor
 
 def weak_openers(resume: Resume) -> list[str]:
     """Bullets that open with a weak verb ('Used ...', 'Supported ...', 'Run ...'): it says nothing about what was
-    built, changed or decided. An opening that is a noun is fine ('Support tickets fell ...', 'Use cases ...')."""
+    built, changed or decided. An opening that is a noun is fine ('Support tickets fell ...', 'Use cases ...', 'Running
+    costs fell ...'); a past or third-person form is never one ('Supported engineer onboarding ...' is the verb)."""
     found = []
     for exp in resume.experience:
         for bullet in exp.bullets:
@@ -370,7 +437,8 @@ def weak_openers(resume: Resume) -> list[str]:
                 continue
             word = match.group("word").lower()
             base = _WEAK_BASE.get(word, word)
-            if (match.group("next") or "").lower() in tense.NOUN_AFTER.get(base, ()):
+            # only the bare verb ('Support tickets', 'Use cases') or 'Running' ('Running costs') can open a noun
+            if word in (base, "running") and (match.group("next") or "").lower() in tense.NOUN_AFTER.get(base, ()):
                 continue
             found.append(bullet)
     return found

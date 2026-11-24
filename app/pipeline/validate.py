@@ -3053,7 +3053,7 @@ def note_figures(notes: str) -> frozenset[str]:
     there makes '450' or '450+' in a bullet the person's own, and '$2M' makes '$2 million' theirs; never the '4' or
     the '20' that only sit inside a '450' or a '2024', nor the digits of a date ('2023-24', '3 March', '12/03/2024')
     or a path."""
-    notes = numerals(notes)  # 'seven schools' in the notes makes '7 schools' in a bullet theirs
+    notes = numerals(notes, figures=True)  # 'seven schools' in the notes makes '7 schools' in a bullet theirs
     return frozenset(figure_key(token) for token in _numbers_in(_short_units(_NOT_FIGURES.sub(" ", notes))) if token)
 
 

@@ -56,9 +56,30 @@ def resume_of(profile, bullets: list[list[str]], summary: str = "Backend enginee
     ("Signed two third-party vendors for three half-day workshops",
      "Signed 2 third-party vendors for 3 half-day workshops"),  # a compound after it: still a count
     ("Saved 2 million and five weeks for two dozens of teams", "Saved 2 million and 5 weeks for two dozens of teams"),
+    # one word before a plain thousand, million or billion is a figure ('8M', '20K'); a range, or a number that goes
+    # on, stays as written
+    ("Saved eight million a year for twenty thousand users", "Saved 8 million a year for 20 thousand users"),
+    ("Reached two or three million users", "Reached two or three million users"),
+    ("Served three million, two hundred thousand riders", "Served three million, two hundred thousand riders"),
+    ("Logged two thousand twenty incidents", "Logged two thousand twenty incidents"),
 ])
 def test_number_words_become_numerals(text, expected):
     assert numerals(text) == expected
+
+
+def test_a_number_word_before_a_scale_word_is_written_as_a_figure():
+    assert normal("Saved eight million and served two billion requests") == "Saved 8M and served 2B requests"
+    assert normal("Grew to two million, three hundred thousand users") == (
+        "Grew to two million, three hundred thousand users")  # never '2M, three hundred thousand'
+
+
+def test_the_persons_notes_give_their_figures_in_words():
+    assert validate.note_figures("Saved three million dollars a year on cloud spend.") == {"3m"}
+    assert validate.note_figures("Handled two billion events a day for twenty thousand users.") == {"2b", "20k"}
+    # the notes are never shown: a compound or a range there is still the person's figure
+    assert validate.note_figures("Won a two million-dollar contract with Fabrikam.") == {"2m"}
+    assert validate.note_figures("Reached two or three million users.") == {"2", "3m"}
+    assert validate.note_figures("Users: twenty thousand\nTwo regions") == {"20k"}  # a new line is a new number
 
 
 def test_a_posting_term_keeps_its_number_word():
@@ -221,6 +242,16 @@ def test_experience_and_an_award_are_no_praise(profile):
                               "Engineering Award for the ledger rebuild.")
 
 
+@pytest.mark.parametrize("sentence,praise", [
+    ("Brings deep experience in payments to platform teams.", True),
+    ("Brings experience and a passion for clean code.", True),
+    ("Brings 8 years of backend experience in payments.", False),  # how long: a fact
+    ("Brings nearly a decade of payments work at Contoso.", False),
+])
+def test_brings_experience_is_praise_unless_it_says_how_long(sentence, praise):
+    assert (rules.self_praise(f"Backend engineer with 9 years in payments. {sentence}") == [sentence]) is praise
+
+
 @pytest.mark.parametrize("summary", [
     ("Data engineer with 7 years at St. Contoso and Mt. Fabrikam clinics. Built HL7 pipelines for 40 clinics. Cut "
      "claim rejections 23%."),
@@ -262,6 +293,94 @@ def test_praise_after_an_abbreviation_is_left_to_the_rewrite_pass(profile):
     assert resume.summary == "Network engineer at U.K. Contoso. Built 5G backhaul for 9 states."
 
 
+@pytest.mark.parametrize("praise,result", [
+    ("Data scientist with 6 years in Python and R. Known for turning messy data into decisions.",
+     "Built churn models for 2M subscribers at Contoso."),
+    ("Platform engineer with 9+ years in Go, Rust, etc. Brings end-to-end ownership of platform services.",
+     "Cut deploy time from 40 to 12 minutes."),
+    ("Backend engineer with 9 years at Contoso Inc. Brings deep expertise in payments.",
+     "Built the Go ledger API for 450 banks."),
+    ("Network engineer with 8 years across the U.S. Dedicated to zero-downtime networks.",
+     "Built 5G backhaul for 9 states."),
+    ("Firmware engineer with 7 years in C. Recognized for shipping on time.", "Cut boot time from 9 to 2 seconds."),
+])
+def test_praise_opening_a_piece_after_an_abbreviation_is_named(profile, praise, result):
+    # an opener ('Known', 'Brings') counts at the start of any piece; the whole sentence is named, nothing removed
+    summary = f"{praise} {result}"
+    assert rules.self_praise(summary) == [praise]
+    resume = resume_of(profile, [["Built the Go order API for 450 partner stores"]], summary=summary)
+    assert rules.summary_trim(resume) == [] and resume.summary == summary
+
+
+def test_a_quality_word_inside_a_fact_is_no_praise():
+    assert rules.self_praise("Led SRE for U.S. dedicated hosting at Contoso. Cut paging 41% in a year.") == []
+
+
+BULLETS = [["Built the Go order API for 450 partner stores"]]
+
+
+def test_praise_that_an_abbreviation_ends_goes_without_the_result_after_it(profile):
+    resume = resume_of(profile, BULLETS, summary=(
+        "Backend engineer with 9 years in payments. Known for calm leadership at Contoso Inc. Built the Go ledger API "
+        "for 450 banks. Cut settlement time 31%."))
+    assert rules.summary_trim(resume) == [
+        "Summary: removed 'Known for calm leadership at Contoso Inc.' (self-praise, or more than 3 sentences)."]
+    assert resume.summary == ("Backend engineer with 9 years in payments. Built the Go ledger API for 450 banks. Cut "
+                              "settlement time 31%.")
+    # with 2 sentences both stay, and the rewrite pass is told about the praise alone
+    assert rules.self_praise("Known for calm leadership at Contoso Inc. Built the Go ledger API for 450 banks.") == [
+        "Known for calm leadership at Contoso Inc."]
+    resume.summary = ("Data engineer with 8 years in streaming. Brings deep expertise in Kafka, Flink, Spark, etc. "
+                      "Built the fraud pipeline for 40M daily events. Cut alert lag from 9 to 2 minutes.")
+    assert rules.summary_trim(resume) == [("Summary: removed 'Brings deep expertise in Kafka, Flink, Spark, etc.' "
+                                           "(self-praise, or more than 3 sentences).")]
+    assert resume.summary == ("Data engineer with 8 years in streaming. Built the fraud pipeline for 40M daily events. "
+                              "Cut alert lag from 9 to 2 minutes.")
+    resume.summary = ("Backend engineer with 9 years in payments. Known for calm leadership at Contoso Inc. Known for "
+                      "turning messy data into decisions. Cut settlement time 31%.")  # praise, then more praise
+    assert rules.summary_trim(resume)[0].startswith("Summary: removed 'Known for calm leadership at Contoso Inc. Known")
+    assert resume.summary == "Backend engineer with 9 years in payments. Cut settlement time 31%."
+
+
+def test_praise_joined_to_a_sentence_no_past_verb_opens_stays_for_the_rewrite_pass(profile):
+    summary = ("Backend engineer with 9 years in payments. Known for calm leadership at Contoso Inc. Focuses on "
+               "partner APIs, cutting failed syncs from 41 to 6 a week. Cut settlement time 31%.")
+    resume = resume_of(profile, BULLETS, summary=summary)
+    assert rules.summary_trim(resume) == [] and resume.summary == summary
+    assert rules.self_praise(summary) == [
+        "Known for calm leadership at Contoso Inc. Focuses on partner APIs, cutting failed syncs from 41 to 6 a week."]
+    # a name after a title or an initial is never a new sentence: no 'Read' left on its own
+    for name in ("Dr. Read", "T. Read's"):
+        summary = (f"Backend engineer with 9 years in payments. Known for calm on-call work with {name} team. Built "
+                   "the Go ledger API for 450 banks.")
+        resume.summary = summary
+        assert rules.summary_trim(resume) == [] and resume.summary == summary
+
+
+def test_past_three_sentences_joined_praise_goes_before_a_result(profile):
+    resume = resume_of(profile, BULLETS, summary=(
+        "Backend engineer with 9 years in payments. Known for shipping the U.S. Census API on time. Built the Go "
+        "ledger API for 450 banks. Cut settlement time 31%."))
+    assert rules.summary_trim(resume) == [
+        "Summary: removed 'Known for shipping the U.S. Census API on time.' (self-praise, or more than 3 sentences)."]
+    assert resume.summary == ("Backend engineer with 9 years in payments. Built the Go ledger API for 450 banks. Cut "
+                              "settlement time 31%.")
+    resume.summary = ("Backend engineer with 9 years in payments. Known for calm leadership at Contoso Inc. Focuses on "
+                      "partner APIs. Built the Go ledger API for 450 banks. Cut settlement time 31%.")
+    assert rules.summary_trim(resume)  # one sentence has to go: the one that opens with praise
+    assert resume.summary == ("Backend engineer with 9 years in payments. Built the Go ledger API for 450 banks. Cut "
+                              "settlement time 31%.")
+
+
+def test_the_note_cuts_a_long_removed_sentence_after_a_whole_word(profile):
+    resume = resume_of(profile, BULLETS, summary=(
+        "Data engineer with 9+ years at Contoso. Focuses on Airflow loads for finance. Cut late reports from 14 to 2 a "
+        "month. Moved 38 services to Kubernetes at Bluefin Commerce, cutting deploy time from 140 to 12 minutes."))
+    assert rules.summary_trim(resume) == [  # never '... from 14': a figure is never shown cut
+        ("Summary: removed 'Moved 38 services to Kubernetes at Bluefin Commerce, cutting deploy time from...' "
+         "(self-praise, or more than 3 sentences).")]
+
+
 def test_a_summary_naming_more_than_three_skills_is_found(profile):
     resume = resume_of(profile, [["Built the Go order API"]],
                        summary="Backend engineer using Python, SQL, Airflow and Spark for data teams.",
@@ -293,6 +412,16 @@ def test_a_skill_a_bullet_shows_in_another_form_stays(profile):
     assert notes == ["Skills: left out what no bullet shows: Load Testing."]
 
 
+def test_a_one_word_field_or_a_domain_shows_no_skill(profile):
+    # 'accounts' is no 'Accounting' and 'engineers' no 'Engineering'; 'northwind.net' is a domain, not '.NET'
+    resume = resume_of(profile, [["Grew enterprise accounts 23% and market share 4 points with 9 engineers",
+                                  "Moved northwind.net to the Go order API for 450 partner stores"]], skills=[
+        SkillGroup(category="Practices", skills=["Go", "Accounting", "Marketing", "Engineering", ".NET"])])
+    notes = rules.shape_skills(resume, analysis())
+    assert resume.skills[0].skills == ["Go"]
+    assert notes == ["Skills: left out what no bullet shows: Accounting, Marketing, Engineering, .NET."]
+
+
 def test_when_no_bullet_shows_any_skill_the_list_stays_and_no_note_says_otherwise(profile):
     resume = resume_of(profile, [["Cut checkout errors 23% for 40K merchants"]], skills=[
         SkillGroup(category="Tools", skills=["Kubernetes", "Terraform"]),
@@ -322,6 +451,13 @@ def test_a_fourth_row_joins_the_third_and_the_rest_is_named(profile):
     ("Support tickets fell from 97 to 57 a week after the help center launch", False),  # a noun
     ("Use cases for the assistant were drafted with product", False),
     ("Built the evaluation suite behind every release", False),
+    # a past or third-person form is always the verb, whatever noun follows it
+    ("Supported engineer onboarding for 37 new hires with a 2-week plan", True),
+    ("Supported agent training on the new billing system for 23 hires", True),
+    ("Supported call center agents through the Contoso phone system move for 3 sites", True),
+    ("Supports escalation handling for enterprise customers across 3 regions", True),
+    ("Running costs fell 31% after the move to spot instances", False),  # 'Running' can open a noun
+    ("Support engineer on the payments team, owning 43 enterprise accounts", False),
 ])
 def test_weak_openings_are_found_and_nouns_are_not(profile, bullet, weak):
     resume = resume_of(profile, [[bullet]])
