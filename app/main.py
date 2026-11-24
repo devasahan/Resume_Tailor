@@ -45,7 +45,7 @@ from .pipeline.facts import is_expired, parse_point
 from .pipeline.fit import saved_resume_pdf, saved_style
 from .pipeline.generate import GenerationFailed
 from .pipeline.job_facts import check_job_facts
-from .pipeline.page_fit import pages_word
+from .pipeline.page_fit import pages_word, refitted_notes
 from .pipeline.tailor import (
     analysis_terms,
     fit_report,
@@ -1437,7 +1437,7 @@ def create_app(db: Database | None = None, registry: Registry | None = None, rou
         if latest is not None and body.cover_paragraphs is None:
             result.cover_letter, result.cover_cost_usd = latest.cover_letter, latest.cover_cost_usd
         result.style, result.pages, result.fits = style, pages, fits
-        result.notes = [n for n in result.notes if not n.startswith(("Font reduced", "Still"))] + notes
+        result.notes = refitted_notes(result.notes, notes)  # the earlier fit's notes give way to this one's
         run_checks(result, result.jd or analysis_terms(result.analysis))
         db.update_run(result)
         return result.model_dump()
@@ -1478,7 +1478,7 @@ def create_app(db: Database | None = None, registry: Registry | None = None, rou
         fresh.resume, fresh.certifications = resume, rows
         fresh.untrimmed = whole if removed else []
         fresh.style, fresh.pages, fresh.fits = style, pages, fits
-        fresh.notes = [n for n in fresh.notes if not n.startswith(("Font reduced", "Still"))] + notes
+        fresh.notes = refitted_notes(fresh.notes, notes)  # bullets brought back are no longer noted as removed
         run_checks(fresh, fresh.jd or analysis_terms(fresh.analysis))
         db.update_run(fresh)
         view = viewed(fresh, user)
