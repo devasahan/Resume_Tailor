@@ -698,6 +698,30 @@ def test_trimming_takes_from_the_current_job_only_while_it_holds_more_than_half(
     assert removal_order(resume, analysis) == [(0, 4), (0, 3), (1, 1), (0, 2), (0, 1)]
 
 
+PLAIN_BULLET = ("Rebuilt the order sync service behind the partner REST API with retries and rate limits for partner "
+                "calls, cutting failed syncs from 41 to 6 a week.")
+
+
+@pytest.mark.parametrize("posting,language", [
+    # the post names its language (a nice-to-have here, so the must-have rule alone would not keep it)
+    ({"target_role": "Backend Engineer", "must_have_skills": ["Kafka"], "nice_to_have_skills": ["Python"]},
+     "Python"),
+    # the post names none, and the work is built in code: any language at the current job counts
+    ({"target_role": "Backend Engineer", "must_have_skills": ["Kafka"], "nice_to_have_skills": []}, "TypeScript"),
+])
+def test_trimming_keeps_the_current_jobs_only_bullet_naming_the_language(posting, language):
+    """The current job's only bullet that names the post's language (the owner's rule, prompt v39) goes last, like a
+    must-have's only mention: the current job, at more than half, gives one of its other bullets first."""
+    resume = resume_with(career(5), [6, 2, 1, 1, 1], bullet=PLAIN_BULLET)
+    resume.experience[0].bullets[5] = (f"Write the partner sync workers in {language} with idempotent retries, cutting "
+                                       "duplicate orders from 23 to 4 a week.")
+    analysis = JDAnalysis(seniority="", domain="", keywords=[], **posting)
+    assert validate.missing_language(resume, analysis) is None
+    order = removal_order(resume, analysis)
+    assert order[0] == (0, 4) and (0, 5) not in order[:3], order
+    assert removal_order(resume)[0] == (0, 5)  # without an analysis nothing is held
+
+
 def test_a_draft_as_long_as_its_plan_loses_one_bullet_and_the_current_job_keeps_half():
     """A draft as long as the placeholder plan (every bullet two full lines, the longest summary and skills) is over by
     less than one bullet: one bullet is removed (fewer than the 2 that ask the model for a shorter draft), from an

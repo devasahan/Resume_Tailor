@@ -254,8 +254,11 @@ def measure(resume: Resume, paper: str = "Letter") -> int:
 
 def _only_mentions(resume: Resume, analysis: JDAnalysis | None) -> set[tuple[int, int]]:
     """(job position, bullet index) of each bullet that holds the only mention of a must-have in the summary and the
-    bullets: removing it would leave the posting's requirement unshown."""
-    from .validate import mentions
+    bullets: removing it would leave the posting's requirement unshown. Also the current job's only bullet that names
+    the post's programming language (or, when the post names none, any language, for work built in code): the owner's
+    rule since prompt v39 (validate.missing_language), which trimming must not undo."""
+    from . import languages
+    from .validate import current_job, mentions
 
     must, _other = _terms(analysis)
     held: set[tuple[int, int]] = set()
@@ -266,6 +269,14 @@ def _only_mentions(resume: Resume, analysis: JDAnalysis | None) -> set[tuple[int
                   if mentions(b, term)]
         if len(places) == 1:
             held.add(places[0])
+    job = current_job(resume)
+    wanted = languages.wanted_language(analysis)
+    if job is not None and analysis is not None and (wanted or languages.codes(analysis)):
+        position = next(i for i, exp in enumerate(resume.experience) if exp is job)
+        places = [j for j, bullet in enumerate(job.bullets)
+                  if (languages.names(bullet, wanted) if wanted else languages.mentioned(bullet))]
+        if len(places) == 1:
+            held.add((position, places[0]))
     return held
 
 
