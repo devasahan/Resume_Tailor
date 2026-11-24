@@ -178,11 +178,12 @@ def email_link(email: str) -> str:
 
 
 def web_link(url: str) -> str:
-    """The address a LinkedIn or website value opens: the value as written (its scheme in small letters) when it starts
-    with http:// or https:// (a site may have no https), else 'https://' and the value as printed (display_url). The
-    address holds ASCII only (_ascii). "" for anything that is no
-    web address a browser can open, which stays plain text: a value with a space, quotes or angle brackets, another
-    scheme (javascript:, data:, file:, mailto:) or no host name with a dot ('N/A')."""
+    """The address a LinkedIn or website value opens: the value as written, its scheme in small letters when it starts
+    with http:// or https:// (a site may have no https), else with 'https://' before it. Never the shorter form
+    printed (display_url): 'www.' and a last '/' stay, as a site may answer only on www. The address holds ASCII only
+    (_ascii). "" for anything that is no web address a browser can open, which stays plain text: a value with a
+    space, quotes or angle brackets, another scheme (javascript:, data:, file:, mailto:) or no host name with a dot,
+    'www.' not counted ('N/A', 'www.localhost')."""
     value = url.strip()
     if not _linkable(value):
         return ""
@@ -192,12 +193,13 @@ def web_link(url: str) -> str:
     elif _SCHEME.match(value) or value.startswith("/"):
         return ""
     else:
-        target = "https://" + display_url(value)
+        target = "https://" + value
     try:
         host = urlsplit(target).netloc
     except ValueError:  # a broken IPv6 address: 'https://[::1'
         return ""
-    return _ascii(target) if _HOST.fullmatch(host) else ""
+    bare = host[4:] if host[:4].lower() == "www." else host
+    return _ascii(target) if _HOST.fullmatch(host) and _HOST.fullmatch(bare) else ""
 
 
 def contact_items(contact: Contact) -> list[tuple[str, str]]:
@@ -313,6 +315,15 @@ def text_width(text: str, weight: str, size: float, tracking: float = 0.0) -> fl
     return sum(widths.get(ord(ch), missing) for ch in text) * size * 0.001 + char_spacing(tracking, size) * len(text)
 
 
+def drawn_letters(text: str, weight: str) -> list[int]:
+    """The advance widths (thousandths of an em) of the letters fpdf2 puts on the page for `text` in a weight:
+    drawable(text) less the characters the weight lacks. fpdf2 leaves such a character out of the page (no letter, no
+    room and no letter spacing: see _Drawable), while text_width counts it at the .notdef width, as fpdf2's
+    get_string_width does, so a line is placed as measured and the letters after it are drawn further left."""
+    widths, _missing = advance_widths(weight)
+    return [widths[ord(ch)] for ch in drawable(text) if ord(ch) in widths]
+
+
 def fit_size(text: str, weight: str, size: float, width: float, floor: float = 11.0, tracking: float = 0.0) -> float:
     """Shrink a one-line text (the name, the title line) half a point at a time until it fits `width`, never below
     `floor`."""
@@ -377,7 +388,9 @@ def _link_notes(line: Line, x: float, y: float, size: float, height: float) -> l
     finish() starts each text cell (the pieces of one style) where the one before ends as measured, and fpdf2 writes
     the cell's place and its font size with two decimals: in a cell the letters are drawn at that size (9.38 pt for a
     measured 9.375), so a little wider than measured, and a link made of the measured widths would end up to the left
-    of its text."""
+    of its text. Inside a cell each piece takes the room of the letters drawn (drawn_letters): a character the font
+    lacks (an emoji, a place in Japanese) is left out of the page, so the text after it is drawn further left than
+    measured."""
     drawn_size = float(f"{size:.2f}")
     notes: list[list] = []
     cell = inside = 0.0  # where the current cell is drawn from, and how far into it the next piece is drawn
@@ -385,8 +398,8 @@ def _link_notes(line: Line, x: float, y: float, size: float, height: float) -> l
     for piece in line:
         if (piece.weight, piece.color, piece.tracking) != style:  # a new cell, where the measured text before ends
             cell, inside, style, previous = float(f"{start:.2f}"), 0.0, (piece.weight, piece.color, piece.tracking), ""
-        width = (text_width(piece.text, piece.weight, drawn_size)
-                 + char_spacing(piece.tracking, size) * len(drawable(piece.text)))
+        letters = drawn_letters(piece.text, piece.weight)  # as drawn: a character the font lacks takes no room
+        width = sum(letters) * drawn_size * 0.001 + char_spacing(piece.tracking, size) * len(letters)
         if piece.link and piece.link == previous:
             notes[-1][4] += width
         elif piece.link:

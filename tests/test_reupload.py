@@ -36,7 +36,7 @@ from app.schemas import (
 
 NAME = "Taylor Quinn"
 CONTACT = Contact(email="taylor.quinn@example.com", phone="(555) 010-4477", linkedin="linkedin.com/in/taylorquinn",
-                  location="Austin, TX")
+                  location="Austin, TX", website="taylorquinn.dev")
 COMPANIES = [
     Company(name="Northwind Labs", start="Mar 2022", end="Present", mode="Remote", location="Austin, TX"),
     Company(name="Bluefin Commerce", start="Jun 2019", end="Feb 2022", mode="Onsite", location="Dallas, TX"),
@@ -122,8 +122,9 @@ def old_design(stacked: bool = False) -> str:
 def assert_reads_back(text: str) -> None:
     profile = parse_resume_text(text)
     assert profile.name == NAME
-    assert (profile.contact.email, profile.contact.phone, profile.contact.linkedin, profile.contact.location) == (
-        CONTACT.email, CONTACT.phone, CONTACT.linkedin, CONTACT.location)
+    assert (profile.contact.email, profile.contact.phone, profile.contact.linkedin, profile.contact.location,
+            profile.contact.website) == (CONTACT.email, CONTACT.phone, CONTACT.linkedin, CONTACT.location,
+                                         CONTACT.website)
     assert [c.model_dump() for c in profile.companies] == [c.model_dump() for c in COMPANIES]
     places = {value for company in profile.companies for value in (company.name, company.location)}
     assert not places & set(TITLES)  # a job title is never read as an employer or a place
@@ -178,8 +179,9 @@ def assert_file_reads_back(text: str, resume: Resume) -> None:
     profile = parse_resume_text(text)
     contact = resume.profile.contact
     assert profile.name == NAME
-    assert (profile.contact.email, profile.contact.phone, profile.contact.linkedin, profile.contact.location) == (
-        contact.email, contact.phone, contact.linkedin, contact.location)
+    assert (profile.contact.email, profile.contact.phone, profile.contact.linkedin, profile.contact.location,
+            profile.contact.website) == (contact.email, contact.phone, contact.linkedin, contact.location,
+                                         contact.website)
     assert [c.model_dump() for c in profile.companies] == [c.model_dump() for c in COMPANIES]
     titles = {e.job_title for e in resume.experience}
     assert not {value for c in profile.companies for value in (c.name, c.location)} & titles
