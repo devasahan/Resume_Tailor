@@ -58,10 +58,13 @@ def test_density_limits_per_role_and_overall(profile):
                                           "Saved $41,300 a year", "Built pipelines"]
     out.sections.experience[1].bullets = ["Cut runtime by 23.4%", "Saved 17.8% of spend", "Served 38 analysts",
                                           "Built pipelines"]
+    out.sections.experience[2].bullets = ["Cut runtime by 23.4%", "Saved 17.8% of spend"]
     problems = validate.metric_density_problems(validate.build_resume(profile, out))
     assert any("Northwind Labs: 4 of 5" in p for p in problems)  # the current job may carry 3
     assert any("Contoso Systems: 3 of 4" in p for p in problems)  # every other job 2
-    assert "5 of the 8 bullets after each job's first have figures" in problems
+    # each job's first and the current job's 2 more are not counted in the share (prompt v38)
+    assert ("4 of 6 bullets have figures, not counting each job's first or up to 2 more in the current job"
+            in problems)
     out = make_output()
     out.sections.experience[0].bullets = ["Cut runtime by 23.4%", "Saved 17.8% of spend", "Served 38 analysts",
                                           "Built pipelines", "Moved the loads to Airflow"]  # 3 figures: allowed here

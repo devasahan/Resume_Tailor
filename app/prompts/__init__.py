@@ -57,13 +57,18 @@ def _fill(template: str, **values: str) -> str:
 
 
 
+# the last line of <employers> when the page plan is two pages (system.md: "or two pages ... when <employers> says so")
+TWO_PAGES_LINE = ("The resume is planned for two pages (about 900 words): even one bullet per older job does not fit "
+                  "on one page.")
+
+
 def describe_companies(
-    companies: list[Company], bullets: list[int] | None = None, today: date | None = None
+    companies: list[Company], bullets: list[int] | None = None, today: date | None = None, pages: int = 1
 ) -> str:
     """One line per employer: dates, work mode, how long the stay was and how much experience came before it
     (computed, so the model never does date arithmetic when choosing titles), and how many bullets to write
-    (computed so the resume fits on one page, app/pipeline/page_fit.py). The current job (facts.is_current) is marked
-    "Present (current role)": its bullets are in the present tense."""
+    (computed so the resume fits its pages, app/pipeline/page_fit.py: one, or two with TWO_PAGES_LINE last). The
+    current job (facts.is_current) is marked "Present (current role)": its bullets are in the present tense."""
     bullets = bullets or bullet_caps(companies, today)
     lines = []
     for index, c in enumerate(companies):
@@ -78,6 +83,8 @@ def describe_companies(
             parts.append(f"{stay} stay, {history}")
         parts.append(f"write exactly {bullets[index]} bullets")
         lines.append(f"{index}: " + " | ".join(parts))
+    if lines and pages > 1:
+        lines.append(TWO_PAGES_LINE)
     return "\n".join(lines) or "(none)"
 
 
@@ -147,14 +154,15 @@ def projects_block(companies: list[Company]) -> str:
 def tailor_user(
     jd: str, companies: list[Company], hints: str, facts: str = "", shorten: bool = False,
     bullets: list[int] | None = None, today: date | None = None, certifications: Sequence[Certification] = (),
-    certifications_section: bool = True,
+    certifications_section: bool = True, pages: int = 1,
 ) -> str:
-    """`certifications_section` False (Settings): no <candidate_certifications> block at all."""
+    """`certifications_section` False (Settings): no <candidate_certifications> block at all. `pages`: the page plan
+    (page_fit.plan_pages), said in <employers> when it is two."""
     return _fill(
         _read("tailor.md"),
         jd=jd.strip(),
         count=str(len(companies)),
-        companies=describe_companies(companies, bullets, today),
+        companies=describe_companies(companies, bullets, today, pages),
         projects=projects_block(companies),
         facts=facts.strip() or "Total professional experience: unknown (do not state a number of years).",
         hints=hints.strip() or "(none given)",
@@ -166,18 +174,18 @@ def tailor_user(
 def revise_user(
     jd: str, companies: list[Company], hints: str, facts: str = "", *, bullets: list[int] | None = None,
     today: date | None = None, analysis: JDAnalysis, plan: list[CareerStep], draft: str, problems: str,
-    certifications: Sequence[Certification] = (), certifications_section: bool = True,
+    certifications: Sequence[Certification] = (), certifications_section: bool = True, pages: int = 1,
 ) -> str:
     """The fix round: the same opening as tailor_user (so the provider can reuse its cache of it), then the final
     analysis and plan, the numbered draft and what to fix. The answer is a TailorRevision: only what changes.
-    `certifications_section` False (Settings): no <candidate_certifications> block, as in tailor_user."""
+    `certifications_section` False (Settings): no <candidate_certifications> block, and `pages`, as in tailor_user."""
     steps = [f"company_index {s.company_index}: {s.product or 'product not known'} | {s.scope} | {', '.join(s.focus)}"
              for s in plan]
     return _fill(
         _read("revise.md"),
         jd=jd.strip(),
         count=str(len(companies)),
-        companies=describe_companies(companies, bullets, today),
+        companies=describe_companies(companies, bullets, today, pages),
         projects=projects_block(companies),
         facts=facts.strip() or "Total professional experience: unknown (do not state a number of years).",
         hints=hints.strip() or "(none given)",

@@ -128,7 +128,7 @@ def test_metrics_setting_is_validated(client):
 def test_summary_rule_is_short_and_concrete():
     """The reviewer's rule (prompt v38): 2-3 lines, the experience, the current focus and one result; no praise."""
     text = tailor_system("estimate")
-    assert "SUMMARY: 2-3 sentences, 30-48 words (three lines at most)" in text
+    assert "SUMMARY: 2-3 sentences, 30-40 words (three lines at most)" in text
     assert "shown as one concrete result from the current job" in text and "Never praise the candidate" in text
     assert "what the candidate brings to this particular role" not in text and "60-85 words" not in text
 
