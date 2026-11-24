@@ -1,11 +1,14 @@
 """The checks that ask for the one rewrite pass, the admin's warnings and the prompt, held to prompt v38: the person's
-own figures stay theirs once the resume writes them its way ('40 percent' is their '40%'), a result led or joined the
-ways the prompt asks counts as a result, figures per job follow the METRICS rule, the summary is 30-40 words, runs
-saved before the one-page rule keep their own limits, a posting term keeps its number word, a two-page plan is said,
-and the rewrite pass keeps only the first draft's notes that are still true. Every person, employer and product here
-is invented."""
+own figures stay theirs once the resume writes them its way ('40 percent' is their '40%'), and only figures they gave
+whole are theirs ('$12 million' never makes a '2M' theirs), a result led or joined the ways the prompt asks counts as a
+result (work done with others 'to build' something names none), figures per job follow the METRICS rule (a draft
+within it costs nothing), the summary is 30-40 words, runs saved before the one-page rule keep their own limits, a
+posting term keeps its number word, a two-page plan is said, a bullet the app leaves in the other tense is named, and
+the rewrite pass keeps only the first draft's notes that are still true. Every person, employer and product here is
+invented."""
 import asyncio
 import re
+from datetime import date
 from pathlib import Path
 
 import pytest
@@ -63,8 +66,18 @@ class Rewrites(LLMClient):
         return asked[0].split(RETRY_MARKER + ": ", 1)[1].split("\n\nRevise the previous draft", 1)[0] if asked else ""
 
 
-def tailored(router, db, registry, profile, change, hints: str = ""):
-    client = Rewrites(FakeClient(registry.get("demo-concise")), change)
+class Stubborn(Rewrites):
+    """The demo, whose rewrite pass changes nothing (a model that ignores what the fix round asks)."""
+
+    async def generate_structured(self, **kwargs):
+        result = await super().generate_structured(**kwargs)
+        if kwargs["schema_name"] == "tailor_revision":
+            result.data = {"headline": "", "summary": "", "titles": [], "bullets": [], "skill_changes": []}
+        return result
+
+
+def tailored(router, db, registry, profile, change, hints: str = "", kind=Rewrites):
+    client = kind(FakeClient(registry.get("demo-concise")), change)
     router.overrides["demo-concise"] = client
     result = asyncio.run(tailor.run_tailor(router, db, profile=profile, profile_id=None, jd=SAMPLE_JD, hints=hints,
                                            model_id="demo-concise", save=False, time_limit=0))
@@ -127,6 +140,36 @@ def test_the_persons_figures_in_the_letter_stay_theirs():
     assert validate.cover_flags(letter, HINTS) == []
     assert [f.reason for f in validate.cover_flags(letter, "")] == [
         "Contains '40%', which is not in your hints. Only keep figures you can back up."]
+
+
+# a figure is theirs only when they gave it whole: never because its digits sit inside a longer figure of theirs
+@pytest.mark.parametrize("hints,bullet,estimate,rounded", [
+    ("Grew ARR to $12 million.", "Grew ARR to $12 million with a Go onboarding service for 2M users.", "2M", []),
+    ("Raised conversion 115 percent.", "Raised conversion 115 percent and cut churn 15% with a React onboarding flow.",
+     "15%", ["15%"]),
+    ("Served 25 thousand stores.", "Built the order API in Go for 25 thousand stores, cutting sync errors 5K a week.",
+     "5K", []),
+    # their unit words, which the resume writes short: '5 million dollars' is their '$5M', '3 times' their '3x'
+    ("Cut costs by 5 million dollars.", "Cut costs by $5M by moving batch jobs to spot instances on AWS.", "", []),
+    ("Made checkout 3 times faster.", "Made the checkout API 3x faster with Redis caching in Go.", "", []),
+])
+def test_a_figure_is_the_persons_only_when_they_gave_it_whole(profile, hints, bullet, estimate, rounded):
+    resume = resume_of(profile, [[bullet]])
+    rules.fix_numbers(resume, analysis())  # as build() writes every figure
+    flags = [f.reason for f in validate.claim_flags(resume, "", hints)
+             if f.level == "verify" and f.section.startswith("experience")]
+    reason = f"'{estimate}' is an estimate, not a number you gave. Replace it with your real figure or remove it."
+    assert flags == ([reason] if estimate else [])
+    assert validate.figure_style_problems(resume, hints) == rounded  # a round '15%' is a guess, '115%' theirs
+
+
+def test_the_letter_trusts_only_figures_given_whole():
+    letter = CoverLetter(greeting="Dear Hiring Manager,", closing="Sincerely,", paragraphs=[
+        "At Northwind Labs I grew ARR to $12M with an onboarding service in Go for 2M users."])
+    assert [f.reason for f in validate.cover_flags(letter, "Grew ARR to $12 million.")] == [
+        "Contains '2M', which is not in your hints. Only keep figures you can back up."]
+    letter.paragraphs = ["At Northwind Labs I cut costs by $5M and made checkout 3x faster with Redis caching."]
+    assert validate.cover_flags(letter, "Cut costs by 5 million dollars and made checkout 3 times faster.") == []
 
 
 @pytest.mark.parametrize("mode", ["estimate", "hints_only"])
@@ -209,15 +252,41 @@ def test_a_result_led_or_joined_as_the_prompt_asks_names_a_result(profile, bulle
     assert [why for _company, text, why in validate.weak_bullets(resume) if text == bullet] == []
 
 
+# work done with others 'to build' something, a compound such as 'End-to-end' and a past form used as an adjective
+# ('the improved onboarding flow') name no result: 'to' counts only before a verb that says what changed
+NO_RESULT = [
+    "Partnered with the analytics team to build dbt models in Snowflake for the quarterly revenue reports.",
+    "Worked with the platform engineers to migrate the nightly Airflow jobs from cron servers to AWS.",
+    "Collaborated with designers to develop the onboarding screens in SwiftUI for the iOS app.",
+    "End-to-end ownership of the checkout service in Node.js and PostgreSQL on AWS.",
+    "Rolled out the improved onboarding flow in React to all regions with LaunchDarkly.",
+]
+
+
 @pytest.mark.parametrize("bullet", [
     "Mentored junior engineers on Python best practices and code review standards during daily pairing sessions.",
     "Moved the nightly reporting jobs to Kubernetes with Helm charts and Argo CD for the analytics team.",
     "Maintained the Airflow DAGs and Snowflake models behind the finance data mart for the month-end close.",
     "Worked to build the Terraform modules for the shared staging and production environments on AWS.",
+    *NO_RESULT,
 ])
 def test_a_bullet_that_names_no_result_is_still_found(profile, bullet):
     resume = resume_of(profile, [[bullet]])
     assert [why for _company, text, why in validate.weak_bullets(resume) if text == bullet] == ["names no result"]
+
+
+def test_two_bullets_that_name_no_result_ask_for_the_rewrite(router, db, registry, profile):
+    def work_only(sections):
+        jobs = sections["experience"]
+        jobs[1]["bullets"][1], jobs[2]["bullets"][1] = NO_RESULT[:2]
+
+    client, result = tailored(router, db, registry, profile, work_only)
+    asked = client.fix_round()
+    assert result.retries == 1 and "These bullets do not say how the work was done or what changed" in asked
+    assert '"Partnered with the analytics team to build dbt ..." (Contoso Systems: names no result)' in asked
+    assert '"Worked with the platform engineers to migrate the ..." (Fabrikam: names no result)' in asked
+    final = [b for exp in result.resume.experience for b in exp.bullets]
+    assert not set(NO_RESULT[:2]) & set(final)  # the rewrite replaced them
 
 
 def test_two_result_led_bullets_cost_no_rewrite(router, db, registry, profile):
@@ -235,10 +304,10 @@ def test_two_result_led_bullets_cost_no_rewrite(router, db, registry, profile):
 
 # ------------------------------------------------------------------ figures per job, as the METRICS rule says
 @pytest.mark.parametrize("counts", [[5, 3, 3], [4, 3, 2, 1], [4, 2, 1, 1, 1], [3, 2, 1, 1, 1, 1],
-                                    [6, 5, 4, 4, 3, 2, 2, 2]])
+                                    [6, 5, 4, 4, 3, 2, 2, 2], [3, 2, 2, 1, 1], [3, 2, 1, 2, 1]])
 def test_a_draft_at_the_metrics_rules_allowance_has_no_density_problem(counts):
     # the current job: its first bullet and 2 more with figures; every other job: its first and at most 1 more,
-    # older or short roles usually none
+    # older or short roles usually none ([3, 2, 2, 1, 1]: the plan of five stays of about three years)
     usual = jobs_resume(counts, [2, 1] + [0] * (len(counts) - 2))
     most = jobs_resume(counts, [2] + [1] * (len(counts) - 1))
     assert validate.metric_density_problems(usual) == validate.metric_density_problems(most) == []
@@ -248,9 +317,52 @@ def test_too_many_figures_are_still_found():
     resume = jobs_resume([5, 3, 3], [3, 2, 0])  # 4 and 3 bullets with figures
     assert validate.metric_density_problems(resume) == [
         "Employer A: 4 of 5 bullets have figures", "Employer B: 3 of 3 bullets have figures"]
-    resume = jobs_resume([4, 2, 2, 2], [2, 1, 1, 1])  # every older job's every bullet has one
+    resume = jobs_resume([4, 2, 2, 2], [2, 1, 1, 1])  # every older job's every bullet has one: its first and 1 more
+    assert validate.metric_density_problems(resume) == []  # within the rule
+    resume.experience[0].bullets[3] = FIGURE_MORE  # one more than the current job may have
+    assert validate.metric_density_problems(resume) == ["Employer A: 4 of 4 bullets have figures"]
+
+
+def test_the_share_counts_only_figures_beyond_the_rule():
+    resume = jobs_resume([3, 3, 3], [2, 2, 2])  # every older job one figure bullet over its limit
     assert validate.metric_density_problems(resume) == [
-        "3 of 4 bullets have figures, not counting each job's first or up to 2 more in the current job"]
+        "Employer B: 3 of 3 bullets have figures", "Employer C: 3 of 3 bullets have figures",
+        ("2 of 2 bullets have figures, not counting each job's first or up to 2 more in the current job and 1 more in "
+         "every other job")]
+
+
+FIVE_JOBS = [  # each first bullet with its size and result, the current job 2 more figures, jobs 2 and 3 one more
+    [("Design the Airflow ETL platform behind claims analytics, loading 1.7TB of daily events into Snowflake for 38 "
+      "analysts."),
+     "Mentor 14 data engineers through code reviews on Spark jobs, cutting review rounds from 16 to 9 per release.",
+     "Build dbt models with data quality tests in SQL, catching 17 broken loads a quarter before the morning reports."],
+    [("Built the Python ingestion service for 4.6K store feeds on AWS Lambda, cutting failed loads from 87 to 31 a "
+      "month."),
+     ("Moved legacy SQL Server reports to Snowflake with tested models, saving analysts 12 hours of manual exports a "
+      "week.")],
+    ["Rebuilt the Spark batch jobs for 23 regional offices on AWS EMR, bringing the nightly run from 6.4 to 2.9 hours.",
+     "Added CI/CD for the data pipelines with Jenkins and Docker, catching 19 broken transforms in the first quarter."],
+    [("Wrote the Python and SQL ETL jobs for the marketing mart on PostgreSQL, joining 3.2M campaign rows a night for "
+      "analysts.")],
+    [("Automated the weekly finance extracts in Python and SQL for 41 store managers, ending a 2-day manual "
+      "spreadsheet merge.")],
+]
+FIVE_TITLES = ["Senior Data Engineer", "Data Engineer III", "Data Engineer II", "Data Engineer", "Junior Data Engineer"]
+
+
+def test_a_five_job_draft_within_the_rule_costs_no_rewrite(router, db, registry):
+    year = date.today().year  # five stays of three years: the plan 3 / 2 / 2 / 1 / 1
+    person = career([(f"Jan {year - 3 * i - 3}", "Present" if i == 0 else f"Dec {year - 3 * i - 1}")
+                     for i in range(5)])
+
+    def within_the_rule(sections):
+        for exp, bullets, title in zip(sections["experience"], FIVE_JOBS, FIVE_TITLES):
+            exp["bullets"], exp["job_title"] = list(bullets), title
+
+    client, result = tailored(router, db, registry, person, within_the_rule)
+    assert result.retries == 0 and client.fix_round() == ""
+    assert [exp.bullets for exp in result.resume.experience] == FIVE_JOBS  # the plan's 3 / 2 / 2 / 1 / 1, kept
+    assert not any(w.startswith("Many bullets carry figures") for w in result.ats_warnings)
 
 
 def test_in_hints_only_mode_the_persons_own_figures_do_not_count():
@@ -545,9 +657,11 @@ def test_first_draft_notes_about_bullets_go_with_the_rewrite(profile):
         "Headline: wrote 'Data Engineer' instead of the posting's level 'Data Engineer II', which is not your title.",
         "Skills: left out what no bullet shows: Jira.",
     ]
-    assert tailor.first_draft_notes(notes, draft, fixed) == [notes[0], notes[4], notes[5]]
+    # nothing rewritten: a job's tense note stays true while none of its bullets changed
+    assert tailor.first_draft_notes(notes, draft, fixed) == [notes[0], notes[1], notes[2], notes[4], notes[5]]
     fixed.experience[1].job_title, fixed.summary = "Senior Data Engineer", "Data engineer with 9+ years."
-    assert tailor.first_draft_notes(notes, draft, fixed) == [notes[5]]
+    fixed.experience[1].bullets = ["Built the ledger service in Go"]  # the rewrite changed a Contoso Systems bullet
+    assert tailor.first_draft_notes(notes, draft, fixed) == [notes[1], notes[5]]
 
 
 def test_the_rewrite_pass_drops_the_first_drafts_tense_notes(router, db, registry, profile):
@@ -569,3 +683,92 @@ def test_the_rewrite_pass_drops_the_first_drafts_tense_notes(router, db, registr
     assert not any(b.startswith(("Model and optimize", "Designed and ran")) for b in final)  # the rewrite replaced them
     assert not any("bullet(s) in the" in n for n in result.notes)
     assert any(n.startswith("Summary: removed 'Brings strong judgment") for n in result.notes)  # the summary stays
+
+
+# the demo's own current-job bullet, written in the past: the app puts it in the present, as the demo writes it
+PAST_SLIP = ("Built Spark automation for recurring operational work, replacing manual hand-offs with reliable runs the "
+             "team no longer has to watch.")
+WEAK_OPENINGS = [
+    ("Used Airflow and SQL to load the nightly finance reports, giving product teams fresh numbers before each "
+     "stand-up."),
+    "Supported the analysts with Spark jobs that refreshed the shared dashboards, cutting manual exports for finance.",
+]
+
+
+def test_a_tense_note_stays_while_the_rewrite_leaves_its_job_alone(router, db, registry, profile):
+    def slip_and_weak(sections):
+        jobs = sections["experience"]
+        jobs[0]["bullets"][3] = PAST_SLIP
+        jobs[1]["bullets"][1], jobs[2]["bullets"][1] = WEAK_OPENINGS
+
+    client, result = tailored(router, db, registry, profile, slip_and_weak)
+    assert result.retries == 1 and "open with a weak verb" in client.fix_round()
+    assert "Build" + PAST_SLIP.removeprefix("Built") in result.resume.experience[0].bullets  # the rewrite kept it
+    assert [n for n in result.notes if "bullet(s) in the" in n] == [
+        "Northwind Labs: wrote 1 bullet(s) in the present tense, as the current job is written."]
+
+
+# ------------------------------------------------------------------ a bullet left in the other tense is named
+# the app cannot put these right safely: a second verb in the same tense follows the opening ('... and added ...'), or
+# a word that is as often a noun ('Track') has no object it can see; the rewrite pass and the admin are told
+CURRENT_SLIP = ("Rebuilt the order sync service in Go and added retries, replacing manual re-runs the team no longer "
+                "has to watch.")
+OLDER_SLIP = "Track cloud costs in Datadog and flag waste weekly, cutting idle compute spend for the platform team."
+TENSE_FIX = ("Write the current job's bullets in the present tense and the others in the past, changing only the "
+             "verbs")
+
+
+def in_the_other_tense(sections):
+    jobs = sections["experience"]
+    jobs[0]["bullets"][3], jobs[1]["bullets"][2] = CURRENT_SLIP, OLDER_SLIP
+
+
+def tense_warning(result) -> str:
+    return next((w for w in result.ats_warnings if w.startswith("Bullets not in their job's tense")), "")
+
+
+def test_two_bullets_left_in_the_other_tense_ask_for_the_rewrite(router, db, registry, profile):
+    client, result = tailored(router, db, registry, profile, in_the_other_tense)
+    asked = client.fix_round()
+    assert result.retries == 1 and asked.startswith("These bullets are not in their job's tense: ")  # on their own
+    assert (f"'{CURRENT_SLIP}' (Northwind Labs, the current job); '{OLDER_SLIP}' (Contoso Systems)" in asked
+            and TENSE_FIX in asked)
+    final = [b for exp in result.resume.experience for b in exp.bullets]
+    assert CURRENT_SLIP not in final and OLDER_SLIP not in final and tense_warning(result) == ""
+
+
+def test_one_bullet_left_in_the_other_tense_is_named_with_other_fixes(router, db, registry, profile):
+    def one(sections):
+        sections["experience"][0]["bullets"][3] = CURRENT_SLIP
+
+    client, result = tailored(router, db, registry, profile, one)
+    assert result.retries == 0 and client.fix_round() == ""  # one alone costs no rewrite ...
+    assert f"'{CURRENT_SLIP[:60]}...' (Northwind Labs)" in tense_warning(result)  # ... and the admin is told
+
+    def one_and_weak(sections):
+        one(sections)
+        jobs = sections["experience"]
+        jobs[1]["bullets"][1], jobs[2]["bullets"][1] = WEAK_OPENINGS
+
+    client, _result = tailored(router, db, registry, profile, one_and_weak)
+    asked = client.fix_round()
+    assert "open with a weak verb" in asked
+    assert f"These bullets are not in their job's tense: '{CURRENT_SLIP}' (Northwind Labs, the current job)" in asked
+
+
+def test_bullets_the_rewrite_leaves_in_the_other_tense_are_named(router, db, registry, profile):
+    """The rewrite pass changed nothing (or was skipped at the time limit): the Format notes still say so."""
+    _client, result = tailored(router, db, registry, profile, in_the_other_tense, kind=Stubborn)
+    final = [b for exp in result.resume.experience for b in exp.bullets]
+    assert result.retries == 1 and CURRENT_SLIP in final and OLDER_SLIP in final
+    warning = tense_warning(result)
+    assert (f"'{CURRENT_SLIP[:60]}...' (Northwind Labs); '{OLDER_SLIP[:60]}...' (Contoso Systems)" in warning
+            and 'the present tense ("Build", "Lead") and the others in the past ("Built", "Led")' in warning)
+
+
+def test_only_a_run_since_the_one_page_rule_is_told_about_the_tense(profile):
+    old, new = old_run(profile), old_run(profile, page_target=1)
+    for result in (old, new):
+        result.resume.experience[0].bullets[1] = CURRENT_SLIP
+        tailor.run_checks(result, SAMPLE_JD)  # a hand edit, a certification tick or a new cover letter
+    assert tense_warning(old) == "" and CURRENT_SLIP[:60] in tense_warning(new)
