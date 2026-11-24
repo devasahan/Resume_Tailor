@@ -7,7 +7,7 @@ import pytest
 
 from app.llm.base import LLMClient
 from app.llm.fake_client import FakeClient
-from app.pipeline import validate
+from app.pipeline import tense, validate
 from app.pipeline.tailor import run_tailor
 from app.pipeline.tense import (
     base_of,
@@ -323,6 +323,92 @@ def test_a_past_opening_in_the_current_job_becomes_present(given, expected):
 ])
 def test_a_present_opening_is_left_alone_when_unsure_or_weak(text):
     assert present_opening(text) == text
+
+
+# A bullet left whole in the other tense because changing its opening alone was not safe (a second verb phrase in the
+# same tense follows it, or a word that is as often a noun shows no object while one does) is named for the rewrite
+# pass and the admin (tense.other_tense, validate.tense_slips), never left silent. The end-to-end review's slips.
+LEFT_IN_THE_PAST = [  # the current job's, which is written in the present tense
+    "Rebuilt the order sync service in Go and added retries, cutting failed syncs from 41 to 6 a week.",
+    "Built Tableau dashboards for 40 store managers and retired weekly spreadsheet exports.",
+    "Scaled the ingestion API to 10K requests a second and added rate limits for partners.",
+    "Refactored the billing service into modules and added 400 unit tests, cutting regressions by half.",
+    "Rebuilt the Airflow scheduler in Python, wrote 300 pytest cases and caught 17 regressions before each release.",
+    "Partnered with finance to define revenue metrics and built the dbt models behind them.",
+    # an opening that is always the verb, before words the app could read as a noun or a clause of their own
+    "Built automated release checks in GitHub Actions, cutting failed deploys from 23 to 4 a month.",
+    "Built pipelines in Airflow for 38 analysts, replacing weekly Excel exports.",
+]
+LEFT_IN_THE_PRESENT = [  # an older job's, which is written in the past tense
+    "Lead a team of 4 engineers to design and implement a Snowflake data model for finance reporting.",
+    "Track cloud costs in Datadog and flag waste weekly, cutting idle compute spend by 23%.",
+    "Build the order sync service in Go and add retries, cutting failed syncs from 41 to 6 a week.",
+    "Create runbooks in Confluence that help on-call engineers identify and resolve Spark failures.",
+    "Own the on-call rotation for the ingestion platform and write runbooks that cut paging by half.",
+    "Design the claims API in Python, write the OpenAPI spec and set up contract tests in Pact for 12 partner teams.",
+    "Leads the platform team of 6 engineers, owns the roadmap and ships weekly releases.",
+]
+
+
+@pytest.mark.parametrize("text", LEFT_IN_THE_PAST)
+def test_a_current_job_bullet_left_in_the_past_is_named(text):
+    assert present_opening(text) == text  # left whole: never in two tenses
+    assert tense.other_tense(text, current=True) and not tense.other_tense(text, current=False)
+
+
+@pytest.mark.parametrize("text", LEFT_IN_THE_PRESENT)
+def test_an_older_job_bullet_left_in_the_present_is_named(text):
+    assert past_opening(text) == text
+    assert tense.other_tense(text, current=False) and not tense.other_tense(text, current=True)
+
+
+@pytest.mark.parametrize("text", [
+    # put right by the app, or in the present tense already ('Leads' is, in its own form)
+    "Added RAG over past tickets with a PostgreSQL vector index, so suggested answers cite the right help article.",
+    "Build the order sync service in Go and add retries, cutting failed syncs from 41 to 6 a week.",
+    "Leads the platform team of 6 engineers, owns the roadmap and ships weekly releases.",
+    # left whole on purpose: an adjective opening with its own subject's verb
+    "Automated Spark tests catch 40 regressions a quarter before each release of the claims pipeline in Snowflake.",
+    "Shared Looker dashboards replaced weekly Excel exports for 38 analysts once the Airflow loads ran before 7 am.",
+    "Improved onboarding cut churn by 12% in the first quarter.",
+    "Paid search campaigns in Google Ads drove 40% of signups.",
+    # a passive or one-time opening
+    "Promoted to Senior Data Engineer within 18 months for leading the Airflow migration across 40 pipelines.",
+    ("Selected as 1 of 4 engineers to rebuild the Spark ingestion layer, cutting nightly load time from 47 to 36 "
+     "minutes."),
+    "Won the 2025 company hackathon with a Kafka fraud detector and shipped it to 3 teams.",
+    "Migrated to PostgreSQL from MySQL for 30 services and retired 2 legacy databases.",
+    # a verb that fits both tenses, or a weak one (the bullet is rewritten anyway)
+    "Cut dashboard load times from 20 to 3 seconds by adding aggregates and caching in Redis.",
+    "Set up Terraform modules for AWS networking and reduced environment setup from 2 days to 1 hour.",
+    "Supported the analysts with Spark jobs and added alerts for every failed load.",
+    "Ran the on-call rotation for the ingestion platform and wrote runbooks that cut paging by half.",
+])
+def test_a_current_job_bullet_left_whole_on_purpose_is_not_named(text):
+    assert not tense.other_tense(text, current=True)
+
+
+@pytest.mark.parametrize("text", [
+    # put right by the app, or in the past already
+    "Lead the claims API migration to Kubernetes, cutting deploy time from 40 to 12 minutes.",
+    "Rebuilt the order sync service in Go and added retries, cutting failed syncs from 41 to 6 a week.",
+    # a noun opening
+    "Lead data engineer on the Snowflake migration for 2M customer records, cutting query costs by 22%.",
+    "Lead Python developer for the claims API, owning 40 endpoints and the on-call rotation.",
+    "Process improvement initiatives across 4 plants, saving $1.2M a year.",
+    "Lead time dropped from 9 to 4 days after the team moved to trunk-based development.",
+    "Self-service analytics for 40 clinics in Looker, cutting report requests by 60%.",
+    "Model serving platform for 12 teams, built on SageMaker.",
+    "Reports for 40 clinics, generated nightly in Airflow.",
+    # as often a noun as a verb, with no object to tell and no other verb in the present: it cannot be told
+    "Track cloud costs across 40 AWS accounts with Cost Explorer.",
+    # a verb that fits both tenses, or a weak one
+    "Cut AWS spend 17.8% by moving batch jobs to spot instances.",
+    "Set up Grafana dashboards for the payments team and add alerts for failed loads.",
+    "Run A/B tests on checkout and share results with product and design.",
+])
+def test_an_older_job_bullet_left_whole_on_purpose_is_not_named(text):
+    assert not tense.other_tense(text, current=False)
 
 
 def test_the_reverse_tables_give_the_base():

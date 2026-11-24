@@ -12,7 +12,8 @@ Only that form counts: "Leads the data team and automated ..." becomes "Lead the
 later verb was in the other tense already. A past opening is never turned into a weak present one ("Ran" into "Run",
 "Used" into "Use"): such a bullet is rewritten instead (validate.weak_openers); nor into a command when it is true only
 in the past ("Promoted to ...", "Won the 2025 hackathon"). A duty is, also before "to" or "as" ("Reported to the CTO"
--> "Report to the CTO").
+-> "Report to the CTO"). A bullet left whole in the other tense only because changing it was not safe is named instead
+(other_tense), so the rewrite pass and the admin are told.
 """
 from __future__ import annotations
 
@@ -452,3 +453,92 @@ def present_opening(text: str) -> str:
         if new:
             text = text[:start] + new + text[end:]
     return text
+
+
+def other_tense(text: str, current: bool) -> bool:
+    """Whether the bullet still opens with a listed verb in the other tense because the app could not change it
+    safely: present_opening left a past opening whole in the current job (`current`: 'Rebuilt the sync service in Go
+    and added retries ...'), or past_opening a present one in an older job ('Lead a team of 4 engineers to design and
+    implement ...', 'Track cloud costs in Datadog and flag waste weekly'). The rewrite pass is asked to put it right
+    and the admin is told (validate.tense_slips). Never a bullet those put right, nor one left whole on purpose: an
+    adjective opening with its own subject's verb ('Automated Spark tests catch ...', 'Shared Looker dashboards
+    replaced ...'), a passive or one-time opening ('Promoted to ...', 'Selected as ...', 'Won the 2025 hackathon'), a
+    noun opening ('Lead data engineer on ...', 'Process improvement initiatives ...'), a verb that fits both tenses
+    ('Cut', 'Set') or a weak one (WEAK_BASES: such a bullet is rewritten anyway)."""
+    if current:
+        return present_opening(text) == text and _left_in_the_past(text)
+    return past_opening(text) == text and _left_in_the_present(text)
+
+
+def _left_in_the_past(text: str) -> bool:
+    """other_tense in the current job: present_opening's own steps, for why it left the bullet whole. Unsure: another
+    verb phrase in the past follows ('..., wrote 300 pytest cases and caught ...'), or an opening that is always the
+    verb (_VERB_ONLY_PASTS: 'Built automated release checks ...', 'Built pipelines in Airflow ...') is followed by what
+    could be a subject with its verb or a noun. On purpose: anything else."""
+    first = _FIRST_WORD.match(text)
+    if not first or _present(first.group(1)) is None:
+        return False  # no listed past or third-person verb ('Cut' and 'Set' fit both tenses)
+    if us_word(first.group(1).rsplit("-", 1)[-1]) not in PAST_TO_BASE:
+        return False  # 'Leads ...': the present tense already
+    words, at = [(first.start(1), first.end(1))], first.end(1)
+    for _ in range(MAX_JOINED):  # the verbs joined to it, as present_opening reads them
+        joined = _JOINED.match(text, at)
+        if not joined or joined.group(2)[:1].isupper():
+            break
+        word = joined.group(2).rsplit("-", 1)[-1]
+        if present_base(word) is None and base_of(word) is None:
+            break
+        words.append((joined.start(2), joined.end(2)))
+        at = joined.end(2)
+    bases = [present_base(text[start:end].rsplit("-", 1)[-1]) or base_of(text[start:end].rsplit("-", 1)[-1])
+             for start, end in words]
+    if any(base in WEAK_BASES or base in ONE_TIME for base in bases):
+        return False  # weak: rewritten anyway; true only once: never a command
+    nxt = _NEXT_WORD.match(text, at)
+    next_word = nxt.group(1) if nxt else ""
+    if (next_word.lower() in _PASSIVE_NEXT and _form(text[words[-1][0]:words[-1][1]].lower()) == "past"
+            and _ACTIVE_BEFORE.get(bases[-1]) != next_word.lower()):
+        return False  # a passive, or a change made once: 'Promoted to ...', 'Migrated to ...'
+    verb = first.group(1).lower() in _VERB_ONLY_PASTS
+    if next_word.lower() not in _VERB_NEXT and not next_word[:1].isdigit():
+        stop = _CLAUSE_STOP.search(text, at)
+        clause = text[at:stop.start() if stop else len(text)][:200]
+        if (next_word.lower() in NOUN_AFTER.get(bases[0] or "", ()) or _FINITE.search(clause)
+                or _PAST_FORM.search(clause.replace("-", " _")) or (not verb and _subject_verb(text, at))):
+            return verb  # an adjective or a noun opening ('Shared dashboards replaced ...'), unless always a verb
+    return _second_verb(text, at, {_form(text[start:end].lower()) for start, end in words} & {"past", "third"})
+
+
+def _left_in_the_present(text: str) -> bool:
+    """other_tense in an older job: past_opening's own steps, for why it left the bullet whole. Unsure: another verb
+    phrase in the present follows ('Design the claims API, write the OpenAPI spec and ...', 'Lead a team of 4
+    engineers to design and implement ...'), also after a word that is as often a noun when it shows no object
+    ('Track cloud costs in Datadog and flag waste weekly'). On purpose: anything else, and such a word with no other
+    verb after it ('Self-service analytics for 40 clinics', 'Track cloud costs across 40 accounts': a noun or a verb,
+    it cannot tell) or before a job title ('Lead data engineer on ...')."""
+    first = _FIRST_WORD.match(text)
+    if not first or _converted(first.group(1)) is None:
+        return False  # no listed present-tense verb ('Cut' and 'Set' fit both tenses)
+    words, at = [(first.start(1), first.end(1))], first.end(1)
+    for _ in range(MAX_JOINED):  # the verbs joined to it, as past_opening reads them
+        joined = _JOINED.match(text, at)
+        if not joined or joined.group(2)[:1].isupper() or base_of(joined.group(2).rsplit("-", 1)[-1]) is None:
+            break
+        words.append((joined.start(2), joined.end(2)))
+        at = joined.end(2)
+    bases = {base_of(text[start:end].rsplit("-", 1)[-1]) for start, end in words}
+    if bases & WEAK_BASES:
+        return False  # 'Run ...', 'Use ...': rewritten anyway
+    later = _second_verb(text, at, {_form(text[start:end].lower()) for start, end in words} & {"base", "third"})
+    nxt = _NEXT_WORD.match(text, at)
+    next_word = nxt.group(1).lower() if nxt else ""
+    if next_word not in _VERB_NEXT and not next_word[:1].isdigit():
+        if next_word in NOUN_AFTER.get(base_of(first.group(1).rsplit("-", 1)[-1]) or "", ()):
+            return False  # a noun: 'Lead time fell ...', 'Process improvement initiatives ...'
+        clause = _CLAUSE_END.search(text, at)
+        words_after = text[at:clause.start() if clause else len(text)][:200]
+        if _FINITE.search(words_after):
+            return False  # a noun with its own verb: 'Lead time dropped from ...'
+        if bases <= NOUN_VERBS and not _object_follows(words_after):
+            return later and not any(word.lower() in ROLE_NOUNS for word in _TOKEN.findall(words_after)[:3])
+    return later

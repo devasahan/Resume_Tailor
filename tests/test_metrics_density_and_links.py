@@ -62,9 +62,9 @@ def test_density_limits_per_role_and_overall(profile):
     problems = validate.metric_density_problems(validate.build_resume(profile, out))
     assert any("Northwind Labs: 4 of 5" in p for p in problems)  # the current job may carry 3
     assert any("Contoso Systems: 3 of 4" in p for p in problems)  # every other job 2
-    # each job's first and the current job's 2 more are not counted in the share (prompt v38)
-    assert ("4 of 6 bullets have figures, not counting each job's first or up to 2 more in the current job"
-            in problems)
+    # each job's first and the figure bullets the rule allows (2 more in the current job, 1 more in every other) are
+    # not counted in the share (prompt v38): only those over a job's limit, so here it adds nothing to the two above
+    assert len(problems) == 2
     out = make_output()
     out.sections.experience[0].bullets = ["Cut runtime by 23.4%", "Saved 17.8% of spend", "Served 38 analysts",
                                           "Built pipelines", "Moved the loads to Airflow"]  # 3 figures: allowed here

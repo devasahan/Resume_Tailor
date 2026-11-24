@@ -1601,6 +1601,26 @@ def tense_bullets(resume: Resume, analysis: JDAnalysis | None = None) -> list[st
     return notes
 
 
+# tense_bullets' note, after its employer's name: kept after the rewrite pass while that job's bullets stay as they were
+TENSE_NOTE = re.compile(r"wrote \d+ bullet\(s\) in the (?:present|past) tense, as ")
+MIN_TENSE_SLIPS_FOR_RETRY = 2  # like weak openings: one is named only along with other fixes
+
+
+def tense_slips(resume: Resume) -> list[tuple[str, str, bool]]:
+    """(company, bullet, whether it is the current job) for each bullet tense_bullets left whole in the other tense
+    because changing it was not safe (tense.other_tense: 'Rebuilt the sync service in Go and added retries ...' in the
+    current job, 'Lead a team of 4 engineers to design and implement ...' in an older one), never one left whole on
+    purpose. A bullet in the posting's own voice is left out, as the rewrite pass replaces it whole. The rewrite pass
+    is asked to put them in their job's tense, and the admin sees them."""
+    slips = []
+    for exp in resume.experience:
+        company = resume.profile.companies[exp.company_index]
+        current = is_current(company, exp.company_index)
+        slips += [(company.name, bullet, current) for bullet in exp.bullets
+                  if not _POSTING_VOICE.search(bullet) and tense.other_tense(bullet, current)]
+    return slips
+
+
 # '..., in close partnership with security and product teams.': an ending that only says who the work was done with.
 # Lowercase words only (a name such as 'with Stripe' or 'with Epic Systems' is never matched), ending on a team or a
 # department word, at the very end of the bullet.
@@ -1674,18 +1694,27 @@ _RESULT_WORDS = re.compile(
     r"\b(?:so|letting|allowing|enabling|which|cutting|cut|reducing|lowering|saving|raising|lifting|doubling|halving"
     r"|making|giving|keeping|kept|freeing|helping|until|without|instead\s+of|no\s+longer|fewer|faster|sooner|less"
     r"|stopped|before|ahead\s+of|never|zero|removing|eliminating|avoiding|preventing|shortening|unblocking|now"
-    r"|reduced|increased|improved|shortened|eliminated|removed|ended|brought|raised|lowered|replaced|doubled|halved"
+    # a past form is a result as the verb, never as an adjective after an article ('the improved onboarding flow')
+    r"|(?<!\bthe\s)(?<!\ban\s)(?<!\ba\s)(?:reduced|increased|improved|shortened|eliminated|removed|ended|brought|raised"
+    r"|lowered|replaced|doubled|halved)"
     r"|sped\s+up"
     r"|to\s+(?:catch|keep|cut|stop|prevent|avoid|handle|reduce|lower|speed|let|help|save|free|spot|flag|protect"
     r"|meet|pass))\b"
     r"|(?:,|\band)\s+(?:ending|replacing|turning)\b", re.IGNORECASE)
 # a bullet that leads with its result, in the current job's present tense too ('Reduce ...', 'Bring ... from ... to
-# ...'): only as the opening, where 'end' or 'lower' is the verb
+# ...'): only as the opening, where 'end' or 'lower' is the verb, and never the first part of a compound ('End-to-end
+# ownership of ...', 'Lower-cost ...')
 _RESULT_OPENING = re.compile(r"^\s*(?:reduce|increase|improve|shorten|eliminate|remove|end|bring|raise|lower|replace"
-                             r"|double|halve|speed\s+up)s?\b", re.IGNORECASE)
-# '... to give analysts same-day data': 'to' and a verb, the purpose the work served
+                             r"|double|halve|speed\s+up)s?(?![\w-])", re.IGNORECASE)
+# '... to give analysts same-day data': 'to' and a verb that says what changed, the purpose the work served; never a
+# verb of the work itself ('Partnered with the analytics team to build ...', '... to migrate ...', '... to develop ...')
 _TO_VERB = re.compile(r"\bto\s+([a-z]+)(?![\w-])")
-_PURPOSE_VERBS = tense.VERBS | {"show", "stay", "learn", "know", "trust", "match", "fit", "decide", "free", "cover"}
+_PURPOSE_VERBS = frozenset({
+    "give", "let", "help", "make", "keep", "save", "free", "cut", "catch", "stop", "prevent", "avoid", "handle",
+    "reduce", "lower", "speed", "spot", "flag", "protect", "meet", "pass", "show", "stay", "learn", "know", "trust",
+    "match", "fit", "decide", "cover", "bring", "enable", "allow", "improve", "increase", "shorten", "raise",
+    "eliminate", "remove", "replace", "double", "halve", "end", "unblock", "find",
+})
 MIN_WEAK_BULLETS_FOR_RETRY = 2  # one weak bullet is only noted; two or more are worth the single fix round
 WEAK_SHOWN_WORDS = 8  # a weak bullet is named by its first words
 
@@ -1693,8 +1722,9 @@ WEAK_SHOWN_WORDS = 8  # a weak bullet is named by its first words
 def _names_result(bullet: str) -> bool:
     """Whether the bullet says what changed: a figure, a result in words ('so ...', 'cutting ...'), a result it leads
     with ('Reduced ...', 'Brought ... from ... to ...', 'Sped up ...') or joins to the work (', ending ...', ',
-    replacing ...', 'and turning ...'), or 'to' and a verb after the opening verb's object ('Built the claims pipeline
-    in Airflow to give analysts ...'; never 'Worked to ...' or 'Moved it to Kubernetes')."""
+    replacing ...', 'and turning ...'), or 'to' and a verb that says what changed after the opening verb's object
+    ('Built the claims pipeline in Airflow to give analysts ...'; never 'Worked to ...', 'Moved it to Kubernetes' or
+    'Partnered with the analytics team to build ...')."""
     if has_figure(bullet) or _RESULT_WORDS.search(bullet) or _RESULT_OPENING.match(bullet):
         return True
     return any(found.group(1) in _PURPOSE_VERBS and len(bullet[:found.start()].split()) >= 2
@@ -1992,34 +2022,37 @@ def is_round_figure(token: str) -> bool:
     return (value >= 10 and value % 5 == 0) or (thousands > 0 and value < 10)
 
 
-def _persons_text(text: str) -> str:
-    """The person's own text (their hints, the computed facts) as the trust checks read it, lowercased: as written and
-    with its numbers written the resume's way (numerals.normal), so their 'seven' is a '7' in the text, their '40
-    percent' a '40%' and their '$5 million' a '$5M'."""
-    return f"{numerals(text)}\n{normal(text)}".lower()
+def _persons_figures(text: str) -> frozenset[str]:
+    """The figures the person's own text gives (their hints, the computed facts), each whole and read the way the
+    resume writes it (figure_key, _short_units): their 'seven' is a '7', their '40 percent' a '40%', their '$5 million'
+    or '5 million dollars' a '$5M' and their '3 times faster' a '3x'. A figure is compared whole, never by its digits:
+    their '$12 million' never makes a '2M' theirs, nor their '115 percent' a '15%'."""
+    return frozenset(figure_key(match.group(0).strip(" ,.")) for form in (numerals(text, figures=True), normal(text))
+                     for match in _NUMBER.finditer(_short_units(form)))
 
 
 def figure_style_problems(resume: Resume, allowed_text: str, notes: str = "") -> list[str]:
     """Estimated figures that look like round guesses or approximations ("35%", "40+", "~30%").
 
-    Figures that appear in `allowed_text` (the user's hints and the computed facts, read as _persons_text) are never
+    Figures that `allowed_text` gives (the user's hints and the computed facts, see _persons_figures) are never
     reported, nor those the person's project notes give whole (`notes`, see note_figures).
     """
-    allowed, own = _persons_text(allowed_text), note_figures(notes)
+    allowed, own = _persons_figures(allowed_text), note_figures(notes)
     problems: list[str] = []
     texts = [resume.summary] + [bullet for exp in resume.experience for bullet in exp.bullets]
     for text in texts:
         for match in _APPROX.finditer(text):
             problems.append(match.group(0).strip())
         for token, key in _figures_and_keys(text):
-            if token and token.lower() not in allowed and key not in own and is_round_figure(token):
+            if token and key not in allowed and key not in own and is_round_figure(token):
                 problems.append(token)
     return list(dict.fromkeys(problems))
 
 
 MAX_FIGURE_BULLETS_PER_JOB = 2
 MAX_FIGURE_BULLETS_CURRENT = 3  # the most recent job carries its scale and results (the reviewer's rule, prompt v38)
-# of the other bullets: never a job's first, which always carries a figure, nor the 2 more the current job may have
+# of the other bullets: never a job's first, which always carries a figure, nor the more each job may have (2 in the
+# current job, 1 in every other), so a draft within FIGURE_BULLETS_RULE never reaches it
 MAX_FIGURE_SHARE = 0.5
 # what the fix round and the admin's warnings ask for, in the METRICS rule's own numbers (prompt v38)
 FIGURE_BULLETS_RULE = (f"at most {MAX_FIGURE_BULLETS_CURRENT} bullets with figures in the current job and "
@@ -2049,9 +2082,10 @@ def _density_figure(text: str, own: frozenset[str] = frozenset()) -> bool:
 
 def metric_density_problems(resume: Resume, own: str = "") -> list[str]:
     """Employers with more bullets carrying figures than the METRICS rule allows (FIGURE_BULLETS_RULE: the most recent
-    job 3, every other 2), and more than half of the other bullets with figures: each job's first bullet and up to 2
-    more of the most recent job's with figures are not counted there. A small count is no figure here, nor a figure
-    the person gives whole in `own` (in hints-only mode, their hints and project notes; see note_figures)."""
+    job 3, every other 2), and more than half of the other bullets with figures: each job's first bullet and the
+    figure bullets the rule allows after it (up to 2 more in the most recent job, 1 more in every other) are not counted
+    there, so a draft within the rule has no problem. A small count is no figure here, nor a figure the person gives
+    whole in `own` (in hints-only mode, their hints and project notes; see note_figures)."""
     mine = note_figures(own) if own else frozenset()
     problems: list[str] = []
     total = with_figure = 0
@@ -2061,12 +2095,13 @@ def metric_density_problems(resume: Resume, own: str = "") -> list[str]:
         if sum(figures) > allowed:
             company = resume.profile.companies[exp.company_index].name
             problems.append(f"{company}: {sum(figures)} of {len(exp.bullets)} bullets have figures")
-        free = min(sum(figures[1:]), MAX_FIGURE_BULLETS_CURRENT - 1) if position == 0 else 0
+        free = min(sum(figures[1:]), allowed - 1)  # the more the rule allows after the job's first
         total += len(figures[1:]) - free
         with_figure += sum(figures[1:]) - free
     if total >= 2 and with_figure / total > MAX_FIGURE_SHARE:
         problems.append(f"{with_figure} of {total} bullets have figures, not counting each job's first or up to "
-                        f"{MAX_FIGURE_BULLETS_CURRENT - 1} more in the current job")
+                        f"{MAX_FIGURE_BULLETS_CURRENT - 1} more in the current job and "
+                        f"{MAX_FIGURE_BULLETS_PER_JOB - 1} more in every other job")
     return problems
 
 
@@ -2906,16 +2941,17 @@ def _quoted(items: list[str]) -> str:
 
 
 def claim_flags(resume: Resume, jd: str, hints: str, notes: str = "") -> list[Flag]:
-    """Things the user did not provide and should confirm before sending the resume. `notes`: the person's project
-    notes as the model reads them (project_notes): the skills they name are the person's own, and so are the figures
-    they give whole (note_figures; the digits of a year or a date are not one)."""
+    """Things the user did not provide and should confirm before sending the resume. A figure is theirs when their
+    hints (with the computed facts) give it whole, however the resume writes it (_persons_figures). `notes`: the
+    person's project notes as the model reads them (project_notes): the skills they name are the person's own, and so
+    are the figures they give whole (note_figures; the digits of a year or a date are not one)."""
     flags: list[Flag] = []
-    hints_l, own = _persons_text(hints), note_figures(notes)  # their 'seven' is a '7' in the text, '40 percent' '40%'
+    persons, own = _persons_figures(hints), note_figures(notes)  # their 'seven' is a '7', '40 percent' a '40%'
 
     def check_numbers(section: str, text: str) -> None:
         """One flag naming every estimate in the text (a job's first bullet gives its size and its result)."""
         tokens = list(dict.fromkeys(t for t, key in _figures_and_keys(text)
-                                    if t and t.lower() not in hints_l and key not in own))
+                                    if t and key not in persons and key not in own))
         if not tokens:
             return
         if len(tokens) == 1:
@@ -2974,13 +3010,13 @@ def posting_match_flags(resume: Resume, analysis: JDAnalysis, hints: str) -> lis
 
 
 def cover_flags(letter: CoverLetter, hints: str, notes: str = "") -> list[Flag]:
-    """A letter paragraph with a figure the person did not give: not in the hints (read as _persons_text: the letter
-    writes their '40 percent' as '40%'), and not whole in their project notes (`notes`, see note_figures)."""
+    """A letter paragraph with a figure the person did not give: not whole in the hints (see _persons_figures: the
+    letter writes their '40 percent' as '40%'), and not whole in their project notes (`notes`, see note_figures)."""
     flags: list[Flag] = []
-    hints_l, own = _persons_text(hints), note_figures(notes)
+    persons, own = _persons_figures(hints), note_figures(notes)
     for paragraph in letter.paragraphs:
         for token, key in _figures_and_keys(paragraph):
-            if token.lower() not in hints_l and key not in own:
+            if key not in persons and key not in own:
                 flags.append(
                     Flag(section="cover_letter", text=paragraph, level="verify",
                          reason=f"Contains '{token}', which is not in your hints. Only keep figures you can back up.")

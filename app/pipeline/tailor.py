@@ -163,7 +163,8 @@ def make_pdf(resume: Resume, style: FitStyle, document: str = "Resume") -> tuple
 
 def reviewer_warnings(resume: Resume, style: FitStyle | None = None, analysis: JDAnalysis | None = None) -> list[str]:
     """The one-page rules (rules.py) a resume still breaks, for the admin: after a hand edit too, whose words are never
-    changed for the person. Lines are measured at the run's own `style` (the design's sizes on Letter when not given);
+    changed for the person, and after a run whose rewrite pass was skipped or left a bullet in the other tense
+    (validate.tense_slips). Lines are measured at the run's own `style` (the design's sizes on Letter when not given);
     a posting term in `analysis` keeps its number word, as fix_numbers keeps it."""
     style = style or design_style("Letter")
     warnings = []
@@ -171,6 +172,12 @@ def reviewer_warnings(resume: Resume, style: FitStyle | None = None, analysis: J
     if weak:
         warnings.append("Bullets that open with a weak verb: " + "; ".join(f"'{b[:60]}...'" for b in weak[:4])
                         + ". Start each with a strong verb that says what was built, changed or decided.")
+    slips = validate.tense_slips(resume)
+    if slips:
+        warnings.append("Bullets not in their job's tense: " + "; ".join(f"'{b[:60]}...' ({company})"
+                                                                      for company, b, _current in slips[:6])
+                        + ". Write the current job's bullets in the present tense (\"Build\", \"Lead\") and the "
+                        "others in the past (\"Built\", \"Led\").")
     long, summary_lines = rules.long_text(resume, style.paper, style)
     if long:
         warnings.append(f"{len(long)} bullet(s) run to 3 lines: aim for 15-22 words (1-2 lines) each.")
@@ -193,15 +200,20 @@ def reviewer_warnings(resume: Resume, style: FitStyle | None = None, analysis: J
 
 def first_draft_notes(notes: list[str], draft: Resume, fixed: Resume) -> list[str]:
     """The first draft's notes that stay after the rewrite pass: one about a corrected job title, the headline or the
-    summary, while that text stays as it was. Notes about bullets (their tense, a closing teamwork clause) go, as the
-    rewrite may have replaced those bullets: build() notes what it changes in the fixed draft."""
-    titles = {draft.profile.companies[a.company_index].name
-              for a, b in zip(draft.experience, fixed.experience) if a.job_title == b.job_title}
+    summary, while that text stays as it was, and one about a job's bullets put in its tense while the rewrite changed
+    none of that job's bullets (build() then finds nothing more to change there, so it is never noted twice). Other
+    notes about bullets (a closing teamwork clause) go, as the rewrite may have replaced those bullets: build() notes
+    what it changes in the fixed draft."""
+    pairs = [(draft.profile.companies[a.company_index].name, a, b) for a, b in zip(draft.experience, fixed.experience)]
+    titles = {name for name, a, b in pairs if a.job_title == b.job_title}
+    # by name, so a job is kept only while every job of that name kept its bullets
+    tensed = {name for name, _a, _b in pairs} - {name for name, a, b in pairs if a.bullets != b.bullets}
     fields = {field.title() for field in ("headline", "summary") if getattr(fixed, field) == getattr(draft, field)}
     kept = []
     for note in notes:
         head, _colon, rest = note.partition(": ")
-        if head in fields or (head in titles and rest.startswith(validate.TITLE_NOTE)):
+        if (head in fields or (head in titles and rest.startswith(validate.TITLE_NOTE))
+                or (head in tensed and validate.TENSE_NOTE.match(rest))):
             kept.append(note)
     return kept
 
@@ -518,9 +530,9 @@ async def run_tailor(
 
         def reviewer_feedback(resume: Resume, asked: bool) -> list[str]:
             """The one-page rules' rewrite instructions (rules.py): each line when its problem is clear on its own
-            (2 weak openings or 3-line bullets, a summary of 5 lines or more, self-praise, 3 "so" endings in a job),
-            else all of them only with a fix round asked anyway (`asked`): most rules are kept in code for free, and
-            under the time limit the rewrite pass is often skipped."""
+            (2 weak openings, 2 bullets left in the other tense or 3-line bullets, a summary of 5 lines or more,
+            self-praise, 3 "so" endings in a job), else all of them only with a fix round asked anyway (`asked`): most
+            rules are kept in code for free, and under the time limit the rewrite pass is often skipped."""
             strong, soft = [], []
             weak = rules.weak_openers(resume)
             if weak:
@@ -528,6 +540,12 @@ async def run_tailor(
                     "These bullets open with a weak verb: " + "; ".join(f"'{b}'" for b in weak[:6]) + ". Start each "
                     "with a strong, specific verb that says what was built, changed or decided (BULLETS rule), in its "
                     "job's tense, keeping what it says.")
+            slips = validate.tense_slips(resume)  # the app could not change these safely
+            if slips:
+                named = [f"'{b}' ({company}{', the current job' if now else ''})" for company, b, now in slips[:6]]
+                (strong if len(slips) >= validate.MIN_TENSE_SLIPS_FOR_RETRY else soft).append(
+                    "These bullets are not in their job's tense: " + "; ".join(named) + ". Write the current job's "
+                    "bullets in the present tense and the others in the past, changing only the verbs (BULLETS rule).")
             long, summary_lines = rules.long_text(resume, paper)
             if long:
                 (strong if len(long) >= rules.MIN_LONG_BULLETS_FOR_RETRY else soft).append(
@@ -564,8 +582,9 @@ async def run_tailor(
             """Ask once to fix the draft if it uses too many figures, round guesses, thin text, leaves must-have
             JD terms out of the summary and bullets, copies the posting's voice, repeats its phrases, repeats a word
             by mistake, copies the posting's sentences or lists its phrases as skills, lists qualities as skills,
-            sounds machine-written, names tools a job could not have used, opens jobs without a measured result, or
-            has job titles that do not read as a career path. The model gets the numbered draft and returns only
+            sounds machine-written, names tools a job could not have used, opens jobs without a measured result, has
+            job titles that do not read as a career path, or breaks the one-page rules (reviewer_feedback: weak
+            openings, bullets left in the other tense, ...). The model gets the numbered draft and returns only
             what it changes (a TailorRevision): far less to write than a whole new draft, and everything that was
             fine stays word for word."""
             feedback = []
