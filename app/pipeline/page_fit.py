@@ -5,13 +5,16 @@
      all the bullets that fit (the owner's choice: about half the page, 5-6 bullets for a career of 5 jobs), then the
      older jobs' extras (recent jobs, long stays and the jobs the person's project notes show most relevant to the
      posting; the most recent job always keeps the most) while the placeholder resume fits, or runs over by less than
-     one of its two-line bullets: real bullets are mostly shorter, so the page ends full; only when even that minimum
-     overflows one page is the plan made for two (without that allowance)
+     one of its two-line bullets: real bullets are mostly shorter, so the page ends full (a draft as long as its plan
+     loses that one bullet by design, planned_removals, which never counts toward asking the model for a shorter
+     draft); only when even that minimum overflows one page is the plan made for two (without that allowance)
   1. after the draft, measure it at the design's own sizes (a few milliseconds, no file is made)
   2. when it is over, remove bullets (trim_to_page): the most recent job's last bullet while it holds more than half of
-     them (and keeps the most), else the last bullet of the older job with the most bullets, the less relevant job
-     first (its bullets' must-have and keyword mentions), then the older; every job keeps its first bullet, and a
-     bullet that holds a must-have's only mention goes last (but before the most recent job's lead)
+     them, or more than 8 (the most any job gets, a two-page plan's cap), and keeps the most; else the last bullet of
+     the older job with the most bullets, the less relevant job first (its bullets' must-have and keyword mentions),
+     then the older; every job keeps its first bullet, and a bullet that holds a must-have's only mention goes last
+     (but before the most recent job's lead), as does the current job's last bullet naming the post's programming
+     language (the owner's rule since prompt v39, read with the post's text as the check reads it)
   3. when one page cannot be reached even then, two pages from the untrimmed draft, trimmed only as far as two pages
      need; only when two pages cannot be reached at the design's sizes either, the old size ladder (fit.py), whose
      notes say the font was reduced: on the untrimmed draft when a smaller step fits it on two pages, else with only
@@ -39,7 +42,7 @@ from ..schemas import (
     ResumeExperience,
     SkillGroup,
 )
-from .facts import bullet_caps, is_expired, stay_months
+from .facts import RECENCY_CAPS, bullet_caps, is_expired, stay_months
 from .fit import LADDER, render_smallest, styles, try_styles
 
 LAYOUT = 1  # whole jobs on one page, 'B.S. in Computer Science · School · Town' (app/render/pdf.py)
@@ -137,8 +140,8 @@ def draft_relevance(resume: Resume, analysis: JDAnalysis | None) -> list[float]:
 # The most recent job holds about half of a plan's bullets (the owner's choice: about half the page, 5-6 bullets that
 # cover the posting's main requirements, 1-2 for each older job). Once it has lasted CURRENT_MONTHS, it may hold
 # CURRENT_CAP however short the older stays are (bullet_caps alone gives an 11-month job 3, or one more than any
-# other job: 4 beside an 11-month one); a shorter stay keeps bullet_caps, so a job of a few weeks gets no more room
-# than before.
+# other job: 4 beside an 11-month one); a shorter stay keeps bullet_caps (its cap is not raised), though like any
+# current job it still takes about half of the bullets that fit, up to that cap.
 CURRENT_CAP, CURRENT_MONTHS = 6, 6
 
 
@@ -246,6 +249,13 @@ def _most_that_fit(profile: Profile, caps: list[int], start: list[int], today: d
     return longest(first_to(min(caps[0], math.ceil(room / 2))))
 
 
+def planned_removals(profile: Profile, counts: list[int], pages: int, paper: str = "Letter") -> int:
+    """Bullets a draft as long as its plan (plan_pages: `pages`, `counts`) loses by design: 1 when a one-page plan
+    fills its page, its placeholder running over by less than one of its bullets (_plan), else 0 (a career of one job
+    keeps room to spare, and a two-page plan has no such allowance). One layout, a few milliseconds."""
+    return int(pages == ONE_PAGE and measure(_plan_resume(profile, counts), paper) > ONE_PAGE)
+
+
 # ---------------------------------------------------------------------- after the draft
 def measure(resume: Resume, paper: str = "Letter") -> int:
     """Pages at the design's own sizes in the new layout (no file is made)."""
@@ -254,11 +264,8 @@ def measure(resume: Resume, paper: str = "Letter") -> int:
 
 def _only_mentions(resume: Resume, analysis: JDAnalysis | None) -> set[tuple[int, int]]:
     """(job position, bullet index) of each bullet that holds the only mention of a must-have in the summary and the
-    bullets: removing it would leave the posting's requirement unshown. Also the current job's only bullet that names
-    the post's programming language (or, when the post names none, any language, for work built in code): the owner's
-    rule since prompt v39 (validate.missing_language), which trimming must not undo."""
-    from . import languages
-    from .validate import current_job, mentions
+    bullets: removing it would leave the posting's requirement unshown."""
+    from .validate import mentions
 
     must, _other = _terms(analysis)
     held: set[tuple[int, int]] = set()
@@ -269,33 +276,57 @@ def _only_mentions(resume: Resume, analysis: JDAnalysis | None) -> set[tuple[int
                   if mentions(b, term)]
         if len(places) == 1:
             held.add(places[0])
-    job = current_job(resume)
-    wanted = languages.wanted_language(analysis)
-    if job is not None and analysis is not None and (wanted or languages.codes(analysis)):
-        position = next(i for i, exp in enumerate(resume.experience) if exp is job)
-        places = [j for j, bullet in enumerate(job.bullets)
-                  if (languages.names(bullet, wanted) if wanted else languages.mentioned(bullet))]
-        if len(places) == 1:
-            held.add((position, places[0]))
     return held
 
 
-def removal_order(resume: Resume, analysis: JDAnalysis | None = None,
-                  relevance: list[float] | None = None) -> list[tuple[int, int]]:
+def _language_places(resume: Resume, analysis: JDAnalysis | None, jd: str = "") -> tuple[int, set[int]] | None:
+    """(the current job's position, its bullets that each name the post's programming language), read by
+    validate.missing_language itself with the post's text `jd`, as the fix round and the final check read it: the
+    owner's rule since prompt v39, which trimming must not undo. None when the rule does not apply (the current job
+    passes the check without any bullet: work not built in code whose post names no language)."""
+    from .validate import current_job, missing_language
+
+    job = current_job(resume)
+    if job is None:
+        return None
+
+    def missing(bullets: list[str]) -> bool:  # the check, with only these bullets at the current job
+        trial = [exp.model_copy(update={"bullets": bullets}) if exp is job else exp for exp in resume.experience]
+        return missing_language(resume.model_copy(update={"experience": trial}), analysis, jd) is not None
+
+    if not missing([]):
+        return None
+    position = next(i for i, exp in enumerate(resume.experience) if exp is job)
+    return position, {j for j, bullet in enumerate(job.bullets) if not missing([bullet])}
+
+
+def removal_order(resume: Resume, analysis: JDAnalysis | None = None, relevance: list[float] | None = None,
+                  jd: str = "") -> list[tuple[int, int]]:
     """(job position, bullet index) in the order trim_to_page removes bullets, without any layout: from the most recent
-    job only while it holds more than half of the bullets left and keeps the most after it ([6, 2, 1, 1, 1] -> [5, 2,
-    1, 1, 1]), else from the older job with the most bullets, the less relevant one and then the older one first
+    job only while it holds more than half of the bullets left, or more than 8 (the most any job gets: on two pages
+    half of them can be more), and keeps the most after it ([6, 2, 1, 1, 1] -> [5, 2, 1, 1, 1]; [11, 3, 2, ...] -> [8,
+    3, 2, ...]), else from the older job with the most bullets, the less relevant one and then the older one first
     ([5, 2, 1, 1, 1] -> [5, 1, 1, 1, 1]); within a job its last bullet. A bullet holding a must-have's only mention goes
     only when no other bullet can (so the most recent job gives one of its others first, even at half), or when only
-    the most recent job's are left and taking one would end its lead. Every job keeps its first bullet."""
+    the most recent job's are left and taking one would end its lead; so does the current job's last bullet still
+    naming the post's programming language (_language_places, with the post's text `jd`), counting its first bullet.
+    Every job keeps its first bullet."""
     relevance = relevance if relevance is not None else draft_relevance(resume, analysis)
     held = _only_mentions(resume, analysis)
+    language = _language_places(resume, analysis, jd)
     alive = [list(range(len(exp.bullets))) for exp in resume.experience]
     order: list[tuple[int, int]] = []
 
     def removable(position: int, protect: bool) -> list[int]:
         rest = alive[position][1:]  # never the first bullet: the job's strongest
-        return [j for j in rest if not protect or (position, j) not in held]
+        if not protect:
+            return rest
+        kept = [j for j in rest if (position, j) not in held]
+        if language is not None and position == language[0]:
+            naming = [j for j in alive[position] if j in language[1]]  # with its first bullet, which never goes
+            if len(naming) == 1:  # the last one left that names the post's language
+                kept = [j for j in kept if j != naming[0]]
+        return kept
 
     def weight(i: int) -> float:
         return relevance[i] if i < len(relevance) else 0.0
@@ -308,8 +339,10 @@ def removal_order(resume: Resume, analysis: JDAnalysis | None = None,
             guarded = protect
             older = [i for i in jobs if i]
             lead_kept = len(alive[0]) - 1 > max((len(bullets) for bullets in alive[1:]), default=0)
-            if 0 in jobs and 2 * len(alive[0]) > sum(map(len, alive)) and lead_kept:
-                jobs = [0]  # more than half: the most recent job gives
+            # more than half of the bullets left, or more than any job gets (RECENCY_CAPS: 8, a two-page plan's cap)
+            over = 2 * len(alive[0]) > sum(map(len, alive)) or len(alive[0]) > RECENCY_CAPS[0]
+            if 0 in jobs and over and lead_kept:
+                jobs = [0]  # the most recent job gives
             elif older:
                 jobs = older
             elif protect and not lead_kept:
@@ -344,11 +377,11 @@ class Trim:
 
 
 def trim_to_page(resume: Resume, paper: str, target: int, analysis: JDAnalysis | None = None,
-                 relevance: list[float] | None = None, at: list[FitStyle] | None = None) -> Trim:
-    """The fewest bullets removed (removal_order) for the resume to fit `target` pages at the design's own sizes (or at
-    whichever of the styles `at` takes the fewest pages), found by halving (a few layouts of ~3 ms); with every
-    removable bullet gone when even that does not fit. Works on a copy."""
-    order = removal_order(resume, analysis, relevance)
+                 relevance: list[float] | None = None, at: list[FitStyle] | None = None, jd: str = "") -> Trim:
+    """The fewest bullets removed (removal_order, `jd` the post's text) for the resume to fit `target` pages at the
+    design's own sizes (or at whichever of the styles `at` takes the fewest pages), found by halving (a few layouts of
+    ~3 ms); with every removable bullet gone when even that does not fit. Works on a copy."""
+    order = removal_order(resume, analysis, relevance, jd)
     seen: dict[int, int] = {}
 
     def pages(k: int) -> int:
@@ -428,20 +461,21 @@ class Fitted:
 
 
 def fit_new(resume: Resume, paper: str, target: int, analysis: JDAnalysis | None = None,
-            document: str = "Resume") -> Fitted:
+            document: str = "Resume", jd: str = "") -> Fitted:
     """A new run's resume on `target` pages (plan_pages) at the design's own sizes: as it is, or with the fewest
-    bullets removed (trim_to_page); when one page cannot be reached even then, two pages from the untrimmed draft;
-    only when two pages cannot be reached at the design's sizes either, the old size ladder (on_the_ladder, its note
-    says the font was reduced) on the untrimmed draft when one of its steps fits it on two pages, else with the fewest
-    bullets removed for two pages at its smallest steps, else on the shortest version. Never changes `resume`."""
+    bullets removed (trim_to_page; `analysis` and the post's text `jd` keep the must-haves and the post's language);
+    when one page cannot be reached even then, two pages from the untrimmed draft; only when two pages cannot be
+    reached at the design's sizes either, the old size ladder (on_the_ladder, its note says the font was reduced) on
+    the untrimmed draft when one of its steps fits it on two pages, else with the fewest bullets removed for two pages
+    at its smallest steps, else on the shortest version. Never changes `resume`."""
     style = design_style(paper)
     relevance = draft_relevance(resume, analysis)
-    first = trim_to_page(resume, paper, target, analysis, relevance)
+    first = trim_to_page(resume, paper, target, analysis, relevance, jd=jd)
     if first.pages <= target:
         notes = [removed_note(first.removed, target)] if first.removed else []
         return Fitted(first.resume, style, first.pages, notes, len(first.removed))
     if target < TWO_PAGES:
-        two = trim_to_page(resume, paper, TWO_PAGES, analysis, relevance)
+        two = trim_to_page(resume, paper, TWO_PAGES, analysis, relevance, jd=jd)
         if two.pages <= TWO_PAGES:
             notes = [("Kept two pages: even one bullet for each older job does not fit on one page at the design's "
                       "own sizes.")]
@@ -451,7 +485,7 @@ def fit_new(resume: Resume, paper: str, target: int, analysis: JDAnalysis | None
     # the size ladder: the untrimmed draft when its smallest steps fit it on two pages (then try_styles finds the
     # largest step that does), else trimmed only as far as they need, else the shortest version (every removable bullet
     # gone) at the smallest step
-    kept = trim_to_page(resume, paper, TWO_PAGES, analysis, relevance, styles(paper, LAYOUT)[len(LADDER):])
+    kept = trim_to_page(resume, paper, TWO_PAGES, analysis, relevance, styles(paper, LAYOUT)[len(LADDER):], jd=jd)
     small, pages, pdf, notes = on_the_ladder(kept.resume, paper, document)
     if kept.removed:
         notes.append(removed_note(kept.removed, min(pages, TWO_PAGES)))
