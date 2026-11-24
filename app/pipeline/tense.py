@@ -6,10 +6,13 @@ migration ..." in an old one), so a bullet's opening verb, and the verbs joined 
 in its job's tense here (past_opening, present_opening). As in spelling.py, only words in the lists below are changed:
 an unknown word stays as written, and so does an opening that reads as a noun ("Lead time fell from ...", "Lead data
 engineer on ...", "Shared dashboards replaced ...", "Automated Spark tests catch ..."). No other word is ever changed:
-a bullet with a second verb phrase in the wrong tense ("..., wrote 300 pytest cases and caught ...") is left whole, as
-changing its opening alone would leave it in two tenses. A past opening is never turned into a weak present one ("Ran"
-into "Run", "Used" into "Use"): such a bullet is rewritten instead (validate.weak_openers); nor into a command when it
-is true only in the past ("Promoted to ...", "Won the 2025 hackathon").
+a bullet with a second verb phrase in its opening's own form ("Rebuilt ..., wrote 300 pytest cases and caught ...",
+"Leads ..., owns ... and ships ...") is left whole, as changing its opening alone would leave its verbs in two forms.
+Only that form counts: "Leads the data team and automated ..." becomes "Lead the data team and automated ...", as its
+later verb was in the other tense already. A past opening is never turned into a weak present one ("Ran" into "Run",
+"Used" into "Use"): such a bullet is rewritten instead (validate.weak_openers); nor into a command when it is true only
+in the past ("Promoted to ...", "Won the 2025 hackathon"). A duty is, also before "to" or "as" ("Reported to the CTO"
+-> "Report to the CTO").
 """
 from __future__ import annotations
 
@@ -30,6 +33,12 @@ IRREGULAR = {
     "take": "took", "teach": "taught", "tell": "told", "think": "thought", "understand": "understood",
     "undertake": "undertook", "uphold": "upheld", "win": "won", "withdraw": "withdrew", "write": "wrote",
 }
+# an opening that is always the verb, never an adjective before its noun ('Made nightly builds 21% faster', 'Built
+# ranking models that make ...'): a simple past whose participle differs, and 'built', 'made', 'led'. Not 'Paid search
+# campaigns drove ...', 'Thought leadership posts drove ...', 'Rebuilt onboarding flows lift ...' or 'Custom-built ...'
+_VERB_ONLY_PASTS = frozenset({"built", "made", "led", "wrote", "rewrote", "grew", "outgrew", "drove", "took",
+                              "undertook", "gave", "began", "broke", "chose", "drew", "flew", "rose", "saw",
+                              "oversaw", "shrank", "spoke", "withdrew", "overcame", "did", "redid"})
 # the past is the base itself: nothing to change ("Cut", "Set up")
 SAME = frozenset({
     "bid", "broadcast", "cast", "cut", "forecast", "hit", "let", "offset", "put", "quit", "read", "reset", "rid",
@@ -119,6 +128,10 @@ ROLE_NOUNS = frozenset({
 ONE_TIME = frozenset({"win", "earn", "become", "award", "name", "elect", "promote", "hire", "select"})
 # after an opening past participle, a passive ('Promoted to ...', 'Selected as ...', 'Recognized by ...')
 _PASSIVE_NEXT = frozenset({"to", "as", "by"})
+# verbs that are a duty, never a passive, before their word: the current job's own work ('Reported to the CTO', 'Served
+# as tech lead'). Only these, each with its own word: a change made once stays as written ('Moved to ...', 'Migrated to
+# ...'), and so do 'Reported by ...' and 'Reported as ...'
+_ACTIVE_BEFORE = {"contribute": "to", "respond": "to", "report": "to", "present": "to", "serve": "as", "partner": "as"}
 # a word after the opening verb group that shows it is a verb: an object or a particle comes next
 _VERB_NEXT = frozenset({
     "a", "an", "the", "its", "their", "his", "her", "our", "each", "every", "all", "both", "this", "that", "these",
@@ -152,9 +165,15 @@ _NEXT_WORD = re.compile(r"\s+([A-Za-z0-9][\w'-]*)")
 _CLAUSE_END = re.compile(r"[,;:.!?]")
 _SUBJECT_END = re.compile(r"[,;:](?:\s|$)|[.!?](?:\s|$)")  # the first comma, not the one in '1,200'
 _TOKEN = re.compile(r"[A-Za-z0-9][\w'-]*")
-# the first word of another phrase: '..., wrote 300 pytest cases and caught ...' (with 'by' after it: a participle)
-_PHRASE_START = re.compile(r"(?:[,;]\s+(?:(?:and|&)\s+)?|\s+(?:and|&)\s+)(?:(?:then|also)\s+)?([A-Za-z][A-Za-z-]*)"
-                           r"(\s+by\b)?")
+# the first word of another phrase: '..., wrote 300 pytest cases and caught ...', also after '(and' or a comma with no
+# space ('... in Go (and automated its tests)', '... in Go,and automated ...'); with 'by' after it: a participle
+_PHRASE_START = re.compile(r"(?:[,;]\s*(?:(?:and|&)\s+)?|(?:\s+|\()(?:and|&)\s+)(?:(?:then|also)\s+)?"
+                           r"([A-Za-z][A-Za-z-]*)(\s+by\b)?")
+# the last part of a hyphenated adjective ('role-based access', 'short-lived tokens'), no second verb
+_MODIFIER_TAILS = frozenset({"based", "lived", "focused", "oriented", "related", "powered", "backed", "minded",
+                             "grained", "centered", "centred"})
+# a first part that makes the word a verb ('re-based 40 branches', 'co-founded the guild')
+_VERB_PREFIXES = frozenset({"re", "co", "de", "pre", "un", "up", "over", "out", "under", "mis", "dis"})
 MAX_JOINED = 3  # 'Design, build, test and ship' at most
 MAX_PREFIX = 6  # 'Co-lead', 'Re-architect', 'Fine-tune', 'Self-host'
 
@@ -221,9 +240,11 @@ def _plural(word: str) -> bool:
 
 
 def _form(word: str) -> str | None:
-    """Which form of a listed verb the word is: 'past' ('wrote', 'automated', and any word ending in -ed), 'third'
-    ('owns') or 'base' ('write'). None for a name, a modifier ('add-to-cart'), any other word, and a verb whose past
-    is the same word ('cut', 'set'), which fits either tense."""
+    """Which form of a listed verb the word is: 'past' ('wrote', 'automated', and any word ending in -ed, also after a
+    short first part: 're-based', and a modifier such as 'role-based', which _second_verb tells apart), 'third' ('owns')
+    or 'base' ('write'). None for a name, a word with a long or non-letter first part ('add-to-cart',
+    'customer-focused'), any other word, and a verb whose past is the same word ('cut', 'set'), which fits either
+    tense."""
     if not word.islower():
         return None
     if "-" in word:
@@ -244,12 +265,26 @@ def _form(word: str) -> str | None:
 def _second_verb(text: str, at: int, old: set[str]) -> bool:
     """Whether a verb in one of the old forms starts another phrase after the opening verbs ('..., wrote 300 pytest
     cases and caught ...', '... to design and implement ...'): changing the opening alone would leave the bullet in
-    two tenses, so it is left whole. A past participle before 'by' is no verb of its own ('..., used by 40 teams')."""
+    two tenses, so it is left whole. A past participle before 'by' is no verb of its own ('..., used by 40 teams'), nor
+    is a hyphenated adjective ('... and role-based access', see _modifier)."""
     for match in _PHRASE_START.finditer(text, at):
         form = _form(match.group(1))
-        if form in old and not (form == "past" and match.group(2)):
+        if (form in old and not (form == "past" and match.group(2))
+                and not _modifier(match.group(1), text, match.end(1))):
             return True
     return False
+
+
+def _modifier(word: str, text: str, end: int) -> bool:
+    """Whether the word (ending at `end` in the text) is a hyphenated adjective ('role-based access', 'short-lived
+    tokens'): its last part in _MODIFIER_TAILS, its first part no verb prefix ('re-based' is a verb), and no object or
+    particle after it ('laser-focused the team', 'piggy-backed on the stream' are verbs)."""
+    head, _, tail = word.lower().rpartition("-")
+    if not head or head in _VERB_PREFIXES or tail not in _MODIFIER_TAILS:
+        return False
+    nxt = _NEXT_WORD.match(text, end)
+    after = nxt.group(1).lower() if nxt else ""
+    return not (after in _VERB_NEXT or after in {"on", "onto", "it", "them"} or after[:1].isdigit())
 
 
 def _object_follows(words_after: str) -> bool:
@@ -266,7 +301,8 @@ def past_opening(text: str) -> str:
     'Led the move ...', 'Design and run ...' -> 'Designed and ran ...'. No later word is changed. Unchanged when the
     opening word is not a listed present-tense verb, when it reads as a noun ('Lead time fell from 9 to 4 days', 'Test
     suites now run in four minutes'; a word that is as often a noun needs its object after it, see NOUN_VERBS), and
-    when another verb phrase follows in the present ('Design the claims API, write the OpenAPI spec and ...')."""
+    when another verb phrase follows in the opening's own form ('Design the claims API, write the OpenAPI spec and
+    ...')."""
     first = _FIRST_WORD.match(text)
     if not first or _converted(first.group(1)) is None:
         return text
@@ -341,13 +377,13 @@ def _subject_verb(text: str, at: int) -> bool:
     """Whether the words after the opening, up to the first comma, are a subject with its own verb ('Automated Spark
     tests catch ...', 'Shared Looker dashboards replaced ...', 'Automated tests in CI run ...'): the opening is then an
     adjective. A verb form after a preposition, an article, 'and' or 'that' is not that verb ('for automated test
-    suites', 'to spot instances'), nor a present one after a singular noun ('a vector index') unless an object follows
-    ('triage in Zendesk saves the team 10 hours')."""
+    suites', 'to spot instances'), nor a present one after a singular noun or a possessive ('a vector index', 'each
+    partner's export jobs') unless an object follows ('triage in Zendesk saves the team 10 hours')."""
     end = _SUBJECT_END.search(text, at)
     tokens = _TOKEN.findall(text[at:end.start() if end else len(text)][:200])
     plural = False  # a plural subject so far: 'tests', 'tests in CI' (not 'tests for the', 'jobs to spot')
     for before, word, after in zip(tokens, tokens[1:], [*tokens[2:], ""]):
-        if _plural(before):
+        if _plural(before) and "'" not in before:  # 'each partner's export jobs': a possessive is no subject
             plural = True
         elif before.lower() in _NOT_SUBJECT and before.lower() not in _SUBJECT_PREP:
             plural = False
@@ -369,10 +405,14 @@ def present_opening(text: str) -> str:
     'Added RAG over ...' -> 'Add RAG over ...', 'Designed and shipped the ...' -> 'Design and ship the ...',
     'Leads the ...' -> 'Lead the ...'. No later word is changed. Unchanged when the opening is not a listed past or
     third-person verb; when the words after it, up to the first comma, read as a sentence of their own ('Shared Looker
-    dashboards replaced weekly exports', 'Automated Spark tests catch ...': the opening is an adjective); when another
-    verb phrase follows in the past ('..., wrote 300 pytest cases and caught ...'); when it is true only in the past
-    ('Promoted to ...', 'Selected as ...', 'Won the 2025 hackathon', see ONE_TIME); and when a verb would become a weak
-    one ('Ran ...', 'Used ...': rewritten instead, see WEAK_BASES)."""
+    dashboards replaced weekly exports', 'Automated Spark tests catch ...': the opening is an adjective, never one of
+    _VERB_ONLY_PASTS); when another verb phrase follows in the opening's own form: a past one after a past opening
+    ('..., wrote 300 pytest cases and caught ...'), a third-person one after a third-person opening ('Leads ..., owns
+    ... and ships ...'); when it is true only in the past ('Promoted to ...', 'Selected as ...', 'Won the 2025
+    hackathon', see ONE_TIME; a duty is not: 'Reported to ...', 'Served as ...', see _ACTIVE_BEFORE); and when a verb
+    would become a weak one ('Ran ...', 'Used ...': rewritten instead, see WEAK_BASES). A third-person opening is put
+    in the base form even when a past verb follows ('Leads the data team and automated ...' -> 'Lead the data team and
+    automated ...'): that verb was in the other tense already."""
     first = _FIRST_WORD.match(text)
     if not first or _present(first.group(1)) is None:
         return text
@@ -394,14 +434,16 @@ def present_opening(text: str) -> str:
     forms = {_form(text[start:end].lower()) for start, end in words}
     nxt = _NEXT_WORD.match(text, at)
     next_word = nxt.group(1) if nxt else ""
-    if next_word.lower() in _PASSIVE_NEXT and _form(text[words[-1][0]:words[-1][1]].lower()) == "past":
-        return text  # 'Promoted to ...', 'Selected as ...': a passive, never a command
+    if (next_word.lower() in _PASSIVE_NEXT and _form(text[words[-1][0]:words[-1][1]].lower()) == "past"
+            and _ACTIVE_BEFORE.get(bases[-1]) != next_word.lower()):
+        return text  # 'Promoted to ...', 'Selected as ...': a passive, never a command ('Reported to ...' is a duty)
     if next_word.lower() not in _VERB_NEXT and not next_word[:1].isdigit():  # a name next too ('Automated Spark tests')
         if next_word.lower() in NOUN_AFTER.get(bases[0] or "", ()):
             return text
         stop = _CLAUSE_STOP.search(text, at)
         clause = text[at:stop.start() if stop else len(text)][:200]
-        if _FINITE.search(clause) or _PAST_FORM.search(clause.replace("-", " _")) or _subject_verb(text, at):
+        if (_FINITE.search(clause) or _PAST_FORM.search(clause.replace("-", " _"))
+                or (first.group(1).lower() not in _VERB_ONLY_PASTS and _subject_verb(text, at))):
             return text  # 'Shared dashboards replaced ...': the opening describes the subject of another verb
     if _second_verb(text, at, forms & {"past", "third"}):
         return text
