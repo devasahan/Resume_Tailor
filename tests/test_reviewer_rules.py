@@ -44,6 +44,18 @@ def resume_of(profile, bullets: list[list[str]], summary: str = "Backend enginee
     ("Moved Two Sigma data to Three.js charts", "Moved Two Sigma data to Three.js charts"),  # names
     ("Ran one to one mentoring with zero downtime", "Ran one to one mentoring with zero downtime"),
     ("Often tuned the canine-care app", "Often tuned the canine-care app"),  # never inside a word
+    # a name, a possessive, a bigger number or a fraction: the word is part of it
+    ("Built the configurator in three.js and two.js", "Built the configurator in three.js and two.js"),
+    ("Explained two's complement to two dozen interns", "Explained two's complement to two dozen interns"),
+    ("Grew the team from two hundred to three hundred engineers",
+     "Grew the team from two hundred to three hundred engineers"),
+    ("Moved one hundred twenty services and two or three hundred jobs",
+     "Moved one hundred twenty services and two or three hundred jobs"),
+    ("Cut defects by two thirds and costs by three quarters", "Cut defects by two thirds and costs by three quarters"),
+    ("Moved two quarters of the budget within two quarters", "Moved two quarters of the budget within 2 quarters"),
+    ("Signed two third-party vendors for three half-day workshops",
+     "Signed 2 third-party vendors for 3 half-day workshops"),  # a compound after it: still a count
+    ("Saved 2 million and five weeks for two dozens of teams", "Saved 2 million and 5 weeks for two dozens of teams"),
 ])
 def test_number_words_become_numerals(text, expected):
     assert numerals(text) == expected
@@ -52,6 +64,13 @@ def test_number_words_become_numerals(text, expected):
 def test_a_posting_term_keeps_its_number_word():
     assert numerals("Set up three lines of defense for three teams", keep=["three lines of defense"]) == (
         "Set up three lines of defense for 3 teams")
+    assert numerals("Shipped one or two releases under three lines of defense", keep=["three lines of defense"]) == (
+        "Shipped 1 or 2 releases under three lines of defense")  # a range written as numerals before it
+
+
+def test_a_number_inside_a_compound_is_left_as_written():
+    text = "Won a two million-dollar contract, a five million dollar budget and a 2 million-dollar renewal"
+    assert normal(text) == text
 
 
 @pytest.mark.parametrize("text,expected", [
@@ -79,6 +98,19 @@ def test_fix_numbers_changes_the_text_and_keeps_names_and_posting_terms(profile)
     assert rules.fix_numbers(resume, analysis(keywords=["three lines of defense"])) == []
     assert resume.summary == "Backend engineer who led 9 teams through a $2M migration."
     assert resume.experience[0].bullets[0] == "Coached 7 engineers through three lines of defense reviews"
+
+
+def test_a_skill_named_with_a_number_word_keeps_it(profile):
+    bullets = ["Built a 3D product configurator in three.js and WebGL for 40K shoppers, lifting conversion 12%",
+               "Ran five whys reviews after each outage, cutting repeat incidents from 23 to 9 a quarter"]
+    resume = resume_of(profile, [list(bullets)],
+                       skills=[SkillGroup(category="Frontend", skills=["three.js", "WebGL", "five whys"])])
+    assert rules.fix_numbers(resume, analysis()) == [] and resume.experience[0].bullets == bullets
+    assert rules.shape_skills(resume, analysis()) == []  # no bullet lost the name, so the skill stays
+    assert resume.skills[0].skills == ["three.js", "WebGL", "five whys"]
+    assert rules.letter_fixes(["At Northwind Labs I ran five whys reviews for seven teams."], analysis(), "",
+                              ["Northwind Labs"], ["five whys"]) == [
+        "At Northwind Labs I ran five whys reviews for 7 teams."]
 
 
 def test_number_words_left_by_a_hand_edit_are_listed(profile):
@@ -118,6 +150,35 @@ def test_the_postings_own_form_wins(profile):
     assert resume.experience[0].bullets[0] == "Tuned Postgres queries and Postgres indexes"
 
 
+def test_the_analysis_form_wins_when_the_posting_writes_both(profile):
+    posting = "You will design PostgreSQL schemas for the order API. Requirements: 5+ years with Python and Postgres."
+    must = analysis(must=["Python", "Postgres"])
+    resume = resume_of(profile, [["Built Python services on PostgreSQL and Postgres replicas for 40K merchants"]],
+                       summary="Backend engineer who tunes Postgres for partner APIs.")
+    rules.official_names(resume, must, posting)
+    assert resume.experience[0].bullets[0] == (
+        "Built Python services on Postgres and Postgres replicas for 40K merchants")
+    assert resume.summary == "Backend engineer who tunes Postgres for partner APIs."
+    assert validate.unshown_must_haves(resume, must) == ([], [])  # the must-have, word for word: no rewrite pass
+    resume = resume_of(profile, [["Tuned PostgreSQL queries and Postgres indexes"]])
+    rules.official_names(resume, analysis(must=["Postgres"], keywords=["PostgreSQL"]), posting)
+    assert resume.experience[0].bullets[0] == "Tuned PostgreSQL queries and Postgres indexes"  # both are its terms
+
+
+def test_letter_case_alone_never_wins(profile):
+    resume = resume_of(profile, [["Built CI/CD on GitHub Actions for 40 Python repos",
+                                  "Moved 12 repos to github actions"]],
+                       summary="Backend engineer who ships TypeScript and PostgreSQL services.",
+                       skills=[SkillGroup(category="Tools", skills=["GitHub Actions", "GitHub", "PostgreSQL"])])
+    posting = "Our stack: typescript, react, postgres, graphql. Please include a link to your github profile."
+    rules.official_names(resume, analysis(must=["TypeScript"], keywords=["github"]), posting)
+    assert resume.experience[0].bullets == ["Built CI/CD on GitHub Actions for 40 Python repos",
+                                            "Moved 12 repos to GitHub Actions"]
+    # 'postgres' is the posting's own form (an ATS matches it in any case): written as the tool's makers write it
+    assert resume.summary == "Backend engineer who ships TypeScript and Postgres services."
+    assert resume.skills[0].skills == ["GitHub Actions", "GitHub", "Postgres"]
+
+
 def test_the_letter_gets_the_same_names_and_numbers():
     assert rules.letter_fixes(["I moved seven Postgres clusters at Nine Yards."], analysis(), "",
                               ["Nine Yards"]) == ["I moved 7 PostgreSQL clusters at Nine Yards."]
@@ -148,6 +209,59 @@ def test_two_sentences_always_stay(profile):
     assert rules.self_praise(summary) == ["Passionate about clean code."]
 
 
+def test_experience_and_an_award_are_no_praise(profile):
+    summary = ("Brings 8 years of backend experience in payments. Recognized with the 2025 Northwind Engineering Award "
+               "for the ledger rebuild. Brings sound tradeoff judgment to platform decisions.")
+    assert rules.self_praise(summary) == ["Brings sound tradeoff judgment to platform decisions."]
+    resume = resume_of(profile, [["Built the Go order API"]], summary=summary)
+    assert rules.summary_trim(resume) == [
+        ("Summary: removed 'Brings sound tradeoff judgment to platform decisions.' (self-praise, or more than 3 "
+         "sentences).")]
+    assert resume.summary == ("Brings 8 years of backend experience in payments. Recognized with the 2025 Northwind "
+                              "Engineering Award for the ledger rebuild.")
+
+
+@pytest.mark.parametrize("summary", [
+    ("Data engineer with 7 years at St. Contoso and Mt. Fabrikam clinics. Built HL7 pipelines for 40 clinics. Cut "
+     "claim rejections 23%."),
+    ("Frontend engineer with 8 years in commerce. Builds design systems in modern frameworks, e.g. React and Vue. Cut "
+     "checkout time 31% at Northwind Labs."),
+    ("Data engineer with 9+ years in streaming. Chose Kafka vs. Kinesis for the order pipeline. Cut ingest lag from 9 "
+     "to 2 minutes."),
+    ("Backend engineer with 9+ years in fintech. At T. Quinn Capital, built the Go trade API for 450 advisors. Moved "
+     "38 services to Kubernetes."),
+    "Network engineer with 8 years at U.K. Contoso and Fabrikam. Built 5G backhaul for U.S. Bluefin across 9 states.",
+])
+def test_an_abbreviation_or_an_initial_ends_no_summary_sentence(profile, summary):
+    resume = resume_of(profile, [["Built the Go order API for 450 partner stores"]], summary=summary)
+    assert rules.summary_trim(resume, analysis(must=["Go"])) == [] and resume.summary == summary
+
+
+def test_a_fourth_sentence_goes_whole(profile):
+    resume = resume_of(profile, [["Built the Go order API for 450 partner stores"]], summary=(
+        "Data engineer with 9+ years at U.K. Contoso and Fabrikam. Focuses on Airflow loads for finance. Cut late "
+        "reports from 14 to 2 a month. Moved 38 services to Kubernetes at St. Bluefin Health."))
+    assert rules.summary_trim(resume) == [
+        ("Summary: removed 'Moved 38 services to Kubernetes at St. Bluefin Health.' (self-praise, or more than 3 "
+         "sentences).")]
+    assert resume.summary == ("Data engineer with 9+ years at U.K. Contoso and Fabrikam. Focuses on Airflow loads for "
+                              "finance. Cut late reports from 14 to 2 a month.")
+
+
+def test_praise_after_an_abbreviation_is_left_to_the_rewrite_pass(profile):
+    # whether 'etc.' ends the first sentence is unknown, so no part of it is removed; the check still names it
+    summary = ("Platform engineer with 9+ years in Go, Rust, etc. Brings strong judgment to platform decisions. Cut "
+               "deploy time from 40 to 12 minutes.")
+    resume = resume_of(profile, [["Built the Go order API"]], summary=summary)
+    assert rules.summary_trim(resume) == [] and resume.summary == summary
+    assert rules.self_praise(summary) == [
+        "Platform engineer with 9+ years in Go, Rust, etc. Brings strong judgment to platform decisions."]
+    resume.summary = ("Network engineer at U.K. Contoso. Brings strong judgment to platform decisions. Built 5G "
+                      "backhaul for 9 states.")  # after a full sentence holding one, praise still goes
+    assert rules.summary_trim(resume)
+    assert resume.summary == "Network engineer at U.K. Contoso. Built 5G backhaul for 9 states."
+
+
 def test_a_summary_naming_more_than_three_skills_is_found(profile):
     resume = resume_of(profile, [["Built the Go order API"]],
                        summary="Backend engineer using Python, SQL, Airflow and Spark for data teams.",
@@ -165,6 +279,26 @@ def test_skills_keep_what_the_bullets_show_and_the_postings_terms_first(profile)
         ("Languages", ["Python", "Rust", "SQL"]),  # the must-have first; Rust is a posting term, shown or not
         ("Tools", ["Airflow", "dbt"])]
     assert notes == ["Skills: left out what no bullet shows: Jira."]
+
+
+def test_a_skill_a_bullet_shows_in_another_form_stays(profile):
+    resume = resume_of(profile, [
+        ["Rebuilt the order-matching engine in modern C++17 for 40 venues",
+         "Added unit tests and A/B tests to the Go and Kafka pricing pipeline, catching 17 regressions a quarter"],
+        ["Built ASP.NET Core APIs and C#11 services for 2,000 traders"]], skills=[
+        SkillGroup(category="Languages", skills=["Go", "C++", "C#", ".NET"]),
+        SkillGroup(category="Practices", skills=["Kafka", "Unit Testing", "A/B Testing", "Load Testing"])])
+    notes = rules.shape_skills(resume, analysis(must=["Go", "Kafka"]))
+    assert [g.skills for g in resume.skills] == [["Go", "C++", "C#", ".NET"], ["Kafka", "Unit Testing", "A/B Testing"]]
+    assert notes == ["Skills: left out what no bullet shows: Load Testing."]
+
+
+def test_when_no_bullet_shows_any_skill_the_list_stays_and_no_note_says_otherwise(profile):
+    resume = resume_of(profile, [["Cut checkout errors 23% for 40K merchants"]], skills=[
+        SkillGroup(category="Tools", skills=["Kubernetes", "Terraform"]),
+        SkillGroup(category="Languages", skills=["Rust", "Elixir"])])
+    assert rules.shape_skills(resume, analysis(must=["Payments"])) == []
+    assert [g.skills for g in resume.skills] == [["Kubernetes", "Terraform"], ["Rust", "Elixir"]]
 
 
 def test_a_fourth_row_joins_the_third_and_the_rest_is_named(profile):

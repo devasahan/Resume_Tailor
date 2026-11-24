@@ -905,7 +905,8 @@ async def _write_letter(
     def parse(data: dict) -> CoverLetter:
         raw = CoverLetterOut.model_validate(data)
         greeting, paragraphs, closing = validate.clean_cover_letter(raw.greeting, raw.paragraphs, raw.closing)
-        paragraphs = rules.letter_fixes(paragraphs, analysis, jd, [c.name for c in resume.profile.companies])
+        paragraphs = rules.letter_fixes(paragraphs, analysis, jd, [c.name for c in resume.profile.companies],
+                                        [item for group in resume.skills for item in group.skills])
         letter = CoverLetter(
             greeting=greeting, paragraphs=paragraphs, closing=closing,
             company_name=company_name, hiring_manager=hiring_manager,
