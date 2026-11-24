@@ -34,7 +34,8 @@ def test_demo_run_is_ok_on_one_page_and_keeps_fixed_facts(router, db, profile, j
 
 def test_titles_form_a_career_path(router, db, profile, jd):
     titles = [e.job_title for e in tailor(router, db, profile, jd).resume.experience]
-    assert titles == ["Senior Data Engineer", "Data Engineer", "Junior Data Engineer"]
+    # the path moves into the posting's field (Data) as it gets closer to today; the oldest job has a plain title
+    assert titles == ["Senior Data Engineer", "Data Engineer", "Software Engineer"]
 
 
 def test_long_text_is_brought_to_two_pages(router, db, profile, jd):

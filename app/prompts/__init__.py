@@ -21,7 +21,7 @@ from ..pipeline.facts import (
 from ..pipeline.notes import clean_notes
 from ..schemas import CareerStep, Certification, Company, JDAnalysis, Resume
 
-PROMPT_VERSION = "v38"
+PROMPT_VERSION = "v39"
 RETRY_MARKER = "Your previous answer was rejected"
 
 _DIR = Path(__file__).parent

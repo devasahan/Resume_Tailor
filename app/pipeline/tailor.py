@@ -35,7 +35,7 @@ from ..schemas import (
 )
 from ..storage.db import Database
 from ..timing import Steps
-from . import rules, spelling, validate
+from . import languages, rules, spelling, validate
 from .facts import candidate_facts
 from .fit import (
     MAX_PAGES,
@@ -220,6 +220,34 @@ def first_draft_notes(notes: list[str], draft: Resume, fixed: Resume) -> list[st
     return kept
 
 
+def _possessive(name: str) -> str:
+    """"Northwind Labs'" and "Contoso's": an employer's name before what belongs to it."""
+    return f"{name}'" if name.endswith("s") else f"{name}'s"
+
+
+def language_fix(company: str, language: str | None, analysis: JDAnalysis | None) -> str:
+    """The rewrite pass's line for a current job that does not name the job post's language (validate.missing_language:
+    `language` None when the post names none)."""
+    if language:
+        return (f"Name {language} in one of {_possessive(company)} bullets, where the work used it: the job post asks "
+                "for it most (BULLETS rule). Change only that bullet's words, keeping its length, its result and the "
+                "must-have phrases it shows.")
+    return (f"{company}, the current job, names no programming language: name the one this work is usually built in "
+            f"({languages.usual_language(analysis) or 'Python'}, unless its notes name another) in one of its bullets, "
+            "where the work used it (BULLETS rule), keeping that bullet's length, its result and the must-have "
+            "phrases it shows.")
+
+
+def language_warning(company: str, language: str | None, analysis: JDAnalysis | None) -> str:
+    """The admin's note for a final resume whose current job still does not name the job post's language."""
+    if language:
+        return (f"{company}, the current job, does not name {language}, the programming language the job post asks "
+                "for most. Recruiters and an ATS look for it in your current work: name it in the bullet where you "
+                "used it.")
+    return (f"{company}, the current job, names no programming language. Name the one you built this work in (for "
+            f"example {languages.usual_language(analysis) or 'Python'}) in one of its bullets.")
+
+
 def analysis_terms(analysis: JDAnalysis) -> str:
     """Stand-in for the JD text when it is no longer available (after a manual edit)."""
     return " ".join(
@@ -233,7 +261,8 @@ SPELLING_NAMES = {"us": "American", "eu": "British"}
 
 def run_checks(result: TailorResult, jd_text: str) -> None:
     """(Re)compute coverage, ATS warnings and claim flags from the current resume text. A run saved before the
-    one-page rule (page_target 0, prompt v36) keeps that prompt's limits and gets no one-page warnings."""
+    one-page rule (page_target 0, prompt v36) keeps that prompt's limits and gets no one-page warnings, nor the notes on
+    the job post's language at the current job (prompt v39: a warning while it is missing, a flag to confirm it)."""
     assert result.resume is not None and result.analysis is not None
     result.coverage = validate.keyword_coverage(result.resume, result.analysis)
     result.ats_warnings = validate.ats_lint(result.resume, result.page_target)
@@ -256,6 +285,9 @@ def run_checks(result: TailorResult, jd_text: str) -> None:
                                    + validate.weak_bullet_list(weak) + ". Recruiters look for the tool and the result.")
     if result.page_target:
         result.ats_warnings += reviewer_warnings(result.resume, result.style, result.analysis)
+        missing = validate.missing_language(result.resume, result.analysis, jd_text)
+        if missing:
+            result.ats_warnings.append(language_warning(*missing, result.analysis))
     letter_plain = validate.cover_plain_problems(result.cover_letter, result.analysis) if result.cover_letter else []
     if letter_plain:
         result.ats_warnings.append("Cover letter wording that can sound machine-written: " + "; ".join(letter_plain[:6])
@@ -320,7 +352,8 @@ def run_checks(result: TailorResult, jd_text: str) -> None:
                     "remove it from the text.")
         for where, term in validate.certification_mentions(result.resume, names)
     ]
-    posting = validate.posting_match_flags(result.resume, result.analysis, f"{result.hints}\n{own}")
+    language = languages.wanted_language(result.analysis, jd_text) if result.page_target else None
+    posting = validate.posting_match_flags(result.resume, result.analysis, f"{result.hints}\n{own}", language)
     result.flags = [f for f in flags if f.level == "verify"] + posting + [f for f in flags if f.level != "verify"]
     # in hints-only mode, a figure the person gave is theirs to use: it never counts toward the density
     dense = validate.metric_density_problems(
@@ -497,10 +530,11 @@ async def run_tailor(
         own_text = f"{hints}\n{facts}\n{own_notes}"
 
         def build(out: TailorOutput):
-            """(output, resume, notes). The analysis keeps keywords only, the headline the role's short name,
-            titles that step down are corrected, and figures and their bases are written in varied shapes (a base in
-            brackets at most once), on every draft, for free. Last, every word follows the spelling style (after the
-            title fixes, which match the posting's own spelling)."""
+            """(output, resume, notes). The analysis keeps keywords only, titles that step down are corrected, the
+            headline and the summary's first words are the most recent job title (same_title: one title in three
+            places), and figures and their bases are written in varied shapes (a base in brackets at most once), on
+            every draft, for free. Last, every word follows the spelling style (after the title fixes, which match the
+            posting's own spelling), the same way in the three places."""
             validate.clean_analysis(out.jd_analysis, certification_names(out))
             resume = validate.build_resume(profile, out)
             if certifications_on:  # off: nothing is printed, whatever the model picked
@@ -508,10 +542,11 @@ async def run_tailor(
             validate.assert_certifications_held(resume)
             # a certification is printed only in its own section, and only when the person has it
             validate.remove_certification_skills(resume, certification_names(out))
-            validate.short_role_headline(resume)
+            validate.short_role_headline(resume)  # kept only by a resume with no job: same_title below
             validate.general_role_fixes(resume, out.jd_analysis)  # 'Voice AI Engineer' -> 'AI Engineer'
             notes = validate.fix_title_regressions(resume)
             notes += validate.role_level_fixes(resume, out.jd_analysis)
+            validate.same_title(resume)  # 'Senior AI Platform Engineer' under the name, in the summary and the job
             notes += rules.official_names(resume, out.jd_analysis, jd)  # PostgreSQL, pytest; the posting's form wins
             notes += validate.tense_bullets(resume, out.jd_analysis)  # present: the current job; past: the rest
             notes += validate.trim_teamwork_tails(resume, out.jd_analysis)  # no bullet ends on who it was done with
@@ -600,8 +635,10 @@ async def run_tailor(
             JD terms out of the summary and bullets, copies the posting's voice, repeats its phrases, repeats a word
             by mistake, copies the posting's sentences or lists its phrases as skills, lists qualities as skills,
             sounds machine-written, names tools a job could not have used, opens jobs without a measured result, has
-            job titles that do not read as a career path, or breaks the one-page rules (reviewer_feedback: weak
-            openings, bullets left in the other tense, ...). The model gets the numbered draft and returns only
+            job titles that do not read as a career path or never reach the target's field (only the job before the
+            current one outside it: along with other fixes), a current job that does not name the job post's most
+            wanted programming language, or breaks the one-page rules (reviewer_feedback: weak openings, bullets left
+            in the other tense, ...). The model gets the numbered draft and returns only
             what it changes (a TailorRevision): far less to write than a whole new draft, and everything that was
             fine stays word for word."""
             feedback = []
@@ -737,6 +774,19 @@ async def run_tailor(
                     "The job titles do not read as a believable career path: " + " ".join(titles) + " Choose the "
                     "titles again following the JOB TITLES rule, using the stay lengths given in <employers>."
                 )
+            # older titles outside the target's field: on its own only when none of them is in it
+            path, path_strong = validate.title_path_problems(value[1], value[0].jd_analysis)
+            path_fix = (
+                "The job titles do not lead into the target's field: " + " ".join(path) + " Choose the older titles "
+                "again following the JOB TITLES rule: the job before the current one in the target's field, earlier "
+                "jobs a step nearer the general title, the oldest ones plain titles, each fitting that job's own "
+                "bullets and never a step down."
+            )
+            if path_strong:
+                feedback.append(path_fix)
+            missing = validate.missing_language(value[1], value[0].jd_analysis, jd)  # the owner's rule: always asked
+            if missing:
+                feedback.append(language_fix(*missing, value[0].jd_analysis))
             weak = validate.weak_bullets(value[1])  # two or more, or along with a fix round asked anyway
             if weak and (len(weak) >= validate.MIN_WEAK_BULLETS_FOR_RETRY or feedback):
                 feedback.append(
@@ -746,6 +796,8 @@ async def run_tailor(
                     "says who the work was done with. Keep the must-have phrases each one shows."
                 )
             feedback += reviewer_feedback(value[1], bool(feedback))
+            if path and not path_strong and feedback:  # along with a fix round asked anyway
+                feedback.append(path_fix)
             if not feedback:
                 return None
             output, resume, first_notes = value

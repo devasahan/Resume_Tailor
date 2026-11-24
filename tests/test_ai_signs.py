@@ -946,6 +946,10 @@ def test_a_special_posting_title_becomes_its_common_title_everywhere_but_the_bul
     assert [exp.job_title for exp in resume.experience] == ["Senior AI Engineer", "Engineer 1", "Engineer 2"]
     assert resume.experience[0].bullets[1] == "Ran the voice AI rollout."  # the specialty stays in the bullets
     assert validate.specialty_problems(resume, analysis) == []
+    validate.same_title(resume)  # then, in build(): the most recent title, its level too (prompt v39)
+    assert resume.headline == "Senior AI Engineer"
+    assert resume.summary.startswith("Senior AI Engineer with 7+ years of experience building Python services.")
+    assert validate.specialty_problems(resume, analysis) == []
     resume.summary += " I build voice agents."
     assert validate.specialty_problems(resume, analysis) == ["summary"]
 
@@ -981,6 +985,10 @@ def test_an_ai_platform_engineer_post_keeps_its_title_and_its_ai(profile):
     assert resume.summary == "AI Platform Engineer with 7+ years of AI and ML platform work on Kubernetes and Ray."
     assert resume.experience[0].job_title == "Senior AI Platform Engineer"
     assert validate.specialty_problems(resume, analysis) == []  # 'AI' is a field, never a specialty to take out
+    validate.same_title(resume)  # then, in build(): one title in three places, the level too (prompt v39)
+    assert resume.headline == resume.experience[0].job_title == "Senior AI Platform Engineer"
+    assert resume.summary == ("Senior AI Platform Engineer with 7+ years of AI and ML platform work on Kubernetes and "
+                              "Ray.")
 
 
 @pytest.mark.parametrize("target,general,special,words", [
@@ -1018,7 +1026,10 @@ def test_a_run_never_copies_a_special_title_and_keeps_its_specialty_out_of_the_s
     result = tailor(router, db, profile, jd)
     assert result.status == "ok" and result.retries == 1  # one fix round, for the summary's 'voice'
     assert "the posting's specialty 'Voice'" in client.prompts[1] and "COMMON TITLE" in client.prompts[1]
-    assert result.resume.headline == "AI Engineer" and "voice" not in result.resume.summary.lower()
+    # the draft's headline: its most recent title, the common one at that job's level (prompt v39)
+    assert "Headline: Senior AI Engineer\n" in client.prompts[1]
+    assert result.resume.headline == result.resume.experience[0].job_title and "Voice" not in result.resume.headline
+    assert "voice" not in result.resume.summary.lower()
     assert not any("Voice" in exp.job_title for exp in result.resume.experience)
 
 

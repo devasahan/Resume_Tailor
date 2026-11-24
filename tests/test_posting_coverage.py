@@ -244,10 +244,13 @@ class TitlesOff(LLMClient):
 
 
 def test_step_down_titles_are_fixed_without_an_extra_call(router, db, registry, jd):
-    # the reported case: Contoso Education 'Software Engineer II', then Bluefin.com (8 months) 'Software Engineer'
+    # the reported case: Contoso Education 'Software Engineer II', then Bluefin.com (8 months) 'Software Engineer'; for
+    # a software engineer post, whose plain titles need no step into a field (a data post's would, title_path_problems)
     client = TitlesOff(FakeClient(registry.get("demo-concise")))
     router.overrides["demo-concise"] = client
-    result = asyncio.run(run_tailor(router, db, profile=five_jobs(3), profile_id=None, jd=jd, model_id="demo-concise"))
+    post = jd.replace("Senior Data Engineer", "Senior Software Engineer")
+    result = asyncio.run(run_tailor(router, db, profile=five_jobs(3), profile_id=None, jd=post,
+                                    model_id="demo-concise"))
     assert result.status == "ok" and result.retries == 0 and len(client.prompts) == 1
     assert [e.job_title for e in result.resume.experience] == ["Backend Engineer", "Software Engineer II", "Software Engineer II"]
     assert any("never steps down" in n for n in result.notes)

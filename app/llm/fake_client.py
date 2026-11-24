@@ -4,7 +4,11 @@ It builds generic but structurally valid output from the job description so the 
 mode, review, fit-to-one-page, export, history) can be tried before any API key exists. Its text
 is template-based and is NOT a measure of what real models write. Its bullets name only tools that each job
 could have used during its dates, are 15-22 words with a strong opening verb, in the present tense for the current
-job and the past tense for every other, as the prompt asks; its summary has 2-3 sentences and its skills 3 rows.
+job and the past tense for every other, as the prompt asks; its summary has 2-3 sentences and its skills 3 rows. As the
+prompt asks (v39), its titles climb into the posting's field (Junior Software Engineer, Software Engineer, Platform
+Engineer, AI Platform Engineer, Senior AI Platform Engineer), its headline and its summary's first words are the most
+recent title, and the current job names the post's most wanted programming language (Python for AI work when the post
+names none).
 
 Styles:  concise | detailed (too many long bullets, includes one invented number so the check can flag it)
          flaky (returns invalid JSON until the retry feedback appears in the prompt)
@@ -20,11 +24,12 @@ import os
 import re
 
 from ..parsing.heuristic import parse_resume_text
+from ..pipeline import languages
 from ..pipeline.facts import is_current, is_expired
 from ..pipeline.notes import clean_notes
 from ..pipeline.validate import same_certification
 from ..prompts import RETRY_MARKER
-from ..schemas import Company
+from ..schemas import Company, JDAnalysis
 from .base import LLMClient, LLMResult, Usage
 from .registry import ModelSpec
 
@@ -100,7 +105,19 @@ LEAD_RESULTS = ["17.8%", "21%", "12.6%", "8.3%", "19%", "26.1%", "14%", "31.7%",
 LEAD_BASES = [(101, 83), (62, 49), (87, 76), (96, 88), (63, 51), (46, 34), (43, 37), (41, 28), (64, 58)]
 # the current job's scale and results beyond its first bullet (estimate mode): one figure each in two more bullets
 CURRENT_COUNTS = ("23", "17")
-LEVELS = ["Junior", "", "Senior", "Lead", "Principal"]
+# The current job names the post's language where the work used it: in its second bullet (its first is its biggest
+# win), and the concise demo in its third too, so a test that swaps one bullet keeps it. Each shows the keyword and the
+# figure of the bullet it stands in for (CONCISE[1] and DETAILED[1]: k3, count1; CONCISE[2]: k1, count2).
+LANGUAGE_BULLETS = [  # (past, present)
+    ("Wrote the {k3} services in {lang} with tests on every change, letting the team ship weekly without rollbacks.",
+     ("Write the {k3} services in {lang} with tests on every change, letting {count1} teams ship weekly without "
+      "rollbacks.")),
+    (("Designed {k1} components in {lang} for the core customer workflow with simple, testable interfaces, cutting "
+      "regressions in each release."),
+     ("Design {k1} components in {lang} for the core customer workflow with simple, testable interfaces, catching "
+      "{count2} regressions a quarter before release.")),
+]
+ABOVE_SENIOR = ("Principal", "Lead", "Staff")  # levels the demo steps down from through Senior
 SCOPES = ["implemented", "built", "designed", "owned", "led"]
 COMPANY_RE = re.compile(
     r"(?:\bCompany:[ \t]*|\bAbout[ \t]+|\bJoin[ \t]+|\bat[ \t]+)"
@@ -264,12 +281,25 @@ def fits_era(term: str, index: int, end: str) -> bool:
 
 
 def _title_ladder(prefix: str, base: str, count: int) -> list[str]:
-    top = LEVELS.index(prefix) if prefix in LEVELS else 2
-    titles = []
-    for i in range(count):
-        level = LEVELS[max(top - i, 0)]
-        titles.append(f"{level} {base}".strip())
-    return titles
+    """The demo's titles, most recent first, as the JOB TITLES rule asks: they move into the posting's field as they get
+    closer to today. The posting's title at its level, the same title one level lower (or, at a plain level, a title of
+    the field one step lower: 'Associate Data Engineer'), then titles nearer the general one, one field word fewer at a
+    time ('Platform Engineer'), then plain titles ('Software Engineer', 'Junior Software Engineer'; 'Associate Software
+    Engineer' only when the career needs one more step). A longer career keeps the oldest title."""
+    words = base.split()
+    noun, field = words[-1], words[:-1]
+    plain = f"Software {noun}" if noun in ("Engineer", "Developer") else base
+    senior = prefix == "Senior" or prefix in ABOVE_SENIOR
+    ladder = [f"{prefix} {base}".strip()] + ([f"Senior {base}"] if prefix in ABOVE_SENIOR else [])
+    if senior:
+        ladder.append(base)
+    elif len(field) == 1 and base != plain:  # one field word: the field's title one step lower
+        ladder.append(f"Associate {base}")
+    ladder += [" ".join(field[k:] + [noun]) for k in range(1, len(field))]
+    ladder = list(dict.fromkeys(ladder + ([plain] if senior else [])))
+    lowest = ([f"Associate {plain}"] if count > len(ladder) + 1 else []) + [f"Junior {plain}"]
+    ladder = list(dict.fromkeys(ladder + lowest))
+    return [ladder[min(i, len(ladder) - 1)] for i in range(count)]
 
 
 
@@ -365,6 +395,12 @@ class FakeClient(LLMClient):
         target = f"{prefix} {base}".strip()
         k = (keywords + GENERIC)[:12]
         titles = _title_ladder(prefix, base, len(companies))
+        # the post's most wanted language, else the one this work is usually built in (Python for AI work), named at
+        # the current job (the first one marked 'Present', else the most recent), as the prompt asks
+        posting = JDAnalysis(target_role=target, general_role=base, seniority=seniority, domain="General",
+                             must_have_skills=[], nice_to_have_skills=[], keywords=keywords)
+        language = languages.wanted_language(posting, jd) or languages.usual_language(posting)
+        current = next((i for i, c in enumerate(companies) if is_current(Company.model_validate(c), i)), 0)
         bank = DETAILED if self.style == "detailed" else CONCISE
         if self.style == "detailed":  # deliberately too long, to exercise the fit-to-one-page steps; asked to
             # shorten, it follows the smaller budget it is given, as a real model would
@@ -389,8 +425,13 @@ class FakeClient(LLMClient):
                     template = bank[(index * 2 + j + 1) % len(bank)]
                 if j == 0 and ctx.get("metrics", "estimate") == "estimate":  # opens with its size and its result
                     template = LEADS[index % len(LEADS)]
+                # the language: in the second bullet, and in the concise demo's third too
+                if index == current and language and j in ((1, 2) if bank is CONCISE else (1,)):
+                    template = tuple(text.replace("{lang}", language) for text in LANGUAGE_BULLETS[j - 1])
                 template = template[1] if present else template[0]  # every bank is (past, present)
-                bullets.append(template.format(k1=lead if j == 0 and lead else mine[j % len(mine)],
+                alone = index == current and n == 1 and language and not lead  # one bullet: it names the language
+                first = language if alone else lead if j == 0 and lead else mine[j % len(mine)]
+                bullets.append(template.format(k1=first,
                                                k2=mine[(j + 1) % len(mine)],
                                                k3=mine[(j + 2) % len(mine)], size=LEAD_SIZES[index % len(LEAD_SIZES)],
                                                result=LEAD_RESULTS[index % len(LEAD_RESULTS)],
@@ -400,18 +441,24 @@ class FakeClient(LLMClient):
                                                count2=CURRENT_COUNTS[1] if estimate else "most"))
             experience.append({"company_index": index, "job_title": titles[index], "bullets": bullets})
 
-        summary = (  # 2-3 sentences: the experience, the current focus, one result from a bullet
-            f"{target} with hands-on experience delivering {k[0]} and {k[1]} work for product and operations "
-            "organizations. "
+        summary = (  # 2-3 sentences: the most recent title, the experience, the current focus, one result
+            f"{titles[0] if titles else target} with hands-on experience delivering {k[0]} and {k[1]} work for product "
+            "and operations organizations. "
             f"Focuses on {k[2]} pipelines in the current role, "
             + (f"cutting failed nightly runs from {LEAD_BASES[0][0]} to {LEAD_BASES[0][1]} a month."
                if estimate and companies else "making nightly runs reliable for the teams that depend on them."))
         shown = " ".join([summary] + [b for exp in experience for b in exp["bullets"]])
         # its must-haves: the keywords it shows at least twice (a real model writes the posting's must-haves in), so a
-        # test that swaps one bullet never takes away a must-have's only mention
-        must = [term for term in keywords if count(shown, term) >= 2]
-        # at most 3 rows of 6, the posting's own keywords (the must-haves first), as the prompt asks
+        # test that swaps one bullet never takes away a must-have's only mention; and the language the post wants most,
+        # shown at the current job, among the first 6, as a real model lists it
+        must = [term for term in keywords if count(shown, term) >= 2 or (term == language and count(shown, term))]
+        if language in must[6:]:
+            must = must[:5] + [language] + [term for term in must[5:] if term != language]
+        # at most 3 rows of 6, the posting's own keywords (the must-haves first), as the prompt asks; the current job's
+        # language too, when the posting's keywords lack it
         listed = must + [term for term in keywords if term not in must] or k[:6]
+        if language and language not in listed:
+            listed = [language] + listed
         groups = [{"category": name, "skills": listed[i:i + 6]}
                   for name, i in (("Core Skills", 0), ("Tools and Platforms", 6), ("Practices", 12)) if listed[i:i + 6]]
         return {
@@ -435,7 +482,7 @@ class FakeClient(LLMClient):
                 for i in range(len(companies))
             ],
             "sections": {
-                "headline": base,
+                "headline": titles[0] if titles else base,  # the most recent title, word for word
                 "summary": summary,
                 "skills": groups,
                 "experience": experience,

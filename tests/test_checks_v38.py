@@ -331,11 +331,13 @@ def test_the_share_counts_only_figures_beyond_the_rule():
          "every other job")]
 
 
-FIVE_JOBS = [  # each first bullet with its size and result, the current job 2 more figures, jobs 2 and 3 one more
+FIVE_JOBS = [  # each first bullet with its size and result, the current job 2 more figures, jobs 2 and 3 one more; the
+    # current job names the post's most wanted language (Python), as the prompt asks since v39
     [("Design the Airflow ETL platform behind claims analytics, loading 1.7TB of daily events into Snowflake for 38 "
       "analysts."),
      "Mentor 14 data engineers through code reviews on Spark jobs, cutting review rounds from 16 to 9 per release.",
-     "Build dbt models with data quality tests in SQL, catching 17 broken loads a quarter before the morning reports."],
+     ("Build dbt models in SQL with Python data quality tests, catching 17 broken loads a quarter before the morning "
+      "reports.")],
     [("Built the Python ingestion service for 4.6K store feeds on AWS Lambda, cutting failed loads from 87 to 31 a "
       "month."),
      ("Moved legacy SQL Server reports to Snowflake with tested models, saving analysts 12 hours of manual exports a "
