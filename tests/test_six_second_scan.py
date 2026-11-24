@@ -141,15 +141,16 @@ def test_the_title_line_is_larger_but_stays_on_one_line(profile):
     assert not headline.runs[0].bold and headline.runs[0].font.size.pt == size  # Medium: not bold in Word
 
 
-# ------------------------------------------------------------------ the headline: the most recent title (prompt v39)
-def test_prompt_asks_for_the_most_recent_title_in_the_headline():
+# ------------------------------------------------------------------ the headline: the current job's title (prompt v39)
+def test_prompt_asks_for_the_current_title_in_the_headline():
     text = tailor_system("estimate")
-    assert "HEADLINE: the most recent job's title in your plan, word for word" in text
+    assert ('HEADLINE: the current job\'s title in your plan (the job marked "Present (current role)" in <employers>, '
+            "else the most recent), word for word") in text
     assert "It is never the posting's full job title" in text
     assert '"Senior Full-Stack Engineer" for a "Senior Software Engineer, Full Stack (Payments Platform)" post' in text
     assert "as the JD names it" not in text and "the role's short, common name in 2-3 words" not in text
     assert ("The headline and the summary are without the hiring company's level number (II, III, L5) unless the "
-            "candidate's most recent title in your plan has that level") in text
+            "current job's title in your plan has that level") in text
 
 
 def test_a_copied_posting_title_becomes_the_roles_short_name(profile):

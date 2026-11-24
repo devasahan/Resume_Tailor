@@ -280,26 +280,41 @@ def fits_era(term: str, index: int, end: str) -> bool:
     return not any(year > probe[0] and validate._mentions_tool(term, t) for t, year in years.items())
 
 
-def _title_ladder(prefix: str, base: str, count: int) -> list[str]:
+# Fields a shorter title can name on its own, as languages.title_words reads a title ('Machine Learning' is 'ml',
+# 'Front End' is 'frontend'): 'Platform Engineer' is a title, 'Learning Engineer' and 'End Developer' are not
+FIELD_WORDS = frozenset({
+    "ai", "ml", "mlops", "data", "cloud", "platform", "infrastructure", "backend", "frontend", "fullstack", "sre",
+    "devops", "security", "systems", "mobile", "ios", "android", "web", "analytics", "product", "network", "embedded",
+})
+LEVEL_WORDS = ("Senior", "Junior", "Lead", "Principal", "Staff", "Associate", "Graduate", "Intern", "Trainee")
+
+
+def _title_ladder(prefix: str, base: str, count: int, current: int = 0) -> list[str]:
     """The demo's titles, most recent first, as the JOB TITLES rule asks: they move into the posting's field as they get
     closer to today. The posting's title at its level, the same title one level lower (or, at a plain level, a title of
     the field one step lower: 'Associate Data Engineer'), then titles nearer the general one, one field word fewer at a
-    time ('Platform Engineer'), then plain titles ('Software Engineer', 'Junior Software Engineer'; 'Associate Software
-    Engineer' only when the career needs one more step). A longer career keeps the oldest title."""
+    time while what is left still names a field (FIELD_WORDS: 'Platform Engineer', never 'Learning Engineer'), then
+    plain titles ('Software Engineer', 'Junior Software Engineer'; 'Associate Software Engineer' only when the career
+    needs one more step). A longer career keeps the oldest title. The posting's title is the current job's (`current`:
+    the one marked 'Present', else the most recent), and a job listed above it, which ended later, keeps it too."""
+    level, _, rest = base.partition(" ")
+    if not prefix and level in LEVEL_WORDS[:5] and rest:  # guess_role keeps a level its pattern cannot split off
+        prefix, base = level, rest  # ('Senior iOS Developer', 'Senior Engineer')
     words = base.split()
     noun, field = words[-1], words[:-1]
     plain = f"Software {noun}" if noun in ("Engineer", "Developer") else base
     senior = prefix == "Senior" or prefix in ABOVE_SENIOR
+    nearer = [" ".join(field[k:] + [noun]) for k in range(1, len(field))
+              if field[k][:1].isalnum() and set(languages.title_words(" ".join(field[k:]))) <= FIELD_WORDS]
     ladder = [f"{prefix} {base}".strip()] + ([f"Senior {base}"] if prefix in ABOVE_SENIOR else [])
     if senior:
         ladder.append(base)
-    elif len(field) == 1 and base != plain:  # one field word: the field's title one step lower
-        ladder.append(f"Associate {base}")
-    ladder += [" ".join(field[k:] + [noun]) for k in range(1, len(field))]
-    ladder = list(dict.fromkeys(ladder + ([plain] if senior else [])))
-    lowest = ([f"Associate {plain}"] if count > len(ladder) + 1 else []) + [f"Junior {plain}"]
+    elif field and base != plain and not nearer and field[0] not in LEVEL_WORDS:  # the field's title one step
+        ladder.append(f"Associate {base}")  # lower ('Associate Data Engineer'), never 'Associate Associate ...'
+    ladder = list(dict.fromkeys(ladder + nearer + ([plain] if senior else [])))
+    lowest = ([f"Associate {plain}"] if count - current > len(ladder) + 1 else []) + [f"Junior {plain}"]
     ladder = list(dict.fromkeys(ladder + lowest))
-    return [ladder[min(i, len(ladder) - 1)] for i in range(count)]
+    return [ladder[min(max(i - current, 0), len(ladder) - 1)] for i in range(count)]
 
 
 
@@ -394,13 +409,13 @@ class FakeClient(LLMClient):
         seniority = prefix or "Mid-level"
         target = f"{prefix} {base}".strip()
         k = (keywords + GENERIC)[:12]
-        titles = _title_ladder(prefix, base, len(companies))
         # the post's most wanted language, else the one this work is usually built in (Python for AI work), named at
         # the current job (the first one marked 'Present', else the most recent), as the prompt asks
         posting = JDAnalysis(target_role=target, general_role=base, seniority=seniority, domain="General",
                              must_have_skills=[], nice_to_have_skills=[], keywords=keywords)
         language = languages.wanted_language(posting, jd) or languages.usual_language(posting)
         current = next((i for i, c in enumerate(companies) if is_current(Company.model_validate(c), i)), 0)
+        titles = _title_ladder(prefix, base, len(companies), current)  # the current job's is the post's
         bank = DETAILED if self.style == "detailed" else CONCISE
         if self.style == "detailed":  # deliberately too long, to exercise the fit-to-one-page steps; asked to
             # shorten, it follows the smaller budget it is given, as a real model would

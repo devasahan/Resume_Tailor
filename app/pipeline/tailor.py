@@ -776,11 +776,12 @@ async def run_tailor(
                 )
             # older titles outside the target's field: on its own only when none of them is in it
             path, path_strong = validate.title_path_problems(value[1], value[0].jd_analysis)
+            earlier = ("; the jobs before it step back toward a plain title, the oldest of them plain titles"
+                       if len(validate.jobs_before_current(value[1])) > 1 else "")  # one older job: it is in the field
             path_fix = (
                 "The job titles do not lead into the target's field: " + " ".join(path) + " Choose the older titles "
-                "again following the JOB TITLES rule: the job before the current one in the target's field, earlier "
-                "jobs a step nearer the general title, the oldest ones plain titles, each fitting that job's own "
-                "bullets and never a step down."
+                "again following the JOB TITLES rule: the job before the current one in the target's field" + earlier
+                + "; each title fits that job's own bullets and never steps down."
             )
             if path_strong:
                 feedback.append(path_fix)

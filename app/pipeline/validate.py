@@ -7,7 +7,7 @@
   claim_flags             numbers and skills the user never supplied, for the review step
   unshown_must_haves      required JD terms missing, or only listed, instead of shown in the summary or a bullet
   posting_match_flags     sentences added to match the JD that the user's hints do not back up
-  same_title              the headline and the summary's first words are the most recent job title (prompt v39)
+  same_title              the headline, the summary's first words and the current job's title read the same (v39)
   title_path_problems     older titles that do not move into the target's field as they get closer to today
   missing_language        a current job that does not name the job post's most wanted programming language
   resolve_certifications  the model's certification picks: only the person's own are printed, the rest are ideas
@@ -1782,20 +1782,27 @@ def title_level(title: str) -> tuple[str, int]:
     return spelling.us_text(" ".join(base)), (1 if level is None else level)  # either spelling: one role
 
 
-_ROLE_LEVEL = re.compile(r"^(?P<role>.*?\S)\s+(?P<level>I{1,3}|IV|V|[1-5]|L[1-9]|Level\s+[1-9])$", re.IGNORECASE)
+# A level number after a role, as a title writes it ('Software Engineer II', '... L5', '... Level 2'); a plain digit
+# ('... 2') too, which a sentence reads with care (_TITLE_LEVEL_AFTER)
+_LEVEL_NAMES = r"I{1,3}|IV|V|L[1-9]|Level\s+[1-9]"
+_ROLE_LEVEL = re.compile(rf"^(?P<role>.*?\S)\s+(?P<level>{_LEVEL_NAMES}|[1-5])$", re.IGNORECASE)
 
 
 def role_level_fixes(resume: Resume, analysis: JDAnalysis) -> list[str]:
     """The headline and summary name the posting's role without the hiring company's level number (II, L5) when
-    the candidate's latest title does not have that level: "Senior Software Engineer II with 7+ years" claims a
-    level the candidate never held. Changes the resume in place and returns a note per changed field."""
+    the candidate's current title (current_job) does not have that level: "Senior Software Engineer II with 7+ years"
+    claims a level the candidate never held. Changes the resume in place and returns a note per changed field, which
+    quotes what the field reads once same_title, next in build(), has put the current title under the name and at the
+    start of a summary that opens with its words."""
     match = _ROLE_LEVEL.match(analysis.target_role.strip())
-    if not match or not resume.experience:
+    job = current_job(resume)
+    if not match or job is None:
         return []
     role, level = match.group("role"), match.group("level")
     level_pattern = r"\s+".join(map(re.escape, level.split()))
-    if re.search(rf"(?<![\w-]){level_pattern}$", resume.experience[0].job_title.strip(), re.IGNORECASE):
-        return []  # the candidate's latest title really has this level
+    title = _title_core(job.job_title)  # as same_title shows it: 'Software Engineer II (Backend)' has the level
+    if re.search(rf"(?<![\w-]){level_pattern}$", title, re.IGNORECASE):
+        return []  # the candidate's current title really has this level
     role_pattern = r"\s+".join(map(either_spelling, role.split()))  # the draft may spell it the run's way
     phrase = re.compile(rf"(?<![\w-])({role_pattern})\s+{level_pattern}(?![\w-])", re.IGNORECASE)
     notes = []
@@ -1804,7 +1811,11 @@ def role_level_fixes(resume: Resume, analysis: JDAnalysis) -> list[str]:
         fixed = phrase.sub(lambda m: m.group(1), text)
         if fixed != text:
             setattr(resume, field, fixed)
-            notes.append(f"{field.title()}: wrote '{role}' instead of the posting's level '{analysis.target_role}', "
+            first = phrase.search(text)
+            opening = _title_opening(title).match(fixed) if title else None
+            # the headline becomes the title, and so does an opening that holds the first level taken out
+            said = title if title and (field == "headline" or (opening and first.start() < opening.end())) else role
+            notes.append(f"{field.title()}: wrote '{said}' instead of the posting's level '{analysis.target_role}', "
                          "which is not your title.")
     return notes
 
@@ -1822,17 +1833,19 @@ def fix_title_regressions(resume: Resume) -> list[str]:
     """Make sure no job title steps down from one employer to the next (for example 'Software Engineer II'
     then 'Software Engineer'). Changes the resume in place and returns a note per change.
 
-    Same role at a lower level: the newer title is raised to the older one, unless the newer job is the most
-    recent (its title matches the target role) or raising it would step above the job after it; then the older
-    title is lowered instead. Different roles are only reported by title_growth_problems."""
+    Same role at a lower level: the newer title is raised to the older one, unless the newer job is the current one
+    (current_job: its title is the target role's, under the name) or raising it would step above the job after it;
+    then the older title is lowered instead. A job listed above the current one (it ended later) is raised. Different
+    roles are only reported by title_growth_problems."""
     exps, notes = resume.experience, []  # most recent first
+    current = current_job(resume)
     for i in range(1, len(exps)):
         newer, older = exps[i - 1], exps[i]
         (new_base, new_level), (old_base, old_level) = title_level(newer.job_title), title_level(older.job_title)
         if new_base != old_base or new_level >= old_level:
             continue
         above = title_level(exps[i - 2].job_title) if i >= 2 else None
-        can_raise = i - 1 > 0 and above is not None and (above[0] != old_base or above[1] >= old_level)
+        can_raise = newer is not current and (above is None or above[0] != old_base or above[1] >= old_level)
         changed, before = (newer, newer.job_title) if can_raise else (older, older.job_title)
         changed.job_title = older.job_title if can_raise else newer.job_title
         company = resume.profile.companies[changed.company_index].name
@@ -1926,16 +1939,38 @@ _GENERIC_TITLE_WORDS = frozenset({
     "coordinator", "director", "technician", "officer", "representative", "assistant", "head", "tech", "technical",
     "and", "of", "the", "for", "&", "senior", "sr", "staff", "lead", "principal", "junior", "jr", "associate",
     "graduate", "intern", "trainee", "mid", "level", "entry", "i", "ii", "iii", "iv", "v",
+    # ranks and credentials name no field either ('VP of Engineering', 'Member of Technical Staff', 'Certified ...')
+    "vp", "vice", "president", "chief", "executive", "member", "founding", "distinguished", "fellow", "certified",
+    "licensed", "technology",
 })
-_FIELD_FAMILY = {"ml": "ai", "mlops": "ai", "llm": "ai"}  # titles of one field: an ML Engineer works in AI's
+# titles of one field: an ML Engineer works in AI's, an iOS Engineer in mobile's
+_FIELD_FAMILY = {"ml": "ai", "mlops": "ai", "llm": "ai", "nlp": "ai", "vision": "ai", "ios": "mobile",
+                 "android": "mobile", "database": "data"}
+_DEEP_LEARNING = re.compile(r"\bdeep[\s-]+learning\b", re.IGNORECASE)
+_FIELD_ENDINGS = ("ial", "ing", "ers", "er", "ants", "ant", "ists", "ist", "es", "e", "s", "y")
+
+
+def _field_root(word: str) -> str:
+    """A field word without its ending, while 4 letters stay: 'Nursing' and 'Nurse' -> 'nurs', 'Accounting' and
+    'Accountant' -> 'account', 'Pharmacy' and 'Pharmacist' -> 'pharmac'."""
+    ending = next((end for end in _FIELD_ENDINGS if word.endswith(end) and len(word) - len(end) >= 4), "")
+    return word[: len(word) - len(ending)]
 
 
 def _field_words(title: str) -> set[str]:
-    """The words that set a title's field apart, in lower case and either spelling ('AI Platform Engineer' -> {'ai',
-    'platform'}); 'Machine Learning' and 'ML' are AI's field, 'Back-End' is 'backend' (languages.title_words). None for
-    a plain title ('Senior Software Engineer')."""
-    return {_FIELD_FAMILY.get(word, word) for word in languages.title_words(spelling.us_text(title))
+    """The words that set a title's field apart, in lower case, either spelling and without their endings ('AI
+    Platform Engineer' -> {'ai', 'platform'}); 'Machine Learning', 'Deep Learning', 'ML', 'NLP' and 'Vision' are AI's
+    field, 'iOS' and 'Android' mobile's, 'Back-End' is 'backend' (languages.title_words). None for a plain title
+    ('Senior Software Engineer') or a rank ('VP of Engineering')."""
+    text = _DEEP_LEARNING.sub("ML", spelling.us_text(title))
+    return {_field_root(_FIELD_FAMILY.get(word, word)) for word in languages.title_words(text)
             if word not in _GENERIC_TITLE_WORDS and not re.fullmatch(r"l?\d+", word)}
+
+
+def _in_field(words: set[str], field: set[str]) -> bool:
+    """Whether a title's field words are in the target's field: the same word, or one ends with the other when the
+    shorter has 4+ letters ('cybersecurity' is security; 'IT' is never in 'recruit' or 'audit')."""
+    return any(a == b or (min(len(a), len(b)) >= 4 and (a.endswith(b) or b.endswith(a))) for a in words for b in field)
 
 
 def target_titles(analysis: JDAnalysis | None) -> list[str]:
@@ -1949,21 +1984,30 @@ def target_titles(analysis: JDAnalysis | None) -> list[str]:
     return [title for title in dict.fromkeys(titles) if title]
 
 
+def jobs_before_current(resume: Resume) -> list[ResumeExperience]:
+    """The jobs the person held before the current one (current_job), the latest first: the ones listed after it. A job
+    listed above it ended later; it is not one of them."""
+    job = current_job(resume)
+    position = next((index for index, exp in enumerate(resume.experience) if exp is job), len(resume.experience))
+    return resume.experience[position + 1:]
+
+
 def title_path_problems(resume: Resume, analysis: JDAnalysis | None) -> tuple[list[str], bool]:
     """(what is wrong, whether that alone asks for the rewrite pass) for job titles that do not move into the target's
-    field as they get closer to today (the JOB TITLES rule, prompt v39): the job right before the current one has none
-    of the target's field words (_field_words: 'AI' or 'Platform' for 'Senior AI Platform Engineer'), which is asked
-    along with other fixes, and on its own when no older title has one either. ([], False) for a career of one job, a
-    target without field words ('Senior Software Engineer') or a path that is fine. Levels are fix_title_regressions'
-    and title_growth_problems' to check."""
+    field as they get closer to today (the JOB TITLES rule, prompt v39): the job right before the current one (the next
+    one listed after it, jobs_before_current) has none of the target's field words (_field_words: 'AI' or 'Platform'
+    for 'Senior AI Platform Engineer', in any of their forms, _in_field), which is asked along with other fixes, and on
+    its own when no older title has one either, also when it is the only older job. ([], False) when no job comes
+    before the current one, for a target without field words ('Senior Software Engineer') or a path that is fine.
+    Levels are fix_title_regressions' and title_growth_problems' to check."""
     targets = [title for title in target_titles(analysis) if _field_words(title)]
     field = set().union(*(_field_words(title) for title in targets))
-    exps = resume.experience  # most recent first
-    if len(exps) < 2 or not field or _field_words(exps[1].job_title) & field:
+    older = jobs_before_current(resume)  # the latest first
+    if not older or not field or _in_field(_field_words(older[0].job_title), field):
         return [], False
-    strong = not any(_field_words(exp.job_title) & field for exp in exps[2:])
-    company = resume.profile.companies[exps[1].company_index].name
-    return [f"'{exps[1].job_title}' at {company}, the job before the current one, is not in the field of "
+    strong = not any(_in_field(_field_words(exp.job_title), field) for exp in older[1:])
+    company = resume.profile.companies[older[0].company_index].name
+    return [f"'{older[0].job_title}' at {company}, the job before the current one, is not in the field of "
             f"'{targets[0]}'" + (", and no older title is either." if strong else ".")], strong
 
 
@@ -2899,39 +2943,89 @@ def short_role_headline(resume: Resume) -> None:
         resume.headline = role
 
 
+# A level written on its own after the role, after a comma, a '|' or a spaced dash or in brackets: a level word goes
+# before the role ('Software Engineer, Senior' -> 'Senior Software Engineer'), a level number after it ('Software
+# Engineer - II' -> 'Software Engineer II'); never a word of a function ('Manager, Lead Generation')
+_LEVEL_AFTER_ROLE = re.compile(rf"(?:\s*[,(|]\s*|\s+-\s+)(?:(?P<word>{_LEVEL_WORD})|(?P<number>{_LEVEL_NAMES}|[1-5]))"
+                               r"\s*\)?(?=\s*(?:[,(|]|$)|\s+-\s)", re.IGNORECASE)
+# Roles that take their function after 'of' ('Head, Data' -> 'Head of Data', 'Vice President, Engineering')
+_OF_ROLES = frozenset({"head", "vp", "svp", "evp", "avp", "vice president", "president", "chief"})
+
+
 def _title_core(title: str) -> str:
     """A job title as the line under the name shows it: what follows a '|' or a spaced dash goes, and so do brackets and
     the part after a comma, but the level stays ('Staff Data Engineer, Analytics Infrastructure (Remote)' -> 'Staff Data
-    Engineer'). A bare role noun takes its function from after the comma ('Senior Manager, Customer Success' -> 'Senior
-    Customer Success Manager')."""
-    text = re.sub(r"\s*\([^)]*\)", "", _AFTER_ROLE.sub("", title or ""))
+    Engineer'; 'Software Engineer, Senior' -> 'Senior Software Engineer'). A bare role noun takes its function from
+    after the comma, with its levels ('Senior Manager, Customer Success' -> 'Senior Customer Success Manager', 'Engineer
+    II, Platform' -> 'Platform Engineer II', 'Vice President, Engineering' -> 'Vice President of Engineering')."""
+    text = (title or "").strip()
+    found = _LEVEL_AFTER_ROLE.search(text)  # before the parts after the role go: 'Software Engineer - II' keeps its II
+    if found:
+        before, after = text[:found.start()].strip(), text[found.end():]
+        if found.group("word") and not _LEADING_LEVEL.match(before):
+            text = f"{found.group('word')} {before}{after}"
+        elif found.group("number") and not _ROLE_LEVEL.match(before):
+            text = f"{before} {found.group('number')}{after}"
+    text = re.sub(r"\s*\([^)]*\)", "", _AFTER_ROLE.sub("", text))
     role, _comma, rest = text.partition(",")
-    role, rest, bare = role.strip(), _without_level(rest), _without_level(role)
-    if len(bare.split()) == 1 and rest:
-        level = _LEADING_LEVEL.match(role)
-        role = f"{level.group(0) if level else ''}{rest} {bare}"
+    role, rest = role.strip(), rest.split(",")[0].strip()  # a function keeps its own words, and only its first part
+    bare = _without_level(role)
+    if rest and (len(bare.split()) == 1 or bare.lower() in _OF_ROLES):
+        lead, trail = _LEADING_LEVEL.match(role), _ROLE_LEVEL.match(rest)  # 'Senior Manager', 'Platform II'
+        function = trail.group("role") if trail else rest
+        number = _ROLE_LEVEL.match(_LEADING_LEVEL.sub("", role)) or trail  # 'Engineer II, Platform' keeps its II
+        lead, number = lead.group(0) if lead else "", f" {number.group('level')}" if number else ""
+        role = (f"{lead}{bare} of {function}{number}" if bare.lower() in _OF_ROLES
+                else f"{lead}{function} {bare}{number}")
     return role.strip()
 
 
-# A level number after a role in a summary's opening ('Software Engineer II with ...'); never a figure ('5+ years')
-_TITLE_LEVEL_AFTER = r"(?:\s+(?:I{1,3}|IV|V|L[1-9]))?"
+# A level after a role in a summary's opening, in every form _ROLE_LEVEL strips ('Software Engineer II', '... 2', '...
+# Level 2') and any letter case; a digit never when it starts a figure ('5+ years', '2.5', '3,000', '40%', '2019') or a
+# span of time ('3 years')
+_TITLE_LEVEL_AFTER = (rf"(?:\s+(?:{_LEVEL_NAMES}"
+                      r"|[1-5](?![\d%+]|[.,]\d)(?!\s*(?:\+|years?\b|yrs?\b|months?\b|decades?\b))))?")
+# A field written as one word, as two or with a hyphen ('Frontend', 'front end', 'Front-End'): the same title
+_JOINED_FIELDS = {"backend": "back end", "frontend": "front end", "fullstack": "full stack", "devops": "dev ops",
+                  "mlops": "ml ops", "genai": "gen ai"}
+
+
+def _title_words_pattern(role: str) -> str:
+    """The role's words in any letter case and either spelling, each part of a hyphenated word or a joined field written
+    apart, with a hyphen or joined ('Full-Stack' ~ 'full stack' ~ 'fullstack', 'Back End' ~ 'backend')."""
+    parts = [piece for word in re.split(r"[\s-]+", role) for piece in _JOINED_FIELDS.get(word.lower(), word).split()]
+    return r"[\s-]*".join(either_spelling(part) for part in parts if part)
+
+
+def _title_opening(title: str) -> re.Pattern:
+    """A summary's opening that same_title turns into `title`: its words, in any letter case, either spelling and with
+    any hyphens or joins (_title_words_pattern), with or without a level before or after them, after an article or not
+    ('A senior AI platform engineer', 'Software Engineer 2' for 'Software Engineer II')."""
+    words = _title_words_pattern(_without_level(title))
+    return re.compile(rf"^(\s*)(?:an?\s+)?(?:{_LEVEL_WORD}\s+)*{words}{_TITLE_LEVEL_AFTER}(?![\w-])", re.IGNORECASE)
 
 
 def same_title(resume: Resume) -> None:
-    """The line under the name, the summary's first words and the most recent job's title read the same (the owner's
-    rule, prompt v39): the headline becomes the most recent job's title as written, without what follows it
-    (_title_core), and a summary that opens with that title's words, in any letter case and with or without a level,
-    opens with the exact title ('Senior AI platform engineer with 7+ years ...' -> 'Senior AI Platform Engineer with 7+
-    years ...'; 'AI Platform Engineer with ...' -> 'Senior AI Platform Engineer with ...'). A summary that opens with
-    anything else is left alone. With no job, the headline stays the role's short name (short_role_headline, before).
-    Changes the resume in place."""
-    title = _title_core(resume.experience[0].job_title) if resume.experience else ""
+    """The line under the name, the summary's first words and the current job's title (current_job: the job marked
+    'Present', else the most recent) read the same (the owner's rule, prompt v39): the headline and that job's line
+    become its title without what follows it (_title_core), and a summary that opens with that title's words, in any
+    letter case, with or without a level and whatever its hyphens, or with the title as the model wrote it, opens with
+    the exact title ('Senior AI platform engineer with 7+ years ...' -> 'Senior AI Platform Engineer with 7+ years ...';
+    'AI Platform Engineer with ...' -> 'Senior AI Platform Engineer with ...'; 'Senior manager, customer success with
+    ...' -> 'Senior Customer Success Manager with ...'). A summary that opens with anything else is left alone. With no
+    job, the headline stays the role's short name (short_role_headline, before). Changes the resume in place."""
+    job = current_job(resume)
+    written = job.job_title.strip() if job else ""
+    title = _title_core(written)
     if not title:
         return
-    resume.headline = title
-    words = r"[\s-]+".join(either_spelling(word) for word in _without_level(title).split())
-    opening = re.compile(rf"^(\s*)(?:{_LEVEL_WORD}\s+)*{words}{_TITLE_LEVEL_AFTER}(?![\w-])", re.IGNORECASE)
-    resume.summary = opening.sub(lambda match: match.group(1) + title, resume.summary, count=1)
+    resume.headline = job.job_title = title
+    words = re.findall(r"\w+(?:[-/+#.]\w+)*", written)
+    if title != written and words:  # the summary may open with the title as written: 'Senior manager, customer success'
+        whole = r"[\W_]+".join(either_spelling(word) for word in words)
+        resume.summary = re.sub(rf"^(\s*){whole}\)?(?=\s+with\b|\s*[,.;:]|\s*$)", lambda match: match.group(1) + title,
+                                resume.summary, count=1, flags=re.IGNORECASE)
+    resume.summary = _title_opening(title).sub(lambda match: match.group(1) + title, resume.summary, count=1)
 
 
 # A broad field is part of a common title, never a specialty: 'AI Platform Engineer', 'Data Platform Engineer' and
@@ -2988,7 +3082,8 @@ def _article_for(word: str) -> str:
 def general_role_fixes(resume: Resume, analysis: JDAnalysis | None) -> None:
     """A special posting title is never copied: the headline is the most similar common title, and the summary and
     the job titles say it instead ('Voice AI Engineer' -> 'AI Engineer', 'a Senior Voice AI Engineer' -> 'a Senior AI
-    Engineer'). The specialty belongs in the bullets. Changes the resume in place."""
+    Engineer'), and so does a current title that names the specialty in another form (_common_current_title). The
+    specialty belongs in the bullets. Changes the resume in place."""
     special, common = common_title(analysis)
     if not special:
         _keep_posting_headline(resume, analysis)
@@ -3007,6 +3102,30 @@ def general_role_fixes(resume: Resume, analysis: JDAnalysis | None) -> None:
     resume.summary = pattern.sub(swap, resume.summary)
     for exp in resume.experience:
         exp.job_title = pattern.sub(swap, exp.job_title)
+    _common_current_title(resume, analysis, common)
+
+
+def _specialty_pattern(words: str) -> re.Pattern:
+    """The specialty's words as a whole phrase, in either spelling and any letter case ('Voice')."""
+    return re.compile(r"(?<![\w-])" + r"[\s-]+".join(either_spelling(word) for word in words.split()) + r"(?![\w-])",
+                      re.IGNORECASE)
+
+
+def _common_current_title(resume: Resume, analysis: JDAnalysis | None, common: str) -> None:
+    """A current title (current_job) that still names the specialty in a form the exact special title misses ('Senior
+    Voice and Conversational AI Engineer') becomes its levels and the common title ('Senior AI Engineer', 'AI Engineer
+    II'), as the rewrite pass would make it: the headline and the summary's first words copy it (same_title), also when
+    that pass is skipped. A summary that opens with the old title opens with the new one. Runs before
+    fix_title_regressions, which then compares the title as it stays."""
+    words, job = specialty(analysis), current_job(resume)
+    if job is None or not words or not _specialty_pattern(words).search(job.job_title):
+        return
+    old = _title_core(job.job_title)
+    lead, trail = _LEADING_LEVEL.match(old), _ROLE_LEVEL.match(_LEADING_LEVEL.sub("", old))
+    new = f"{lead.group(0) if lead else ''}{common}{' ' + trail.group('level') if trail else ''}"
+    if old:
+        resume.summary = _title_opening(old).sub(lambda match: match.group(1) + new, resume.summary, count=1)
+    job.job_title = new
 
 
 def _keep_posting_headline(resume: Resume, analysis: JDAnalysis | None) -> None:
@@ -3034,8 +3153,7 @@ def specialty_problems(resume: Resume, analysis: JDAnalysis | None) -> list[str]
     words = specialty(analysis)
     if not words:
         return []
-    pattern = re.compile(r"(?<![\w-])" + r"[\s-]+".join(either_spelling(word) for word in words.split())
-                         + r"(?![\w-])", re.IGNORECASE)
+    pattern = _specialty_pattern(words)
     places = [("headline", resume.headline), ("summary", resume.summary)] + [
         (f"job title at {resume.profile.companies[exp.company_index].name}", exp.job_title) for exp in resume.experience]
     return [where for where, text in places if pattern.search(text)]
