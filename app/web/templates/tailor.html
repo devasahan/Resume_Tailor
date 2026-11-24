@@ -168,6 +168,33 @@ function showResult(run, view = 'resume') {
   preview(run.cover_letter ? view : 'resume');
 }
 
+// The page's address names the run on screen ('/tailor?run=7'), and its history entry keeps the preview shown and
+// what the run was made from, so the result comes back as it was after a reload or Back (restoreShown). Chrome opens a
+// web link clicked in the preview (LinkedIn, the website) in this tab, and the page then loads afresh.
+function keepShown(view) {
+  const { run, jd, profileId, spelling: style, company } = current;
+  history.replaceState({ run: run.run_id, view, jd, profileId, spelling: style, company }, '',
+    `/tailor?run=${run.run_id}`);
+}
+
+// The run the address names, shown again as it was. The boxes may hold another job by now (or nothing): `current`
+// takes what the run was made from, kept in the history entry, so Add or Rewrite cover letter writes only a letter
+// for the same job, as before the page was left. With the address alone (typed or kept elsewhere) that is not known,
+// and a press of either makes the resume again from the boxes. A run that is gone or failed, or that this account may
+// not read, drops the address; with no answer from the server it stays, for a reload to try again.
+async function restoreShown() {
+  const id = Number(new URLSearchParams(location.search).get('run'));
+  if (!Number.isInteger(id) || id <= 0) return;
+  let run = null;
+  try { run = await api(`/api/runs/${id}`); } catch (err) { if (err.transient) return; }
+  if (current) return;  // a result made meanwhile wins
+  if (!run || run.status !== 'ok') { history.replaceState(null, '', '/tailor'); return; }
+  const kept = history.state && history.state.run === id ? history.state : {};
+  chooseSpelling(run.spelling === 'eu' ? 'eu' : 'us');
+  current = { run, jd: kept.jd ?? null, profileId: kept.profileId ?? null, spelling, company: kept.company ?? null };
+  showResult(run, kept.view === 'resume' ? 'resume' : 'cover');
+}
+
 // Admin only: where the job's time went, from the run's timing record. Only for the run this page just tailored:
 // after Add or Rewrite cover letter, the saved record is still the tailoring's, not the new letter's.
 function showTiming(run) {
@@ -243,6 +270,7 @@ function preview(view) {
   $('#pdf').src = `/api/runs/${id}/${file}?t=${Date.now()}#toolbar=0&navpanes=0&view=FitH`;
   $('#show-resume').classList.toggle('on', view !== 'cover');
   $('#show-cover').classList.toggle('on', view === 'cover');
+  keepShown(view === 'cover' ? 'cover' : 'resume');
 }
 
 function readJd() {
@@ -260,6 +288,7 @@ function clearResult() {  // no usable result: do not leave the previous one's d
   current = null;
   $('#cert-note').replaceChildren();
   $('#result').classList.add('hidden'); $('#empty').classList.remove('hidden');
+  history.replaceState(null, '', '/tailor');  // nor its run in the address, for a reload to show
 }
 
 // A new resume, with its cover letter written in the same job when `withLetter` (one wait, one run).
@@ -573,6 +602,7 @@ async function init() {
   if (pick) remember(pick.id);
   resumeNote();
   busy(false);
+  await restoreShown();
   if (ME.admin) await modelsNote();
 }
 init().catch(err => $('#messages').replaceChildren(notice('bad', err.message)));

@@ -18,13 +18,24 @@ from ..schemas import EMAIL_RE, Certification, Company, Contact, Education, Prof
 PHONE_RE = re.compile(r"(?<!\d)(?:\+?\d{1,3}[\s.-]?)?(?:\(\d{3}\)|\d{3})[\s.-]?\d{3}[\s.-]?\d{4}(?!\d)")
 LINKEDIN_RE = re.compile(r"(?:https?://)?(?:www\.)?linkedin\.com/[\w\-/%.]+", re.IGNORECASE)
 # The person's own sites (see _website): a GitHub or GitLab address, with or without https:// and www.; and any other
-# address written with http(s):// or www. (a portfolio). A bare 'taylorquinn.dev' is too like other text to read.
+# address written with http(s):// or www. (a portfolio).
 CODE_SITE_RE = re.compile(r"(?<![\w@./-])(?:https?://)?(?:www\.)?(?:github|gitlab)\.com/[\w\-./%~]+", re.IGNORECASE)
 WEB_RE = re.compile(r"(?<![\w@./-])(?:https?://|www\.)[\w-]+(?:\.[\w-]+)+(?::\d+)?(?:[/?#][\w\-./%~?#=&+@:!$*]*)?",
                     re.IGNORECASE)
+# An address written without http(s):// or www., as the app's own files print the website ('taylorquinn.dev'): a host
+# with a dot and an ending in small letters (never '.js': 'Node.js'), maybe a path. Too like other text to read
+# anywhere but on a contact line (_bare_site).
+BARE_SITE_RE = re.compile(r"(?:[\w-]+\.)+(?!js\b)[a-z]{2,}(?:/[\w\-./%~?#=&+:!$*]*)?")
 _SITE_ITEMS = re.compile(r"\s*[|•·—–,;]\s*|\s+-\s+|\s{2,}")  # what parts a header line's items, commas too
 # A label before an address: words only ('GitHub: ', 'Portfolio: ', 'Personal site: '), never 'https:' or a host's
 _SITE_LABEL = re.compile(r"[^\W\d_](?:[^\W\d_]|[ '&/-]){0,24}?\s*:\s*(?!//)")
+_SHORT_LABEL = re.compile(r"[^\W\d_]+(?:[ '&/-][^\W\d_]+)?\s*:\s*(?!//)")  # one or two words: 'Personal site: '
+# The words of a label that names a site ('Website:', 'Personal website:', 'Portfolio/Blog:', 'GitHub:'), not
+# something else that has a dot in it ('Skype: taylor.quinn')
+_SITE_WORDS = frozenset({"website", "web", "site", "personal", "portfolio", "blog", "homepage", "home", "page", "url",
+                         "github", "gitlab", "online", "my", "own"})
+# A web address with or without http(s)://, as an item of a line of links (_reads_as_sentence)
+_ADDRESS = re.compile(r"(?:https?://)?[\w-]+(?:\.[\w-]+)+(?::\d+)?(?:[/?#]\S*)?", re.IGNORECASE)
 LOCATION_RE = re.compile(r"\b([A-Z][A-Za-z.' -]+,\s*(?:[A-Z]{2}|[A-Z][a-z]+(?: [A-Z][a-z]+)?))\b")
 _TOWN_AND_STATE = re.compile(r",\s*[A-Z]{2}$")  # a place no company is named like: 'Austin, TX' (not 'Rivera, Quinn')
 
@@ -951,24 +962,85 @@ def _header_items(line: str) -> list[str]:
     return items
 
 
-def _site_items(line: str) -> list[str]:
-    """A header line's items as a web address is looked for in them: split at its separators, gaps, commas and
-    semicolons, each without a label such as 'GitHub:' before it, brackets around it or a full stop after it."""
-    items = []
+def _site_pairs(line: str, label: re.Pattern[str] = _SITE_LABEL) -> list[tuple[str, str]]:
+    """A header line's items as a web address is looked for in them, each with its label: split at its separators,
+    gaps, commas and semicolons, each without a label such as 'GitHub:' before it (given back in small letters without
+    its colon, "" for none), brackets around it or a full stop after it."""
+    pairs = []
     for item in _SITE_ITEMS.split(line):
-        label = _SITE_LABEL.match(item)
-        items.append(item[label.end() if label else 0:].strip(" ()[]<>").rstrip("."))
-    return items
+        found = label.match(item)
+        name = item[:found.end()].strip().rstrip(":").strip().lower() if found else ""
+        pairs.append((name, item[found.end() if found else 0:].strip(" ()[]<>").rstrip(".")))
+    return pairs
+
+
+def _site_items(line: str, label: re.Pattern[str] = _SITE_LABEL) -> list[str]:
+    """A header line's items as a web address is looked for in them, without their labels (_site_pairs)."""
+    return [item for _name, item in _site_pairs(line, label)]
+
+
+def _names_a_site(label: str) -> bool:
+    """True when a label (from _site_pairs) is "" or names a site: 'portfolio', 'personal website', 'my github page'."""
+    return all(word in _SITE_WORDS for word in re.split(r"[ '&/-]+", label) if word)
+
+
+def _reads_as_sentence(line: str) -> bool:
+    """True when a header line is words of a sentence, as a summary or a tagline under the contact lines is ('Data
+    engineer at Northwind Labs, www.northwind.example, since 2022.'): no email, phone or LinkedIn address on it, and an
+    item other than a web address holds a word with no capital letter or digit, apart from small linking words. Its
+    addresses are an employer's or a project's, not the person's. A headline, a place or a line of links is none
+    ('Senior Data Engineer | github.com/taylorquinn', 'Berlin', 'Portfolio: taylorquinn.dev'). A label is no words of
+    the item when it has one or two words or names a site ('My GitHub page:'), so 'Most proud of: github.com/...' is a
+    sentence."""
+    if ("@" in line and EMAIL_RE.search(line)) or PHONE_RE.search(line) or LINKEDIN_RE.search(line):
+        return False
+    for (_short, item), (label, address) in zip(_site_pairs(line, _SHORT_LABEL), _site_pairs(line)):
+        if label and _names_a_site(label):
+            item = address
+        if item and not _ADDRESS.fullmatch(item) and not _capitalized(item):
+            return True
+    return False
+
+
+def _bare(item: str) -> bool:
+    """True when an item is an address written without http(s):// or www. (BARE_SITE_RE), never an email's or
+    LinkedIn's."""
+    return bool(BARE_SITE_RE.fullmatch(item)) and "@" not in item and "linkedin.com" not in item.lower()
+
+
+def _bare_site(lines: list[str]) -> str:
+    """The first address written without http(s):// or www. ('taylorquinn.dev', as the app's own files print the
+    website) on a contact line of the header, or on a line of nothing but such addresses right after one, where a
+    contact line that wrapped puts the website. A contact line holds the email, a phone, LinkedIn's address or another
+    web address, and does not read as a sentence (_reads_as_sentence). Only an address with no label before it or one
+    that names a site ('Portfolio:', 'My website:'), never another one ('Skype: taylor.quinn'). "" when there is
+    none."""
+    after_contact = False
+    for line in lines:
+        pairs = [(label, item) for label, item in _site_pairs(line) if item]
+        contact = not _reads_as_sentence(line) and bool(
+            ("@" in line and EMAIL_RE.search(line)) or PHONE_RE.search(line) or LINKEDIN_RE.search(line)
+            or any(CODE_SITE_RE.fullmatch(item) or WEB_RE.fullmatch(item) for _label, item in pairs))
+        only_sites = bool(pairs) and all(_bare(item) for _label, item in pairs)
+        if contact or (after_contact and only_sites):
+            for label, item in pairs:
+                if _bare(item) and _names_a_site(label):
+                    return item
+        after_contact = contact or (after_contact and only_sites)
+    return ""
 
 
 def _website(lines: list[str]) -> str:
     """The person's GitHub, GitLab or own site, from the header lines: the first GitHub or GitLab address, else the
-    first other address written with http(s):// or www. that is not LinkedIn's. Only one that is an item of its line
-    on its own (_site_items), never words of a sentence ('Maintainer of github.com/northwind/etl-kit'). As written;
-    "" when there is none."""
-    items = [item for line in lines for item in _site_items(line)]
+    first other address written with http(s):// or www. that is not LinkedIn's, else the first one written without
+    them on a contact line (_bare_site). Only one that is an item of its line on its own (_site_items), never words of
+    a sentence ('Maintainer of github.com/northwind/etl-kit'), nor on a line that reads as one (_reads_as_sentence: a
+    summary or tagline under the contact lines, with an employer's site or a project's repository). As written; ""
+    when there is none."""
+    items = [item for line in lines if not _reads_as_sentence(line) for item in _site_items(line)]
     found = next((item for item in items if CODE_SITE_RE.fullmatch(item)), "")
-    return found or next((item for item in items if WEB_RE.fullmatch(item) and "linkedin.com" not in item.lower()), "")
+    found = found or next((item for item in items if WEB_RE.fullmatch(item) and "linkedin.com" not in item.lower()), "")
+    return found or _bare_site(lines)
 
 
 def _only_sites(line: str) -> bool:
@@ -1001,7 +1073,9 @@ def parse_resume_text(text: str) -> Profile:
     phone = phone_match.group(0).strip() if phone_match else ""
     linkedin_match = LINKEDIN_RE.search(text)
     linkedin = linkedin_match.group(0) if linkedin_match else ""
-    website = _website(top)
+    # only from lines before the first heading: when the text starts with one (the contact details in a Word table,
+    # whose text comes last, or in its page header), `top` is the body's, with a bullet's repository in it
+    website = _website(head[:10])
 
     name = ""
     for line in top:
