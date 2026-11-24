@@ -116,19 +116,25 @@ def test_the_letter_is_written_while_the_layout_runs(router, db, registry, profi
 def test_a_letter_waits_for_the_shorter_draft_and_quotes_it(router, db, registry):
     """Without a time limit a draft that needs bullets removed to fit its page is written again, shorter: a whole new
     draft, with new figures. The letter starts only after it and quotes the resume as it stays."""
-    marker = ("Rebuild the Quillmark ledger service with staged rollouts and clear ownership, letting finance teams "
-              "close each month without manual fixes.")  # the current job: the present tense
+    # the current job (the present tense): no longer than the bullet it replaces and with its figures, so the shorter
+    # draft still fits its page with no bullet removed and is kept
+    marker = ("Rebuild the Quillmark ledger for 38 teams, cutting failed nightly runs by 17.8% (from 101 to 83 a "
+              "month).")
+    replaced = []
 
     class MarksTheShorterDraft(Paced):
         async def generate_structured(self, **kwargs):
             result = await super().generate_structured(**kwargs)
             if kwargs["schema_name"] == "tailor_output" and len(self.of("tailor_output")) == 2:
-                result.data["sections"]["experience"][0]["bullets"][0] = marker
+                bullets = result.data["sections"]["experience"][0]["bullets"]
+                replaced.append(bullets[0])
+                bullets[0] = marker
             return result
 
     client = MarksTheShorterDraft(FakeClient(registry.get("demo-detailed")))
     router.overrides["demo-detailed"] = client
     result = tailored(router, db, career(9), model="demo-detailed", cover_letter=True, time_limit=0)
+    assert len(marker) <= len(replaced[0])
     assert result.status == "ok" and "The model shortened the resume to fit two pages." in result.notes
     assert [call["kind"] for call in client.calls] == ["tailor_output", "tailor_revision", "tailor_output",
                                                        "cover_letter"]  # the same order as before

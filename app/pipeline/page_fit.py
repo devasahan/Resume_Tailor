@@ -7,10 +7,12 @@
   1. after the draft, measure it at the design's own sizes (a few milliseconds, no file is made)
   2. when it is over, remove bullets (trim_to_page): the last bullet of the job with the most bullets, the less
      relevant job first (its bullets' must-have and keyword mentions), then the older; the most recent job keeps its
-     lead, every job keeps its first bullet, and a bullet that holds a must-have's only mention goes last
+     lead, every job keeps its first bullet, and a bullet that holds a must-have's only mention goes last (but before
+     the most recent job's lead)
   3. when one page cannot be reached even then, two pages from the untrimmed draft, trimmed only as far as two pages
      need; only when two pages cannot be reached at the design's sizes either, the old size ladder (fit.py), whose
-     notes say the font was reduced
+     notes say the font was reduced: on the untrimmed draft when a smaller step fits it on two pages, else with only
+     the bullets removed that its smallest steps need for two pages
 
 A whole job always stays on one page (FitStyle.layout 1: its title line and all its bullets), so two pages never split
 a job. Runs saved before keep layout 0 and the old fitting (fit.py): they look exactly as they did.
@@ -34,11 +36,13 @@ from ..schemas import (
     SkillGroup,
 )
 from .facts import bullet_caps, is_expired, stay_months
-from .fit import render_smallest, styles, try_styles
+from .fit import LADDER, render_smallest, styles, try_styles
 
 LAYOUT = 1  # whole jobs on one page, 'B.S. in Computer Science · School · Town' (app/render/pdf.py)
 ONE_PAGE, TWO_PAGES = 1, 2
 MAX_REMOVED_IN_NOTE = 5
+# How the notes of a fit start (fit_new, fit_report, and fit.py for older runs): the notes of a new fit replace them
+FIT_NOTE = re.compile(r"Removed \d+ bullet\(s\) to fit |Kept two pages|Font reduced|Still ")
 
 
 def design_style(paper: str = "Letter") -> FitStyle:
@@ -228,7 +232,8 @@ def removal_order(resume: Resume, analysis: JDAnalysis | None = None,
     """(job position, bullet index) in the order trim_to_page removes bullets, without any layout: always from the job
     with the most bullets left, the most recent counting one fewer (it keeps its lead), the less relevant one and then
     the older one first; within a job its last bullet, but a bullet holding a must-have's only mention only when no
-    other bullet can go. Every job keeps its first bullet."""
+    other bullet can go, or when only the most recent job's are left and taking one would end its lead. Every job keeps
+    its first bullet."""
     relevance = relevance if relevance is not None else draft_relevance(resume, analysis)
     held = _only_mentions(resume, analysis)
     alive = [list(range(len(exp.bullets))) for exp in resume.experience]
@@ -246,11 +251,17 @@ def removal_order(resume: Resume, analysis: JDAnalysis | None = None,
             jobs = [i for i in range(len(alive)) if removable(i, protect)]
             if not jobs:
                 break
-            others = [i for i in jobs if i]
-            if 0 in jobs and others and len(alive[0]) - 1 <= max(len(alive[i]) for i in range(1, len(alive))):
-                jobs = others  # the most recent job keeps strictly the most bullets while another can give one
+            guarded = protect
+            if 0 in jobs and len(alive[0]) - 1 <= max((len(alive[i]) for i in range(1, len(alive))), default=0):
+                # the most recent job keeps strictly the most bullets while another can give one: an older job's
+                # bullet holding a must-have's only mention, when no other can
+                others = [i for i in jobs if i]
+                if not others and protect:
+                    others = [i for i in range(1, len(alive)) if removable(i, False)]
+                    guarded = not others
+                jobs = others or jobs
             position = max(jobs, key=lambda i: (len(alive[i]) - (i == 0) - weight(i), i))
-            index = removable(position, protect)[-1]
+            index = removable(position, guarded)[-1]
             alive[position].remove(index)
             order.append((position, index))
     return order
@@ -275,16 +286,17 @@ class Trim:
 
 
 def trim_to_page(resume: Resume, paper: str, target: int, analysis: JDAnalysis | None = None,
-                 relevance: list[float] | None = None) -> Trim:
-    """The fewest bullets removed (removal_order) for the resume to fit `target` pages at the design's own sizes, found
-    by halving (a few layouts of ~3 ms); with every removable bullet gone when even that does not fit. Works on a
-    copy."""
+                 relevance: list[float] | None = None, at: list[FitStyle] | None = None) -> Trim:
+    """The fewest bullets removed (removal_order) for the resume to fit `target` pages at the design's own sizes (or at
+    whichever of the styles `at` takes the fewest pages), found by halving (a few layouts of ~3 ms); with every
+    removable bullet gone when even that does not fit. Works on a copy."""
     order = removal_order(resume, analysis, relevance)
     seen: dict[int, int] = {}
 
     def pages(k: int) -> int:
         if k not in seen:
-            seen[k] = measure(_without(resume, order, k), paper)
+            work = _without(resume, order, k)
+            seen[k] = measure(work, paper) if at is None else min(resume_layout(work, style)[0] for style in at)
         return seen[k]
 
     if pages(0) <= target:
@@ -313,6 +325,26 @@ def removed_note(removed: list[str], pages: int) -> str:
     return f"Removed {len(removed)} bullet(s) to fit {pages_word(pages)}: {shown}{more}"
 
 
+def refitted_notes(notes: list[str], fit: list[str]) -> list[str]:
+    """A run's notes after it is fitted again (a hand edit, a certification tick): the earlier fit's notes (FIT_NOTE:
+    bullets removed, two pages kept, the font reduced, still over) give way to the new fit's `fit`, each note once."""
+    return list(dict.fromkeys([note for note in notes if not FIT_NOTE.match(note)] + fit))
+
+
+def on_the_ladder(resume: Resume, paper: str, document: str = "Resume") -> tuple[FitStyle, int, bytes, list[str]]:
+    """Text over two pages at the design's own sizes, as it is, on the old size ladder (fit.py): the largest step that
+    fits two pages (try_styles), else the smallest step (render_smallest); a note says the font was reduced."""
+    found = try_styles(resume, paper, document, layout=LAYOUT)
+    if found:
+        small, pages, pdf, notes = found
+    else:
+        small, pages, pdf = render_smallest(resume, paper, document, layout=LAYOUT)
+        notes = []
+    if not any(note.startswith("Font reduced") for note in notes) and small != design_style(paper):
+        notes.append(f"Font reduced to {small.font_pt:g} pt to fit {pages_word(min(pages, TWO_PAGES))}.")
+    return small, pages, pdf, notes
+
+
 @dataclass
 class Fitted:
     resume: Resume
@@ -327,8 +359,9 @@ def fit_new(resume: Resume, paper: str, target: int, analysis: JDAnalysis | None
             document: str = "Resume") -> Fitted:
     """A new run's resume on `target` pages (plan_pages) at the design's own sizes: as it is, or with the fewest
     bullets removed (trim_to_page); when one page cannot be reached even then, two pages from the untrimmed draft;
-    only when two pages cannot be reached at the design's sizes either, the old size ladder on the shortest version
-    (its note says the font was reduced). Never changes `resume`."""
+    only when two pages cannot be reached at the design's sizes either, the old size ladder (on_the_ladder, its note
+    says the font was reduced) on the untrimmed draft when one of its steps fits it on two pages, else with the fewest
+    bullets removed for two pages at its smallest steps, else on the shortest version. Never changes `resume`."""
     style = design_style(paper)
     relevance = draft_relevance(resume, analysis)
     first = trim_to_page(resume, paper, target, analysis, relevance)
@@ -343,17 +376,13 @@ def fit_new(resume: Resume, paper: str, target: int, analysis: JDAnalysis | None
             if two.removed:
                 notes.append(removed_note(two.removed, TWO_PAGES))
             return Fitted(two.resume, style, two.pages, notes, len(two.removed))
-    shortest = first.resume  # every removable bullet already gone
-    found = try_styles(shortest, paper, document, layout=LAYOUT)
-    if found:
-        small, pages, pdf, notes = found
-    else:
-        small, pages, pdf = render_smallest(shortest, paper, document, layout=LAYOUT)
-        notes = []
-    if not any(note.startswith("Font reduced") for note in notes) and small != style:
-        notes.append(f"Font reduced to {small.font_pt:g} pt to fit {pages_word(min(pages, TWO_PAGES))}.")
-    if first.removed:
-        notes.append(removed_note(first.removed, min(pages, TWO_PAGES)))
+    # the size ladder: the untrimmed draft when its smallest steps fit it on two pages (then try_styles finds the
+    # largest step that does), else trimmed only as far as they need, else the shortest version (every removable bullet
+    # gone) at the smallest step
+    kept = trim_to_page(resume, paper, TWO_PAGES, analysis, relevance, styles(paper, LAYOUT)[len(LADDER):])
+    small, pages, pdf, notes = on_the_ladder(kept.resume, paper, document)
+    if kept.removed:
+        notes.append(removed_note(kept.removed, min(pages, TWO_PAGES)))
     if pages > TWO_PAGES:
         notes.append(f"Still more than {pages_word(TWO_PAGES)} after trimming. Shorten the text in the editor.")
-    return Fitted(shortest, small, pages, notes, len(first.removed), pdf)
+    return Fitted(kept.resume, small, pages, notes, len(kept.removed), pdf)

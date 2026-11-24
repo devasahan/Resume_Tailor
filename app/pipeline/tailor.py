@@ -57,6 +57,7 @@ from .page_fit import (
     fit_new,
     job_relevance,
     measure,
+    on_the_ladder,
     pages_word,
     plan_pages,
 )
@@ -301,15 +302,31 @@ def run_checks(result: TailorResult, jd_text: str) -> None:
         result.flags += validate.cover_flags(result.cover_letter, result.hints, own)
 
 
+def keeps_as_much(trimmed: Resume, shorter: Resume, analyses: list[JDAnalysis]) -> bool:
+    """Whether a shorter draft, fitted to its page, keeps as much as the trimmed first draft: at least as many bullets,
+    and every must-have (of either draft's analysis) the trimmed draft shows in its summary or a bullet."""
+    if sum(len(exp.bullets) for exp in shorter.experience) < sum(len(exp.bullets) for exp in trimmed.experience):
+        return False
+    before, after = validate.evidence_text(trimmed), validate.evidence_text(shorter)
+    terms = dict.fromkeys(term for analysis in analyses for term in analysis.must_have_skills)
+    return all(validate.mentions(after, term) for term in terms if validate.mentions(before, term))
+
+
 async def fit_report(resume: Resume, paper: str, page_target: int = 0,
                      style: FitStyle | None = None) -> tuple[FitStyle, int, bool, list[str]]:
     """Fit check for a hand-edited resume: never changes the text, only picks the style. A run made since the one-page
-    rule (`page_target` 1 or 2) stays at the design's own sizes on its own paper (`style`): the font is never reduced,
-    and a note says when the text runs past its page. An older run (0) keeps the old fitting: the largest size that
-    keeps two pages."""
+    rule (`page_target` 1 or 2) stays at the design's own sizes on its own paper (`style`), and a note says when the
+    text runs past its page; only text over two pages there gets a smaller font, from the size ladder as fit_new's last
+    resort uses it (on_the_ladder), so text it laid out that way keeps its pages. An older run (0) keeps the old
+    fitting: the largest size that keeps two pages."""
     if page_target:
         paper = style.paper if style is not None else paper
         pages = await asyncio.to_thread(measure, resume, paper)
+        if pages > TWO_PAGES:
+            small, pages, _pdf, notes = await asyncio.to_thread(on_the_ladder, resume, paper)
+            if pages > TWO_PAGES:
+                notes.append(f"Still {pages} pages at the smallest font (the limit is two). Shorten the text.")
+            return small, pages, pages <= TWO_PAGES, notes
         notes = [] if pages <= page_target else [
             (f"Still {pages} pages at the design's own sizes: the resume is meant to fit {pages_word(page_target)}. "
              "Shorten the text.")]
@@ -779,15 +796,20 @@ async def run_tailor(
                 short_doubled = validate.fix_repeated_words(short_resume)
                 short = await asyncio.to_thread(fit_new, short_resume, paper, target, short_output.jd_analysis,
                                                 document)
-                # kept when it reaches the page with fewer bullets removed: its bullets are the model's own choice
+                # kept when it reaches the page with fewer bullets removed, ends with as many bullets and still shows
+                # every must-have the trimmed draft shows (it had no fix round): its bullets are the model's own choice
                 # for the smaller budget, which beats removing many from a draft that ignored the plan
-                if short.pages <= target and short.removed < fitted.removed:
+                if (short.pages <= target and short.removed < fitted.removed
+                        and keeps_as_much(fitted.resume, short.resume, [output.jd_analysis, short_output.jd_analysis])):
                     output, resume, title_notes, doubled, fitted = (short_output, short_resume, short_title_notes,
                                                                     short_doubled, short)
                     notes.append(f"The model shortened the resume to fit {pages_word(target)}.")
             except GenerationFailed as exc:
                 _absorb(outcome, exc.outcome)
                 notes.append("Asking the model for a shorter draft failed, so bullets were removed instead.")
+            except (CostCapError, LLMError) as exc:  # the daily cost cap, reached meanwhile: it was never sent
+                _absorb(outcome, second)
+                notes.append(f"A shorter draft was not asked for, so bullets were removed instead: {str(exc)[:200]}")
             steps.mark("shorter draft")
         resume, style, pages = fitted.resume, fitted.style, fitted.pages
         notes += fitted.notes
