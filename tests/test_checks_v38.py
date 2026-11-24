@@ -143,6 +143,39 @@ def test_a_hint_copied_as_given_costs_no_rewrite_and_no_flag(router, db, registr
     assert not any(w.startswith("These figures look rounded") for w in result.ats_warnings)
 
 
+# the person's project notes write their figures in words; the draft writes them as figures, as the prompt asks
+SCALE_NOTES = ("Saved three million dollars a year on cloud spend. Handled two billion events a day for twenty "
+               "thousand users.")
+SCALE_BULLETS = ["Cut cloud spend by $3M a year by moving the Spark batch jobs on AWS to spot instances",
+                 "Serve 2B events a day to 20K users from the Go edge tier, cutting pages for the on-call team"]
+
+
+def test_the_persons_figures_in_words_in_their_notes_stay_theirs(profile):
+    assert validate.note_figures(SCALE_NOTES) == {"3m", "2b", "20k"}
+    resume = resume_of(profile, [list(SCALE_BULLETS)], summary="Platform engineer at Northwind Labs.")
+    rules.fix_numbers(resume, analysis())
+    assert resume.experience[0].bullets == SCALE_BULLETS
+    assert not [f.reason for f in validate.claim_flags(resume, "", "", SCALE_NOTES) if f.level == "verify"]
+    assert validate.figure_style_problems(resume, "", SCALE_NOTES) == []  # no 'round guesses' for the rewrite pass
+    letter = CoverLetter(greeting="Dear Hiring Manager,", closing="Sincerely,", paragraphs=[
+        "At Northwind Labs I cut cloud spend by $3M a year and served 2B events a day to 20K users."])
+    assert validate.cover_flags(letter, "", SCALE_NOTES) == []
+    assert validate.figure_style_problems(resume, "") != []  # without the notes: estimates, as before
+
+
+def test_figures_from_the_notes_cost_no_rewrite(router, db, registry, profile):
+    profile.companies[0].projects = SCALE_NOTES
+
+    def write(sections):
+        sections["experience"][0]["bullets"][:2] = SCALE_BULLETS
+
+    client, result = tailored(router, db, registry, profile, write)
+    assert result.retries == 0 and "round guesses" not in client.fix_round()
+    assert result.resume.experience[0].bullets[:2] == SCALE_BULLETS  # the person's real figures are kept
+    assert not any(f.level == "verify" and ("$3M" in f.reason or "20K" in f.reason) for f in result.flags)
+    assert not any(w.startswith("These figures look rounded") for w in result.ats_warnings)
+
+
 # ------------------------------------------------------------------ a result led or joined the ways the prompt asks
 STRONG = re.findall(r'^\s*Strong \([^)]*\): "(.*)"$', SYSTEM_MD, re.MULTILINE)
 RESULTS_IN_WORDS = [
@@ -451,6 +484,19 @@ def test_the_number_words_warning_lists_what_fix_numbers_changes(profile):
     rules.fix_numbers(resume, terms)
     assert listed == ["Led nine teams through the yearly audit of the payments ledger"]  # the only text it changes
     assert resume.experience[0].bullets[1].startswith("Led 9 teams") and rules.number_words(resume, terms) == []
+
+
+def test_the_warning_and_the_letter_keep_what_fix_numbers_keeps(profile):
+    terms = analysis(keywords=["three lines of defense"])
+    bullets = ["Ran five whys reviews after each outage, cutting repeat incidents from 23 to 9 a quarter",
+               "Mapped 41 controls to the three lines of defense model for seven teams at Northwind Labs"]
+    resume = resume_of(profile, [list(bullets)], skills=[SkillGroup(category="Practices", skills=["five whys"])])
+    listed = rules.number_words(resume, terms)
+    rules.fix_numbers(resume, terms)
+    fixed = resume.experience[0].bullets
+    assert fixed == [bullets[0], "Mapped 41 controls to the three lines of defense model for 7 teams at Northwind Labs"]
+    assert listed == [old for old, new in zip(bullets, fixed) if old != new]  # what fix_numbers changes, no more
+    assert rules.letter_fixes(bullets, terms, "", ["Northwind Labs"], ["five whys"]) == fixed  # the letter alike
 
 
 # ------------------------------------------------------------------ a two-page plan is said
