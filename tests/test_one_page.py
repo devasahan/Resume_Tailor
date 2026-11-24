@@ -2,6 +2,7 @@
 break, and the run end to end with the demo model. Every person, employer and school here is invented."""
 import asyncio
 import io
+import math
 import re
 from datetime import date
 
@@ -27,9 +28,11 @@ from app.pipeline.page_fit import (
 )
 from app.pipeline.tailor import fit_report, refit, run_tailor
 from app.render.docx import resume_docx
-from app.render.pdf import education_runs, resume_layout
+from app.render.pdf import BULLET_GAP, education_runs, resume_layout, resume_sheet
 from app.schemas import (
+    Certification,
     Company,
+    Contact,
     Education,
     FitStyle,
     JDAnalysis,
@@ -68,17 +71,22 @@ def resume_with(profile: Profile, counts: list[int], bullet: str = BULLET) -> Re
                               for i, n in enumerate(counts)])
 
 
-def test_a_plan_fills_one_page_at_the_design_size_and_the_newest_job_leads():
+def test_a_plan_fills_one_page_and_the_newest_job_holds_about_half():
+    """The owner's choice: about half of the bullets for the most recent job, the page filled. The placeholder plan
+    may run over the page by up to one of its two-line bullets (real bullets are mostly shorter); one bullet fewer
+    fits at the design's own sizes."""
     for jobs in (2, 3, 4, 5, 6, 7):
         profile = career(jobs)
         pages, counts = plan_pages(profile, today=TODAY)
+        caps, total = page_fit.plan_caps(profile.companies, TODAY), sum(counts)
         assert pages == 1 and len(counts) == jobs and min(counts) >= 1, (jobs, counts)
         assert counts[0] > max(counts[1:]), counts  # the most recent job always gets the most
-        plan = page_fit._plan_resume(profile, counts)
-        assert page_fit.measure(plan) == 1  # the placeholder text fits at the design's own sizes
-        more = [n + 1 if i == 0 else n for i, n in enumerate(counts)]
-        if counts[0] < page_fit.bullet_caps(profile.companies, TODAY)[0]:
-            assert page_fit.measure(page_fit._plan_resume(profile, more)) == 2  # one more bullet would not fit
+        # about half, unless its cap stops it or every older job is down to its one bullet
+        assert counts[0] >= min(caps[0], math.ceil(total / 2), total - (jobs - 1)), counts
+        fewer = [counts[0] - 1, *counts[1:]]
+        assert page_fit.measure(page_fit._plan_resume(profile, fewer)) == 1  # one bullet fewer fits
+        if counts != caps:  # the page is filled: the plan itself runs over, by less than one bullet
+            assert page_fit.measure(page_fit._plan_resume(profile, counts)) == 2, counts
 
 
 def test_two_pages_only_when_one_bullet_per_older_job_does_not_fit():
@@ -547,6 +555,7 @@ def test_a_tick_that_removes_nothing_and_a_hand_edit_keep_the_note_of_removed_bu
     saved = db.get_run(run_id)
     made = "Removed 2 bullet(s) to fit one page: Northwind Labs: Rebuilt the partner order sync in Go with retries..."
     saved.notes = [*saved.notes, made, "Removed a repeated word: 'the the'."]  # as the fit wrote it when it was made
+    saved.resume.experience[0].bullets.pop()  # room for one more certification: the plan fills the page
     db.update_run(saved)
     have = [row.have for row in saved.certifications]
     counts = [len(e.bullets) for e in saved.resume.experience]
@@ -580,3 +589,137 @@ def test_a_hand_edit_keeps_an_older_runs_note_of_removed_bullets(client):
     assert edited.status_code == 200, edited.text
     run = db.get_run(run_id)
     assert run.style.layout == 0 and run.notes == [made, "Removed a repeated word: 'the the'."], run.notes
+
+
+# ------------------------------------------------------------------ about half the page for the current job, filled
+NOW = date(2026, 11, 24)
+STAYS = {  # (start, end) of each job, most recent first
+    "mixed stays": [("Jan 2026", "Present"), ("Jul 2024", "Dec 2025"), ("Jul 2021", "Jun 2024"),
+                    ("Jul 2020", "Jun 2021"), ("May 2019", "Jun 2020")],  # 11, 18, 36, 12 and 14 months
+    "three": [("Mar 2022", "Present"), ("Jun 2019", "Feb 2022"), ("Jul 2016", "May 2019")],
+    "seven": [(f"Jan {2024 - 2 * i}", "Present" if i == 0 else f"Dec {2025 - 2 * i}") for i in range(7)],
+    "one": [("Mar 2022", "Present")],
+    "one, 11 months": [("Jan 2026", "Present")],
+    "two short": [("Jan 2026", "Present"), ("Jan 2025", "Nov 2025")],  # 11 months each
+    "four months now": [("Aug 2026", "Present"), ("Jan 2025", "Nov 2025")],
+}
+EMPLOYERS = ["Northwind Labs", "Bluefin Commerce", "Contoso", "Fabrikam", "Employer E", "Employer F", "Employer G"]
+
+
+def person(stays: str, certifications: int = 0) -> Profile:
+    """Taylor Quinn with a contact line, the jobs of STAYS[stays] and `certifications` of their own."""
+    return Profile(
+        name="Taylor Quinn",
+        contact=Contact(email="taylor@example.com", phone="(555) 010-4477", location="St. Louis, MO"),
+        companies=[Company(name=EMPLOYERS[i], start=start, end=end, mode="Remote")
+                   for i, (start, end) in enumerate(STAYS[stays])],
+        education=[Education(school="Tailspin University", degree="B.S.", field="Computer Science",
+                             location="St. Louis, MO", end="2014")],
+        certifications=[Certification(name=f"Contoso Certified Cloud Engineer, level {i + 1}", issuer="Contoso",
+                                      year="2024") for i in range(certifications)])
+
+
+@pytest.mark.parametrize(("stays", "certifications", "planned"), [
+    ("mixed stays", 0, [5, 2, 1, 1, 1]),  # 10 bullets: half for the current job, 1-2 for each older one
+    ("three", 0, [6, 3, 3]),
+    ("seven", 0, [3, 1, 1, 1, 1, 1, 1]),  # every older job its one bullet first, then the current job
+    ("mixed stays", 4, [3, 1, 1, 1, 1]),  # room kept for 4 certifications
+    ("one", 0, [8]),  # a career of one job: its own cap, as before
+    ("one, 11 months", 0, [3]),
+])
+def test_the_current_job_gets_about_half_of_a_filled_page(stays, certifications, planned):
+    profile = person(stays, certifications)
+    assert plan_pages(profile, today=NOW) == (1, planned)
+    plan = page_fit._plan_resume(profile, planned)
+    if len(planned) > 1:  # filled: over the page by less than one bullet (two full lines), one bullet fewer fits
+        assert measure(plan) == 2 and measure(page_fit._plan_resume(profile, [planned[0] - 1, *planned[1:]])) == 1
+    else:  # one job: its own cap, with room to spare
+        assert measure(plan) == 1
+
+
+def test_an_eleven_month_current_job_can_take_six_bullets():
+    """However short the older stays, a current job of 6 months or more may hold 6 bullets (about half the page); a
+    shorter one keeps its usual cap (one more than any other job), and a career of one job its own."""
+    assert page_fit.bullet_caps(person("two short").companies, NOW) == [4, 3]
+    assert page_fit.plan_caps(person("two short").companies, NOW) == [6, 3]
+    assert plan_pages(person("two short"), today=NOW) == (1, [6, 3])
+    assert page_fit.plan_caps(person("four months now").companies, NOW) == [4, 3]
+    assert plan_pages(person("four months now"), today=NOW) == (1, [4, 3])
+    assert page_fit.plan_caps(person("one, 11 months").companies, NOW) == [3]
+
+
+def test_the_one_or_two_page_choice_allows_no_overflow():
+    """Only the extras may run over the page: eight jobs whose minimum (2 bullets for the most recent, 1 for every
+    other) is over one page by less than a bullet are planned for two pages, as before."""
+    profile = career(8)
+    assert measure(page_fit._plan_resume(profile, [2] + [1] * 7)) == 2
+    assert measure(page_fit._plan_resume(profile, [1] * 8)) == 1
+    pages, counts = plan_pages(profile, today=TODAY)
+    assert pages == 2 and counts[0] > max(counts[1:]), counts
+
+
+def test_on_two_pages_the_current_job_takes_its_extras_first():
+    """Two pages: the current job's extras come first, up to its cap (8), then the older jobs' by recency and stay."""
+    profile = career(10)
+    pages, counts = plan_pages(profile, today=TODAY)
+    assert pages == 2 and counts[0] == page_fit.plan_caps(profile.companies, TODAY)[0] == 8, counts
+    assert min(counts[1:]) >= 2 and measure(page_fit._plan_resume(profile, counts)) == 2, counts
+
+
+def removals_follow_the_half_rule(counts: list[int], order: list[tuple[int, int]]) -> None:
+    """Each bullet comes from the current job while it holds more than half and keeps its lead, or when no older job
+    has one to give; else from the older job with the most bullets, between equal ones the older."""
+    left = list(counts)
+    for position, _index in order:
+        older = [i for i in range(1, len(left)) if left[i] > 1]
+        current_gives = 2 * left[0] > sum(left) and left[0] - 1 > max(left[1:], default=0)
+        if position == 0:
+            assert current_gives or not older, (order, left)
+        else:
+            assert not current_gives and left[position] == max(left[i] for i in older), (order, left)
+            assert position == max(i for i in older if left[i] == left[position]), (order, left)
+        left[position] -= 1
+
+
+def test_trimming_takes_from_the_current_job_only_while_it_holds_more_than_half():
+    order = removal_order(resume_with(career(5), [6, 2, 1, 1, 1]))
+    assert order == [(0, 5), (1, 1), (0, 4), (0, 3), (0, 2), (0, 1)]  # 6 of 11 goes to 5, then 5 of 10 stays
+    order = removal_order(resume_with(career(5), [4, 2, 2, 1, 1]))
+    assert order == [(2, 1), (1, 1), (0, 3), (0, 2), (0, 1)]  # 4 of 10: the older jobs first, the older of two
+    assert removal_order(resume_with(career(2), [3, 2])) == [(1, 1), (0, 2), (0, 1)]  # 3 of 5, and it keeps its lead
+    for counts in ([7, 3, 3, 2, 2], [8, 2, 2], [5, 4, 4, 1], [3, 3, 3, 3]):  # drafts that ignored their plan
+        removals_follow_the_half_rule(counts, removal_order(resume_with(career(len(counts)), counts)))
+    # a must-have's only mention still goes last: the current job gives its others first, even at half, until taking
+    # one more would end its lead
+    resume = resume_with(career(5), [5, 2, 1, 1, 1])
+    resume.experience[1].bullets[1] = "Moved event ingestion to Kafka topics with schema checks, cutting lost events"
+    analysis = JDAnalysis(target_role="Backend Engineer", seniority="", domain="", must_have_skills=["Kafka"],
+                          nice_to_have_skills=[], keywords=[])
+    assert removal_order(resume, analysis) == [(0, 4), (0, 3), (1, 1), (0, 2), (0, 1)]
+
+
+def test_a_draft_as_long_as_its_plan_loses_one_bullet_and_the_current_job_keeps_half():
+    """A draft as long as the placeholder plan (every bullet two full lines, the longest summary and skills) is over by
+    less than one bullet: one bullet is removed (fewer than the 2 that ask the model for a shorter draft), from an
+    older job, so the current job keeps its half."""
+    profile = person("mixed stays")
+    _pages, planned = plan_pages(profile, today=NOW)
+    trimmed = trim_to_page(page_fit._plan_resume(profile, planned), "Letter", 1)
+    assert trimmed.pages == 1 and len(trimmed.removed) == 1 < tailor.MIN_REMOVED_FOR_SHORTER
+    assert [len(e.bullets) for e in trimmed.resume.experience] == [5, 1, 1, 1, 1]
+
+
+def test_a_demo_run_gives_the_current_job_about_half_of_a_full_page(router, db):
+    """The demo model writes to the plan: at most one bullet is removed, the current job keeps about half, and the
+    page has room for less than two more bullets (the plan used to leave one bullet's room, and real bullets of
+    fewer than two lines leave more)."""
+    profile = person("mixed stays")
+    planned = plan_pages(profile, today=date.today(), relevance=job_relevance(profile, SAMPLE_JD))[1]
+    result = asyncio.run(run_tailor(router, db, profile=profile, profile_id=None, jd=SAMPLE_JD,
+                                    model_id="demo-concise", save=False))
+    counts = [len(e.bullets) for e in result.resume.experience]
+    assert result.status == "ok" and result.pages == 1 and result.fits and result.style == design_style("Letter")
+    assert sum(planned) - sum(counts) <= 1 and 2 * counts[0] >= sum(counts) and counts[0] > max(counts[1:]), counts
+    sheet = resume_sheet(result.resume, result.style)
+    two_line_bullet = 2 * sheet.size * sheet.line + BULLET_GAP * sheet.gap_unit
+    assert sheet.bottom - sheet.y < 2 * two_line_bullet

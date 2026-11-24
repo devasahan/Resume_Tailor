@@ -1,14 +1,17 @@
 """One page for a new run (layout 1): the owner's rule since prompt v38. Words are cut, never the font or the margins.
 
   0. before the model writes anything, plan how many bullets fit on one page at the design's own sizes (plan_pages):
-     the most recent job gets 2 and every other job 1, then extras are handed out (the most recent job always one
-     ahead, then recent jobs, long stays and the jobs the person's project notes show most relevant to the posting)
-     while the placeholder resume still fits; only when even that minimum overflows one page is the plan made for two
+     the most recent job gets 2 and every other job 1, then the most recent job's extras until it holds about half of
+     all the bullets that fit (the owner's choice: about half the page, 5-6 bullets for a career of 5 jobs), then the
+     older jobs' extras (recent jobs, long stays and the jobs the person's project notes show most relevant to the
+     posting; the most recent job always keeps the most) while the placeholder resume fits, or runs over by less than
+     one of its two-line bullets: real bullets are mostly shorter, so the page ends full; only when even that minimum
+     overflows one page is the plan made for two (without that allowance)
   1. after the draft, measure it at the design's own sizes (a few milliseconds, no file is made)
-  2. when it is over, remove bullets (trim_to_page): the last bullet of the job with the most bullets, the less
-     relevant job first (its bullets' must-have and keyword mentions), then the older; the most recent job keeps its
-     lead, every job keeps its first bullet, and a bullet that holds a must-have's only mention goes last (but before
-     the most recent job's lead)
+  2. when it is over, remove bullets (trim_to_page): the most recent job's last bullet while it holds more than half of
+     them (and keeps the most), else the last bullet of the older job with the most bullets, the less relevant job
+     first (its bullets' must-have and keyword mentions), then the older; every job keeps its first bullet, and a
+     bullet that holds a must-have's only mention goes last (but before the most recent job's lead)
   3. when one page cannot be reached even then, two pages from the untrimmed draft, trimmed only as far as two pages
      need; only when two pages cannot be reached at the design's sizes either, the old size ladder (fit.py), whose
      notes say the font was reduced: on the untrimmed draft when a smaller step fits it on two pages, else with only
@@ -28,6 +31,7 @@ from functools import lru_cache
 from ..render.pdf import resume_layout
 from ..schemas import (
     MAX_CERTIFICATIONS,
+    Company,
     FitStyle,
     JDAnalysis,
     Profile,
@@ -130,13 +134,32 @@ def draft_relevance(resume: Resume, analysis: JDAnalysis | None) -> list[float]:
 
 
 # ---------------------------------------------------------------------- the plan
+# The most recent job holds about half of a plan's bullets (the owner's choice: about half the page, 5-6 bullets that
+# cover the posting's main requirements, 1-2 for each older job). Once it has lasted CURRENT_MONTHS, it may hold
+# CURRENT_CAP however short the older stays are (bullet_caps alone gives an 11-month job 3, or one more than any
+# other job: 4 beside an 11-month one); a shorter stay keeps bullet_caps, so a job of a few weeks gets no more room
+# than before.
+CURRENT_CAP, CURRENT_MONTHS = 6, 6
+
+
+def plan_caps(companies: list[Company], today: date | None = None) -> list[int]:
+    """Most bullets each employer can get in a new run's plan: bullet_caps, except that the most recent job (the
+    first) of a career of two or more may hold CURRENT_CAP once its stay is CURRENT_MONTHS or longer (or its dates
+    cannot be read): 11 months and 11 months -> [6, 3], not [4, 3]. A career of one job keeps its own cap."""
+    caps = bullet_caps(companies, today)
+    if len(caps) > 1 and (stay_months(companies[0], today) or CURRENT_MONTHS) >= CURRENT_MONTHS:
+        caps[0] = max(caps[0], CURRENT_CAP)
+    return caps
+
+
 def plan_pages(profile: Profile, paper: str = "Letter", today: date | None = None,
                relevance: tuple[float, ...] = ()) -> tuple[int, list[int]]:
-    """(pages, bullets per employer, most recent first): the most bullets that fit on one page at the design's own
-    sizes, when every bullet is two lines (see module docstring); two pages only when even 2 bullets for the most
-    recent job and 1 for every other one do not fit on one. A short career gets every job's own cap (bullet_caps).
-    `relevance` (job_relevance) decides between jobs otherwise equal. Cached per profile, paper, day and relevance
-    (compare mode asks once per model for the same profile and posting)."""
+    """(pages, bullets per employer, most recent first) at the design's own sizes, when every bullet is two lines
+    (see module docstring): on one page about half of them for the most recent job, and as many as fill the page (the
+    placeholder may run over by less than one bullet); two pages only when even 2 bullets for the most recent job and
+    1 for every other one do not fit on one. A short career gets every job's own cap (plan_caps). `relevance`
+    (job_relevance) decides between older jobs otherwise equal. Cached per profile, paper, day and relevance (compare
+    mode asks once per model for the same profile and posting)."""
     key = profile.model_dump_json(exclude={"companies": {"__all__": {"projects"}}})  # notes take no room
     pages, counts = _plan(key, paper, today or date.today(), tuple(relevance))
     return pages, list(counts)
@@ -145,7 +168,7 @@ def plan_pages(profile: Profile, paper: str = "Letter", today: date | None = Non
 @lru_cache(maxsize=64)
 def _plan(profile_json: str, paper: str, today: date, relevance: tuple[float, ...]) -> tuple[int, tuple[int, ...]]:
     profile = Profile.model_validate_json(profile_json)
-    caps = bullet_caps(profile.companies, today)
+    caps = plan_caps(profile.companies, today)
     if not caps:
         return ONE_PAGE, ()
     style = design_style(paper)
@@ -156,9 +179,11 @@ def _plan(profile_json: str, paper: str, today: date, relevance: tuple[float, ..
     if pages(caps) <= ONE_PAGE:
         return ONE_PAGE, tuple(caps)
     least = [min(2, caps[0])] + [min(1, cap) for cap in caps[1:]]
-    if pages(least) <= ONE_PAGE:
+    if pages(least) <= ONE_PAGE:  # one page, filled: one bullet fewer must fit (the current job has 2 or more)
         return ONE_PAGE, tuple(_most_that_fit(profile, caps, least, today, relevance,
-                                              lambda counts: pages(counts) <= ONE_PAGE))
+                                              lambda counts: pages([counts[0] - 1, *counts[1:]]) <= ONE_PAGE))
+    # two pages, without that allowance: whole jobs move to the next page, so a bullet too many there can cost more
+    # than one removed bullet
     two = [min(2, cap) for cap in caps]
     start = two if pages(two) <= TWO_PAGES else least
     return TWO_PAGES, tuple(_most_that_fit(profile, caps, start, today, relevance,
@@ -190,21 +215,35 @@ def extra_order(profile: Profile, caps: list[int], start: list[int], today: date
 
 def _most_that_fit(profile: Profile, caps: list[int], start: list[int], today: date, relevance: tuple[float, ...],
                    fits) -> list[int]:
-    extras = extra_order(profile, caps, start, today, relevance)
+    """The most bullets above `start` that `fits` allows, the most recent job first: its extras until it holds about
+    half of them all (ceil of half, up to its cap), then extra_order for the rest (the older jobs' extras, and its own
+    above that half where it must stay ahead). How many fit in all is found first, with its extras all first: on one
+    page every placeholder bullet takes the same room, so the total does not depend on who gets them (on two pages
+    whole jobs move between pages, so it is close). For example 10 that fit for 5 jobs: [5, 2, 1, 1, 1]."""
 
-    def with_first(n: int) -> list[int]:
-        counts = list(start)
-        for index, level in extras[:n]:
-            counts[index] = max(counts[index], level)
-        return counts
+    def longest(extras: list[tuple[int, int]]) -> list[int]:
+        """`start` with the longest run of `extras` that fits, found by halving: more bullets never take less room."""
 
-    if fits(with_first(len(extras))):
-        return with_first(len(extras))
-    low, high = 0, len(extras)  # with_first(low) fits, with_first(high) does not: more bullets never take less room
-    while high - low > 1:
-        middle = (low + high) // 2
-        low, high = (middle, high) if fits(with_first(middle)) else (low, middle)
-    return with_first(low)
+        def with_first(n: int) -> list[int]:
+            counts = list(start)
+            for index, level in extras[:n]:
+                counts[index] = max(counts[index], level)
+            return counts
+
+        if fits(with_first(len(extras))):
+            return with_first(len(extras))
+        low, high = 0, len(extras)  # with_first(low) fits, with_first(high) does not
+        while high - low > 1:
+            middle = (low + high) // 2
+            low, high = (middle, high) if fits(with_first(middle)) else (low, middle)
+        return with_first(low)
+
+    def first_to(level: int) -> list[tuple[int, int]]:  # the most recent job's extras up to `level`, then the rest
+        own = [(0, n) for n in range(start[0] + 1, level + 1)]
+        return own + extra_order(profile, caps, [max(start[0], level), *start[1:]], today, relevance)
+
+    room = sum(longest(first_to(caps[0])))
+    return longest(first_to(min(caps[0], math.ceil(room / 2))))
 
 
 # ---------------------------------------------------------------------- after the draft
@@ -232,11 +271,12 @@ def _only_mentions(resume: Resume, analysis: JDAnalysis | None) -> set[tuple[int
 
 def removal_order(resume: Resume, analysis: JDAnalysis | None = None,
                   relevance: list[float] | None = None) -> list[tuple[int, int]]:
-    """(job position, bullet index) in the order trim_to_page removes bullets, without any layout: always from the job
-    with the most bullets left, the most recent counting one fewer (it keeps its lead), the less relevant one and then
-    the older one first; within a job its last bullet, but a bullet holding a must-have's only mention only when no
-    other bullet can go, or when only the most recent job's are left and taking one would end its lead. Every job keeps
-    its first bullet."""
+    """(job position, bullet index) in the order trim_to_page removes bullets, without any layout: from the most recent
+    job only while it holds more than half of the bullets left and keeps the most after it ([6, 2, 1, 1, 1] -> [5, 2,
+    1, 1, 1]), else from the older job with the most bullets, the less relevant one and then the older one first
+    ([5, 2, 1, 1, 1] -> [5, 1, 1, 1, 1]); within a job its last bullet. A bullet holding a must-have's only mention goes
+    only when no other bullet can (so the most recent job gives one of its others first, even at half), or when only
+    the most recent job's are left and taking one would end its lead. Every job keeps its first bullet."""
     relevance = relevance if relevance is not None else draft_relevance(resume, analysis)
     held = _only_mentions(resume, analysis)
     alive = [list(range(len(exp.bullets))) for exp in resume.experience]
@@ -255,15 +295,19 @@ def removal_order(resume: Resume, analysis: JDAnalysis | None = None,
             if not jobs:
                 break
             guarded = protect
-            if 0 in jobs and len(alive[0]) - 1 <= max((len(alive[i]) for i in range(1, len(alive))), default=0):
-                # the most recent job keeps strictly the most bullets while another can give one: an older job's
-                # bullet holding a must-have's only mention, when no other can
-                others = [i for i in jobs if i]
-                if not others and protect:
-                    others = [i for i in range(1, len(alive)) if removable(i, False)]
-                    guarded = not others
-                jobs = others or jobs
-            position = max(jobs, key=lambda i: (len(alive[i]) - (i == 0) - weight(i), i))
+            older = [i for i in jobs if i]
+            lead_kept = len(alive[0]) - 1 > max((len(bullets) for bullets in alive[1:]), default=0)
+            if 0 in jobs and 2 * len(alive[0]) > sum(map(len, alive)) and lead_kept:
+                jobs = [0]  # more than half: the most recent job gives
+            elif older:
+                jobs = older
+            elif protect and not lead_kept:
+                # only the most recent job could give, and that would end its lead: first an older job's bullet
+                # holding a must-have's only mention
+                held_older = [i for i in range(1, len(alive)) if removable(i, False)]
+                if held_older:
+                    jobs, guarded = held_older, False
+            position = max(jobs, key=lambda i: (len(alive[i]) - weight(i), i))
             index = removable(position, guarded)[-1]
             alive[position].remove(index)
             order.append((position, index))
