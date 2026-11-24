@@ -13,11 +13,18 @@ from typing import NamedTuple
 
 from ..pipeline.facts import parse_point
 from ..pipeline.validate import same_certification
-from ..schemas import Certification, Company, Contact, Education, Profile
+from ..schemas import EMAIL_RE, Certification, Company, Contact, Education, Profile
 
-EMAIL_RE = re.compile(r"[\w.+-]+@[\w-]+(?:\.[\w-]+)+")
 PHONE_RE = re.compile(r"(?<!\d)(?:\+?\d{1,3}[\s.-]?)?(?:\(\d{3}\)|\d{3})[\s.-]?\d{3}[\s.-]?\d{4}(?!\d)")
 LINKEDIN_RE = re.compile(r"(?:https?://)?(?:www\.)?linkedin\.com/[\w\-/%.]+", re.IGNORECASE)
+# The person's own sites (see _website): a GitHub or GitLab address, with or without https:// and www.; and any other
+# address written with http(s):// or www. (a portfolio). A bare 'taylorquinn.dev' is too like other text to read.
+CODE_SITE_RE = re.compile(r"(?<![\w@./-])(?:https?://)?(?:www\.)?(?:github|gitlab)\.com/[\w\-./%~]+", re.IGNORECASE)
+WEB_RE = re.compile(r"(?<![\w@./-])(?:https?://|www\.)[\w-]+(?:\.[\w-]+)+(?::\d+)?(?:[/?#][\w\-./%~?#=&+@:!$*]*)?",
+                    re.IGNORECASE)
+_SITE_ITEMS = re.compile(r"\s*[|•·—–,;]\s*|\s+-\s+|\s{2,}")  # what parts a header line's items, commas too
+# A label before an address: words only ('GitHub: ', 'Portfolio: ', 'Personal site: '), never 'https:' or a host's
+_SITE_LABEL = re.compile(r"[^\W\d_](?:[^\W\d_]|[ '&/-]){0,24}?\s*:\s*(?!//)")
 LOCATION_RE = re.compile(r"\b([A-Z][A-Za-z.' -]+,\s*(?:[A-Z]{2}|[A-Z][a-z]+(?: [A-Z][a-z]+)?))\b")
 _TOWN_AND_STATE = re.compile(r",\s*[A-Z]{2}$")  # a place no company is named like: 'Austin, TX' (not 'Rivera, Quinn')
 
@@ -944,6 +951,37 @@ def _header_items(line: str) -> list[str]:
     return items
 
 
+def _site_items(line: str) -> list[str]:
+    """A header line's items as a web address is looked for in them: split at its separators, gaps, commas and
+    semicolons, each without a label such as 'GitHub:' before it, brackets around it or a full stop after it."""
+    items = []
+    for item in _SITE_ITEMS.split(line):
+        label = _SITE_LABEL.match(item)
+        items.append(item[label.end() if label else 0:].strip(" ()[]<>").rstrip("."))
+    return items
+
+
+def _website(lines: list[str]) -> str:
+    """The person's GitHub, GitLab or own site, from the header lines: the first GitHub or GitLab address, else the
+    first other address written with http(s):// or www. that is not LinkedIn's. Only one that is an item of its line
+    on its own (_site_items), never words of a sentence ('Maintainer of github.com/northwind/etl-kit'). As written;
+    "" when there is none."""
+    items = [item for line in lines for item in _site_items(line)]
+    found = next((item for item in items if CODE_SITE_RE.fullmatch(item)), "")
+    return found or next((item for item in items if WEB_RE.fullmatch(item) and "linkedin.com" not in item.lower()), "")
+
+
+def _only_sites(line: str) -> bool:
+    """True when the line holds nothing but web addresses (each maybe after a label): it is never the name."""
+    items = [item for item in _site_items(line) if item]
+    return bool(items) and all(CODE_SITE_RE.fullmatch(item) or WEB_RE.fullmatch(item) for item in items)
+
+
+def _without_sites(line: str) -> str:
+    """The line without its web addresses (GitHub, GitLab, or written with http(s):// or www.)."""
+    return WEB_RE.sub(" ", CODE_SITE_RE.sub(" ", line))
+
+
 def parse_resume_text(text: str) -> Profile:
     # A tab is a gap like the spaces before right-aligned dates: Word files (the app's own too) put dates on a tab stop.
     # A run of tabs or spaces is one gap.
@@ -963,18 +1001,19 @@ def parse_resume_text(text: str) -> Profile:
     phone = phone_match.group(0).strip() if phone_match else ""
     linkedin_match = LINKEDIN_RE.search(text)
     linkedin = linkedin_match.group(0) if linkedin_match else ""
+    website = _website(top)
 
     name = ""
     for line in top:
-        if EMAIL_RE.search(line) or PHONE_RE.search(line) or "linkedin" in line.lower():
+        if EMAIL_RE.search(line) or PHONE_RE.search(line) or "linkedin" in line.lower() or _only_sites(line):
             continue
         if 1 <= len(line.split()) <= 5 and not any(ch.isdigit() for ch in line):
             name = line.strip()
             break
 
     location = ""
-    for line in top:
-        cleaned = EMAIL_RE.sub("", PHONE_RE.sub("", LINKEDIN_RE.sub("", line)))
+    for line in top:  # a web address is never part of the place
+        cleaned = EMAIL_RE.sub("", PHONE_RE.sub("", LINKEDIN_RE.sub("", _without_sites(line))))
         for chunk in _header_items(cleaned):
             chunk = chunk.strip(" ,")
             if chunk != name and LOCATION_RE.fullmatch(chunk):
@@ -985,7 +1024,7 @@ def parse_resume_text(text: str) -> Profile:
 
     return Profile(
         name=name,
-        contact=Contact(email=email, phone=phone, linkedin=linkedin, location=location),
+        contact=Contact(email=email, phone=phone, linkedin=linkedin, location=location, website=website),
         companies=_read_companies(sections["experience"]),
         education=_parse_education(sections["education"]),
         certifications=_parse_certifications(sections["certifications"]),

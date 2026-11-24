@@ -34,9 +34,14 @@ function when(iso) {
   return isNaN(date) ? iso : date.toLocaleString([], { dateStyle: 'medium', timeStyle: 'short' });
 }
 
+// The resume card's contact line: every contact detail that was read, the website (GitHub or portfolio) too
+function contactText(c) {
+  return [c.email, c.phone, c.linkedin, c.website, c.location].filter(Boolean).join(' | ');
+}
+
 function resumeCard(r) {
   const p = r.profile, c = p.contact || {};
-  const contact = [c.email, c.phone, c.linkedin, c.location].filter(Boolean).join(' | ');
+  const contact = contactText(c);
   const remove = async () => {
     if (!confirm(`Delete ${p.name} (${r.filename || 'saved profile'})? Resumes already tailored from it can still be downloaded.`)) return;
     try { await api(`/api/resumes/${r.id}`, { method: 'DELETE' }); await load(); }
