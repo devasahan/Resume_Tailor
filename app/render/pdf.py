@@ -736,13 +736,16 @@ def degree_text(edu: Education, layout: int = 0) -> str:
 
 def education_runs(edu: Education, layout: int = 0) -> list[Run]:
     """An education line: the degree (degree_text, SemiBold, dark) then ' · School' in gray (and ' · Town' in layout
-    1), or the school alone."""
+    1), or the school alone. Layout 1 prints only the parts that are there, the first one SemiBold and dark: a row read
+    without its school is 'B.S. in Computer Science · Austin, TX', as the Profile page's educationRow says."""
     main = degree_text(edu, layout)
-    place = [edu.school] + ([edu.location] if layout and edu.location else [])
+    if layout:
+        parts = [part for part in (main, edu.school, edu.location) if part] or [""]
+        rest = "".join(f" · {part}" for part in parts[1:])
+        return [Run(parts[0], weight=SEMIBOLD, color=INK)] + ([Run(rest, color=SOFT)] if rest else [])
     if main:
-        return [Run(main, weight=SEMIBOLD, color=INK), Run("".join(f" · {part}" for part in place), color=SOFT)]
-    return [Run(edu.school, weight=SEMIBOLD, color=INK)] + ([Run(f" · {place[1]}", color=SOFT)] if len(place) > 1
-                                                             else [])
+        return [Run(main, weight=SEMIBOLD, color=INK), Run(f" · {edu.school}", color=SOFT)]
+    return [Run(edu.school, weight=SEMIBOLD, color=INK)]
 
 
 def certification_runs(cert: Certification) -> list[Run]:
