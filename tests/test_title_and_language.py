@@ -111,8 +111,8 @@ def test_the_headline_is_the_title_without_what_follows_it(profile, title, headl
     resume = validate.build_resume(profile, make_output(headline="Engineer", summary=f"{title.lower()} with 9+ years."))
     resume.experience[0].job_title = title
     validate.same_title(resume)
-    assert resume.headline == headline
-    assert resume.summary.startswith(headline + " with 9+ years") or "," in title or "(" in title or "|" in title
+    assert resume.headline == headline == resume.experience[0].job_title  # the job line reads the same
+    assert resume.summary.startswith(headline + " with 9+ years")
 
 
 def test_with_no_job_the_headline_stays_the_roles_short_name():
@@ -159,8 +159,8 @@ def test_a_run_reads_one_title_in_three_places(router, db, registry):
 
 def test_the_prompt_asks_for_one_title_in_three_places():
     text = tailor_system("estimate")
-    assert "HEADLINE: the most recent job's title in your plan, word for word" in text
-    assert "the line under the name, the summary's first words and the most recent job read the same" in text
+    assert "HEADLINE: the current job's title in your plan (the job marked \"Present (current role)\" in" in text
+    assert "the line under the name, the summary's first words and the current job read the same" in text
     assert '"Senior Data Platform Engineer with 9+ years of software experience' in text  # the summary's example
     assert "Data platform engineer with 9+ years" not in text
     assert "without the hiring company's level number (II, III, L5)" in text
