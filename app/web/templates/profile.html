@@ -174,9 +174,9 @@ function projectsBox(r) {
 
 // The degree as a new resume prints it, by the same rules as app/render/pdf.py degree_text: 'B.S. in Computer Science';
 // 'B.S., School of Engineering' or 'B.S., Magna Cum Laude' when the field is no subject (a school or a faculty anywhere
-// in it; honors, a grade, a minor, a major or a concentration before any comma); the degree alone when it already names
-// the field ('B.S. Computer Science')
-const NOT_SUBJECT = /\b(?:school|college|faculty|department|institute|division|academy)\b|^[^,]*\b(?:honou?rs?|hons|c?gpa|minor|major|concentration|cum\s+laude|distinction|dean['’]?s\s+list|first[\s-]+class)\b/i;
+// in it; a field that starts with honors, a grade, a minor, a major or a concentration; 'Biology with Honors' is a
+// subject); the degree alone when it already names the field ('B.S. Computer Science')
+const NOT_SUBJECT = /\b(?:school|college|faculty|department|institute|division|academy)\b|^\s*\(?\s*(?:with\s+(?:an?\s+)?)?(?:(?:summa|magna)\s+)?(?:high(?:est)?\s+)?(?:honou?rs?|hons|c?gpa|minor|major|concentration|cum\s+laude|distinction|dean['’]?s\s+list|first[\s-]+class)\b/i;
 const degreeWords = text => ` ${text.toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim()} `;
 function degreeText(e) {
   if (!(e.degree && e.field)) return e.degree || e.field || '';

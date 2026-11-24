@@ -701,11 +701,13 @@ def split_job_line(company: Company, title: str, size: float, width: float) -> t
 
 
 # A field that is no subject, so 'in' would misread it: a school or a faculty anywhere in it ('School of Engineering',
-# 'Graduate School of Business', 'The Wharton School'), or honors, a grade, a minor, a major or a concentration before
-# any comma ('Magna Cum Laude', 'GPA: 3.8/4.0', 'Minor in Mathematics'; 'Economics, Minor in Mathematics' is a subject).
+# 'Graduate School of Business', 'The Wharton School'), or a field that starts with honors, a grade, a minor, a major
+# or a concentration ('Magna Cum Laude', 'With High Honors', 'GPA: 3.8/4.0', 'Minor in Mathematics'). A subject that
+# comes first stays one: 'Economics, Minor in Mathematics', 'Biology with Honors', 'History (Honors)'.
 # The Profile page's degreeText has the same rules.
 _NOT_SUBJECT = re.compile(r"\b(?:school|college|faculty|department|institute|division|academy)\b|"
-                          r"^[^,]*\b(?:honou?rs?|hons|c?gpa|minor|major|concentration|cum\s+laude|distinction|"
+                          r"^\s*\(?\s*(?:with\s+(?:an?\s+)?)?(?:(?:summa|magna)\s+)?(?:high(?:est)?\s+)?"
+                          r"(?:honou?rs?|hons|c?gpa|minor|major|concentration|cum\s+laude|distinction|"
                           r"dean['’]?s\s+list|first[\s-]+class)\b", re.IGNORECASE)
 
 

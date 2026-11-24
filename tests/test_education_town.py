@@ -263,10 +263,19 @@ NOT_A_SUBJECT = [
     ("B.A.", "Dean's List", "B.A., Dean's List"),
     ("B.S.", "With Distinction", "B.S., With Distinction"),
     ("B.A.", "Major in Economics", "B.A., Major in Economics"),
+    ("B.A.", "Summa Cum Laude", "B.A., Summa Cum Laude"),
+    ("B.S.", "With High Honors", "B.S., With High Honors"),
+    ("B.A.", "(Honors)", "B.A., (Honors)"),
 ]
 SUBJECT_ROWS = [
     # a subject, then a minor after a comma: still 'in'
     ("Bachelor of Arts", "Economics, Minor in Mathematics", "Bachelor of Arts in Economics, Minor in Mathematics"),
+    # a subject first, then its honors, minor or grade: still 'in'
+    ("B.S.", "Biology with Honors", "B.S. in Biology with Honors"),
+    ("B.A.", "History (Honors)", "B.A. in History (Honors)"),
+    ("B.A.", "Economics with a Minor in Mathematics", "B.A. in Economics with a Minor in Mathematics"),
+    ("B.S.", "Psychology (GPA 3.8)", "B.S. in Psychology (GPA 3.8)"),
+    ("BSc", "Mathematics with First Class Honours", "BSc in Mathematics with First Class Honours"),
     # the degree ends with 'in' or 'of', in any letter case
     ("Bachelor of Science In", "Biology", "Bachelor of Science In Biology"),
     ("BACHELOR OF SCIENCE IN", "NURSING", "BACHELOR OF SCIENCE IN NURSING"),
