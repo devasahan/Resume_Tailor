@@ -59,6 +59,7 @@ from .prompts import read_all as read_prompt_files
 from .render.docx import cover_docx, resume_docx
 from .render.pdf import (
     cover_pdf,
+    degree_holds,
     document_language,
     document_name,
     forget_resume_pdfs,
@@ -72,6 +73,7 @@ from .schemas import (
     MAX_PROJECT_CHARS,
     Certification,
     Company,
+    Education,
     ExperienceOut,
     FitStyle,
     Profile,
@@ -144,22 +146,29 @@ class ProjectNotes(BaseModel):
     names: list[str] = Field(max_length=100)
 
 
+# What the upload readers store and the Profile page's Education box saves (the page checks the same): the schools an
+# upload keeps, and the characters of a school and of each other box
+MAX_EDUCATION = 50
+MAX_SCHOOL_CHARS, MAX_EDUCATION_CHARS = 500, 300
+EDUCATION_KEYS = ("school", "degree", "field", "location", "start", "end")  # what the Education box edits
+
+
 class EducationEntry(BaseModel):
     """One school as the Profile page's Education box edits it: the degree as on the diploma ("B.S."), its field, the
     school, its town ("St. Louis, MO") and the dates."""
-    school: str = Field(max_length=200)
-    degree: str = Field("", max_length=120)
-    field: str = Field("", max_length=120)
-    location: str = Field("", max_length=120)
-    start: str = Field("", max_length=40)
-    end: str = Field("", max_length=40)
+    school: str = Field(max_length=MAX_SCHOOL_CHARS)
+    degree: str = Field("", max_length=MAX_EDUCATION_CHARS)
+    field: str = Field("", max_length=MAX_EDUCATION_CHARS)
+    location: str = Field("", max_length=MAX_EDUCATION_CHARS)
+    start: str = Field("", max_length=MAX_EDUCATION_CHARS)
+    end: str = Field("", max_length=MAX_EDUCATION_CHARS)
 
 
 class EducationList(BaseModel):
-    # the entries in the order the Profile page showed them, and their schools then: a changed list (the resume
-    # uploaded again in another tab) is refused, never saved against the wrong school
-    entries: list[EducationEntry] = Field(max_length=20)
-    schools: list[str] = Field(max_length=20)
+    # the entries as typed, in the order the Profile page showed them, and each one as the page loaded it: if any of
+    # it changed since (another tab saved it), nothing is saved, so a stale tab never undoes another tab's save
+    entries: list[EducationEntry] = Field(max_length=MAX_EDUCATION)
+    loaded: list[Education] = Field(max_length=MAX_EDUCATION)
 
 
 class StaleList(Exception):
@@ -371,31 +380,70 @@ def carry_project_notes(profile: Profile, earlier: list[Profile]) -> list[str]:
     return list(dict.fromkeys(kept))
 
 
+def _end_year(edu: Education) -> int | str:
+    """When a school ended, to compare two uploads: the year ('May 2014' and '2014' match), else the text."""
+    point = parse_point(edu.end, is_end=True)
+    return point[0] if point else _same_name(edu.end)
+
+
+def _degree_name(degree: str) -> str:
+    """A degree to compare, whatever its case, spacing and dots: 'B.S.' and 'bs' are the same."""
+    return " ".join(degree.lower().replace(".", "").split())
+
+
+def _other_degree(new: Education, old: Education) -> bool:
+    """Two entries of one school that are surely not the same degree: both end dates known and different years, or
+    both degrees known and different. A degree written with its field ('B.S. Computer Science') is still the 'B.S.'."""
+    if new.end.strip() and old.end.strip() and _end_year(new) != _end_year(old):
+        return True
+    one, two = _degree_name(new.degree), _degree_name(old.degree)
+    return bool(one and two) and not (f"{one} ".startswith(f"{two} ") or f"{two} ".startswith(f"{one} "))
+
+
+def _paired_education(new: list[Education], old: list[Education]) -> list[tuple[Education, Education]]:
+    """Entries of one school in a new and an earlier upload, in pairs, in passes over all the new ones: the same end
+    year first, then the same degree, then the rest in their order. Two that are surely different degrees never pair
+    (a master's never takes what was typed for the bachelor's). Each one pairs once at most."""
+    passes = (lambda a, b: bool(a.end.strip() and b.end.strip()) and _end_year(a) == _end_year(b),
+              lambda a, b: bool(a.degree.strip()) and _degree_name(a.degree) == _degree_name(b.degree),
+              lambda a, b: True)
+    pairs: list[tuple[Education, Education]] = []
+    left = list(old)
+    for same in passes:
+        for edu in new:
+            if any(edu is pair[0] for pair in pairs):
+                continue
+            match = next((o for o in left if same(edu, o) and not _other_degree(edu, o)), None)
+            if match is not None:
+                pairs.append((edu, match))
+                left.remove(match)
+    return pairs
+
+
 def carry_education(profile: Profile, earlier: list[Profile]) -> list[str]:
     """A resume uploaded again keeps what the Profile page's Education box added: for each school (the name, whatever
     its case and spacing) the new file leaves without a town, degree or field, the newest earlier upload of the same
-    person (the same name) that lists the school gives it. What the new file says wins. Returns the schools changed."""
+    person (the same name) that lists the school gives it, entry by entry (_paired_education). What the new file says
+    wins. The degree and its field go together: the field is given only with the degree, or to the same degree, and
+    never to a degree that already names it ('B.S. Computer Science'). Returns the schools changed."""
     person = _same_name(profile.name)
     mine = [old for old in earlier if _same_name(old.name) == person]  # newest first
     kept: list[str] = []
-    paired: set[int] = set()  # earlier entries already given (two degrees from one school pair once each)
-    for edu in profile.education:
-        name = _same_name(edu.school)
+    for name in dict.fromkeys(_same_name(edu.school) for edu in profile.education):
         upload = next((old for old in mine if any(_same_name(e.school) == name for e in old.education)), None)
         if upload is None:
             continue
-        left = [e for e in upload.education if _same_name(e.school) == name and id(e) not in paired]
-        # the same end date first, then the same degree, then the first one left
-        source = (next((e for e in left if e.end.strip() and _same_name(e.end) == _same_name(edu.end)), None)
-                  or next((e for e in left if e.degree.strip() and _same_name(e.degree) == _same_name(edu.degree)),
-                          None)
-                  or (left[0] if left else None))
-        if source is None:
-            continue
-        paired.add(id(source))
-        for key in ("location", "degree", "field"):
-            if not getattr(edu, key).strip() and getattr(source, key).strip():
-                setattr(edu, key, getattr(source, key))
+        for edu, source in _paired_education([e for e in profile.education if _same_name(e.school) == name],
+                                             [e for e in upload.education if _same_name(e.school) == name]):
+            before = (edu.location, edu.degree, edu.field)
+            if not edu.location.strip() and source.location.strip():
+                edu.location = source.location
+            if not edu.degree.strip() or _degree_name(edu.degree) == _degree_name(source.degree):
+                if not edu.degree.strip() and source.degree.strip():
+                    edu.degree = source.degree
+                if not edu.field.strip() and source.field.strip() and not degree_holds(edu.degree, source.field):
+                    edu.field = source.field
+            if (edu.location, edu.degree, edu.field) != before:
                 kept.append(edu.school)
     return list(dict.fromkeys(kept))
 
@@ -1155,6 +1203,7 @@ def create_app(db: Database | None = None, registry: Registry | None = None, rou
             raise PlainError(422, f"Could not find {missing} in {filename}, so it was not saved.{tip}")
         earlier = [entry["profile"] for entry in db.list_profiles(user_id=user.id)]
         kept = carry_project_notes(profile, earlier)
+        profile.education = profile.education[:MAX_EDUCATION]  # as many as the Education box saves
         carry_education(profile, earlier)
         if kept:
             notes.append(KEPT_NOTES + ", ".join(kept) + ".")
@@ -1223,13 +1272,17 @@ def create_app(db: Database | None = None, registry: Registry | None = None, rou
     def api_resume_education(profile_id: int, body: EducationList, user: auth.User = Depends(current_user)):
         """Each school as typed in the Profile page's Education box: the degree exactly as on the diploma ("B.S."),
         its field, the school, its town ("St. Louis, MO") and the dates. Every new resume prints them as 'B.S. in
-        Computer Science · School · St. Louis, MO'."""
+        Computer Science · School · St. Louis, MO'. A row read without its school may stay so; a school cleared is
+        refused."""
         entries = [{key: " ".join(value.split()) for key, value in entry.model_dump().items()} for entry in body.entries]
-        if any(not entry["school"] for entry in entries):
+        if any(not entry["school"] and shown.school.strip() for entry, shown in zip(entries, body.loaded)):
             raise HTTPException(422, "Each school needs its name.")
 
+        def box(edu: Education) -> list[str]:
+            return [getattr(edu, key) for key in EDUCATION_KEYS]
+
         def replace(profile: Profile) -> None:
-            if [e.school for e in profile.education] != body.schools or len(entries) != len(body.schools):
+            if [box(e) for e in profile.education] != [box(e) for e in body.loaded] or len(entries) != len(body.loaded):
                 raise StaleList
             for edu, entry in zip(profile.education, entries):
                 for key, value in entry.items():
@@ -1238,8 +1291,8 @@ def create_app(db: Database | None = None, registry: Registry | None = None, rou
         try:
             changed = db.change_profile(profile_id, user_id=user.id, change=replace)
         except StaleList:
-            raise HTTPException(409, "The schools of this resume changed in another tab. Reload this page and save "
-                                     "again.") from None
+            raise HTTPException(409, "The education of this resume was changed in another tab. Reload this page and "
+                                     "save again.") from None
         if changed is None:
             raise HTTPException(404, "Resume not found.")
         entry = db.profile_entry(profile_id, user_id=user.id)

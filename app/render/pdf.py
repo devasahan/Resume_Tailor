@@ -700,20 +700,36 @@ def split_job_line(company: Company, title: str, size: float, width: float) -> t
     return first, rest
 
 
-# A field that is a school or a faculty, not a subject ('Master of Science, School of Engineering'): 'in' would misread
-_NOT_SUBJECT = re.compile(r"^(?:the\s+)?(?:school|college|faculty|department|institute|division|academy)\b",
-                          re.IGNORECASE)
+# A field that is no subject, so 'in' would misread it: a school or a faculty anywhere in it ('School of Engineering',
+# 'Graduate School of Business', 'The Wharton School'), or honors, a grade, a minor, a major or a concentration before
+# any comma ('Magna Cum Laude', 'GPA: 3.8/4.0', 'Minor in Mathematics'; 'Economics, Minor in Mathematics' is a subject).
+# The Profile page's degreeText has the same rules.
+_NOT_SUBJECT = re.compile(r"\b(?:school|college|faculty|department|institute|division|academy)\b|"
+                          r"^[^,]*\b(?:honou?rs?|hons|c?gpa|minor|major|concentration|cum\s+laude|distinction|"
+                          r"dean['’]?s\s+list|first[\s-]+class)\b", re.IGNORECASE)
+
+
+def _words(text: str) -> str:
+    """The text's words in small letters, one space apart and around: ' b s computer science '."""
+    return f" {' '.join(re.sub(r'[^a-z0-9]+', ' ', text.lower()).split())} "
+
+
+def degree_holds(degree: str, field: str) -> bool:
+    """Whether the degree already names the field: 'B.S. Computer Science' holds 'Computer Science'."""
+    return _words(field) in _words(degree)
 
 
 def degree_text(edu: Education, layout: int = 0) -> str:
     """The degree as printed: in layout 1 'B.S. in Computer Science' (the degree as on the diploma, then its subject),
-    'B.S., School of Engineering' when the field is not a subject, and 'Degree, Field' in layout 0 (runs saved before);
-    the degree or the field alone when only one is known."""
+    'B.S., School of Engineering' when the field is not a subject, the degree alone when it already names the field,
+    and 'Degree, Field' in layout 0 (runs saved before); the degree or the field alone when only one is known."""
     if not (edu.degree and edu.field):
         return edu.degree or edu.field
-    if layout and re.search(r"\s(?:in|of)$", edu.degree):  # 'Bachelor of Science in' + 'Biology'
+    if layout and re.search(r"\s(?:in|of)$", edu.degree, re.IGNORECASE):  # 'Bachelor of Science in' + 'Biology'
         return f"{edu.degree} {edu.field}"
-    if layout and not _NOT_SUBJECT.match(edu.field):
+    if layout and degree_holds(edu.degree, edu.field):  # 'B.S. Computer Science' + 'Computer Science'
+        return edu.degree
+    if layout and not _NOT_SUBJECT.search(edu.field):
         return f"{edu.degree} in {edu.field}"
     return f"{edu.degree}, {edu.field}"
 

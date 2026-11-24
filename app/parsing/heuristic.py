@@ -600,6 +600,47 @@ def _degree_and_field(text: str) -> tuple[str, str]:
 # 'Tailspin University, St. Louis, MO': the school, then its town and state after a comma
 _SCHOOL_TOWN = re.compile(r"^(.*\b(?:University|College|Institute|School|Academy|Polytechnic)\b[^,]*),\s*"
                           r"([A-Z][A-Za-z.' -]+,\s*[A-Z]{2})$")
+# A degree's letters: 'BBA', 'MFA', 'J.D.', 'BEng', 'B.Tech'
+_DEGREE_LETTERS = re.compile(r"(?:[A-Z]\.?){2,4}|[A-Z]\.?[A-Z][a-z]{1,4}\.?")
+# A state's code after a town, where a comma-only line has a degree's: 'Boston, MA, B.S. ...', 'Boston, MA 02115, ...'
+_STATE_AFTER_TOWN = re.compile(r"[A-Z]{2}(?=,|\s*\d|$)")
+_COMMA = re.compile(r",\s*")
+
+
+def _degree_like(part: str) -> bool:
+    """A part shaped like a town that names a degree instead: 'BBA, Finance', 'MFA, Creative Writing', 'Juris Doctor,
+    Cum Laude' (a degree's letters or words before the comma; 'NYC, NY' is a town) or 'Computer Science, BS' (a
+    degree's code where a state's would be; MA and MS are states too)."""
+    head, _, tail = (piece.strip() for piece in part.rpartition(","))
+    if DEGREE_RE.search(head) or re.search(r"\b(?:Doctor|Juris)\b", head, re.IGNORECASE):
+        return True
+    if _DEGREE_LETTERS.fullmatch(head) and not re.fullmatch(r"[A-Z]{2}", tail):
+        return True
+    return bool(DEGREE_RE.fullmatch(tail)) and tail not in ("MA", "MS")
+
+
+def _peel_town(school: str) -> tuple[str, str]:
+    """(the school, its town) from 'Tailspin University, St. Louis, MO'; (the school, '') when no town ends it."""
+    joined = _SCHOOL_TOWN.match(school)
+    if joined and not _degree_like(joined.group(2)):
+        return joined.group(1).strip(), joined.group(2).strip()
+    return school, ""
+
+
+def _degree_comma(text: str, start: int) -> tuple[int, int] | None:
+    """Where the first comma after `start` (the end of the first word naming a school) that a degree directly follows
+    starts and ends: 'University of Washington, Seattle, WA, B.S. in Informatics' is cut before 'B.S.', never at its
+    town or at the rest of its name ('University of California, Berkeley, B.S. ...'). A state's code after a town is no
+    degree ('Jackson, MS, B.S. ...'); after the school it is ('Lakeside University, MA, Economics')."""
+    piece = text.rfind(",", 0, start) + 1  # where the part before each comma starts
+    for comma in _COMMA.finditer(text, start):
+        before = text[piece:comma.start()].strip()
+        state = (_STATE_AFTER_TOWN.match(text, comma.end()) and not SCHOOL_RE.search(before)
+                 and not re.fullmatch(r"[A-Z]{2}", before))
+        if DEGREE_RE.match(text, comma.end()) and not state:
+            return comma.start(), comma.end()
+        piece = comma.end()
+    return None
 
 
 def _school_and_degree(text: str) -> tuple[str, str, str]:
@@ -607,32 +648,46 @@ def _school_and_degree(text: str) -> tuple[str, str, str]:
     Springfield, MA' (the app's own row) or 'State University | B.S. in Computer Science'. The school is the part naming
     a school, one that names no degree first (not 'Master of Science, School of Engineering'); without separators it is
     the whole line. A state's code is no degree: 'State University – Springfield, MA' names none, and that part is the
-    school's town, as is one after a comma ('State University, Springfield, MA')."""
+    school's town, as is one after a comma ('State University, Springfield, MA'). The town is the last place after the
+    school, never a degree ('BBA, Finance | State University | Austin, TX')."""
     parts = [part.strip(" ,-–—") for part in SEPARATOR_RE.split(text)]
     parts = [part for part in parts if part]
     schools = [part for part in parts if SCHOOL_RE.search(part)]
     school = next((part for part in schools if not DEGREE_RE.search(part)), schools[0] if schools else text)
     degree = next((part for part in parts
                    if part != school and DEGREE_RE.search(re.sub(r",\s*[A-Z]{2}$", "", part))), "")
-    town = next((part for part in parts if part not in (school, degree) and LOCATION_RE.fullmatch(part)), "")
-    joined = _SCHOOL_TOWN.match(school)
-    if joined and not town:
-        school, town = joined.group(1).strip(), joined.group(2).strip()
+    after = parts[parts.index(school) + 1:] if school in parts else []
+    places = [part for part in after if part != degree and LOCATION_RE.fullmatch(part) and not _degree_like(part)]
+    # the last place after the school, one with a state's code first ('Springfield, IL', not majors after it)
+    town = next((part for part in reversed(places) if _TOWN_AND_STATE.search(part)), places[-1] if places else "")
+    if not town:
+        school, town = _peel_town(school)
     named = list(SCHOOL_RE.finditer(school))
     if len(parts) == 1 and not degree and named:
-        # commas only: 'B.S. in Computer Science, Tailspin University' or 'Tailspin University, B.S. in Computer
-        # Science'; cut at the comma next to the last word naming a school, so a name with its own comma stays whole
-        # ('University of California, Berkeley') and so does a faculty ('Master of Science, School of Engineering, ...')
-        before, after = school.rfind(", ", 0, named[-1].start()), school.find(", ", named[-1].end())
-        if before > 0 and DEGREE_RE.search(school[:before]) and not DEGREE_RE.search(school[before + 2:]):
-            degree, school = school[:before].strip(), school[before + 2:].strip()
-        elif after > 0 and DEGREE_RE.search(school[after + 2:]) and not DEGREE_RE.search(school[:after]):
-            school, degree = school[:after].strip(), school[after + 2:].strip()
+        if DEGREE_RE.search(school[:named[0].start()]):
+            # commas only, the degree first: 'B.S. in Computer Science, Tailspin University'; cut at the comma before
+            # the last word naming a school, so a name with its own comma stays whole ('University of California,
+            # Berkeley') and so does a faculty ('Master of Science, School of Engineering, ...')
+            before = school.rfind(", ", 0, named[-1].start())
+            if before > 0 and DEGREE_RE.search(school[:before]) and not DEGREE_RE.search(school[before + 2:]):
+                degree, school = school[:before].strip(), school[before + 2:].strip()
+        else:
+            # the school first: cut where its degree starts ('Tailspin University, Seattle, WA, B.S. in Informatics'),
+            # then the town comes off the school; a line with no degree after a comma stays whole
+            comma = _degree_comma(school, named[0].end())
+            if comma is not None:
+                school, degree = school[:comma[0]].strip(), school[comma[1]:].strip()
+                if not town:
+                    school, town = _peel_town(school)
     return school, degree, town
 
 
 def _parse_education(lines: list[str]) -> list[Education]:
+    """Each school's row. A degree line above any school line ('Bachelor of Science in Computer Science   2016 -
+    2020', then 'Lakeside University, Springfield, IL') joins the school line under it: no row is left without its
+    school when one follows. In that layout each later degree waits for the school line under it too."""
     entries: list[Education] = []
+    above = False  # the degrees come above their schools
     for line in lines:
         text, start, end = _take_dates(_LIST_MARK.sub("", line.strip()))
         if SCHOOL_RE.search(text):
@@ -640,9 +695,16 @@ def _parse_education(lines: list[str]) -> list[Education]:
             entry = Education(school=school or text, start=start, end=end, location=town)
             if degree_part:
                 entry.degree, entry.field = _degree_and_field(degree_part)
+            if entries and not entries[-1].school:  # the degree line above: this is its school
+                held, above = entries[-1], True
+                held.school, held.location = entry.school, entry.location
+                if not held.end:
+                    held.start, held.end = entry.start, entry.end
+                if not entry.degree:
+                    continue
             entries.append(entry)
         elif DEGREE_RE.search(text):
-            if not entries:
+            if not entries or (above and entries[-1].degree):
                 entries.append(Education(school=""))
             entry = entries[-1]
             if not entry.degree:

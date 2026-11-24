@@ -172,12 +172,17 @@ function projectsBox(r) {
     el('div', { class: 'row' }, save, status));
 }
 
-// The degree as a new resume prints it (app/render/pdf.py degree_text): 'B.S. in Computer Science', or 'B.S., School of
-// Engineering' when the field is not a subject
+// The degree as a new resume prints it, by the same rules as app/render/pdf.py degree_text: 'B.S. in Computer Science';
+// 'B.S., School of Engineering' or 'B.S., Magna Cum Laude' when the field is no subject (a school or a faculty anywhere
+// in it; honors, a grade, a minor, a major or a concentration before any comma); the degree alone when it already names
+// the field ('B.S. Computer Science')
+const NOT_SUBJECT = /\b(?:school|college|faculty|department|institute|division|academy)\b|^[^,]*\b(?:honou?rs?|hons|c?gpa|minor|major|concentration|cum\s+laude|distinction|dean['’]?s\s+list|first[\s-]+class)\b/i;
+const degreeWords = text => ` ${text.toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim()} `;
 function degreeText(e) {
   if (!(e.degree && e.field)) return e.degree || e.field || '';
-  if (/\s(in|of)$/i.test(e.degree)) return `${e.degree} ${e.field}`;
-  if (/^(the\s+)?(school|college|faculty|department|institute|division|academy)\b/i.test(e.field)) return `${e.degree}, ${e.field}`;
+  if (/\s(?:in|of)$/i.test(e.degree)) return `${e.degree} ${e.field}`;
+  if (degreeWords(e.degree).includes(degreeWords(e.field))) return e.degree;
+  if (NOT_SUBJECT.test(e.field)) return `${e.degree}, ${e.field}`;
   return `${e.degree} in ${e.field}`;
 }
 
@@ -187,25 +192,47 @@ const EDUCATION_FIELDS = [
   ['degree', 'Degree, as on the diploma (B.S.)'], ['field', 'Field (Computer Science)'], ['school', 'School'],
   ['location', "School's town (St. Louis, MO)"], ['start', 'Start'], ['end', 'End'],
 ];
+// As app/main.py: the schools the box saves, and the characters of a school and of each other box. Checked on Save, so
+// what a reader stored gets a plain message instead of the server's technical one.
+const MAX_EDUCATION = 50, MAX_SCHOOL_CHARS = 500, MAX_EDUCATION_CHARS = 300;
+const asLoaded = list => list.map(e => Object.fromEntries(EDUCATION_FIELDS.map(([key]) => [key, e[key] || ''])));
 function educationBox(r) {
   const schools = r.profile.education || [];
   if (!schools.length) return null;
-  let loaded = schools.map(e => e.school);  // as shown: the save is refused if the schools changed since (another tab)
+  let loaded = asLoaded(schools);  // as shown: the save is refused if any of it changed since (another tab saved it)
   const rows = schools.map(e => Object.fromEntries(EDUCATION_FIELDS.map(([key, label]) => {
-    const input = el('input', { type: 'text', placeholder: label, 'aria-label': `${label}: ${e.school}` });
+    const input = el('input', { type: 'text', placeholder: label, 'aria-label': `${label}: ${e.school}`,
+      maxlength: key === 'school' ? MAX_SCHOOL_CHARS : MAX_EDUCATION_CHARS });
     input.value = input.dataset.saved = e[key] || '';
     return [key, input];
   })));
   const status = el('span', { class: 'small muted' });
   const save = el('button', { type: 'button', class: 'small primary', text: 'Save education' });
   save.addEventListener('click', async () => {
+    if (rows.length > MAX_EDUCATION) {
+      status.textContent = `This resume lists ${rows.length} schools and the box saves up to ${MAX_EDUCATION}. Upload `
+        + `the resume again: the new copy keeps the first ${MAX_EDUCATION}.`;
+      return;
+    }
+    const entries = rows.map(inputs => Object.fromEntries(EDUCATION_FIELDS.map(([key]) => [key, inputs[key].value.trim()])));
+    const long = entries.flatMap((entry, i) => EDUCATION_FIELDS.map(([key, label]) => {
+      const most = key === 'school' ? MAX_SCHOOL_CHARS : MAX_EDUCATION_CHARS;
+      if (entry[key].length <= most) return null;
+      const name = loaded[i].school || `Row ${i + 1}`, box = label.split(/[,(]/)[0].trim().toLowerCase();
+      return `${name.length > 60 ? name.slice(0, 60) + '…' : name}: the ${box} box has `
+        + `${entry[key].length.toLocaleString('en-US')} characters (up to ${most.toLocaleString('en-US')})`;
+    })).filter(Boolean);
+    if (long.length) {
+      const them = long.length === 1 ? 'it' : 'them';
+      status.textContent = `${long.join('. ')}. Shorten ${them}, then press Save education again.`;
+      return;
+    }
     save.disabled = true;
     status.textContent = 'Saving…';
     try {
-      const entries = rows.map(inputs => Object.fromEntries(EDUCATION_FIELDS.map(([key]) => [key, inputs[key].value.trim()])));
-      const data = await api(`/api/resumes/${r.id}/education`, { method: 'PUT', body: { entries, schools: loaded } });
+      const data = await api(`/api/resumes/${r.id}/education`, { method: 'PUT', body: { entries, loaded } });
       const saved = data.resume.profile.education;
-      loaded = saved.map(e => e.school);
+      loaded = asLoaded(saved);
       saved.forEach((e, i) => { if (rows[i]) EDUCATION_FIELDS.forEach(([key]) => { rows[i][key].value = rows[i][key].dataset.saved = e[key] || ''; }); });
       status.textContent = 'Saved. New resumes print: ' + saved.map(e => [degreeText(e), e.school, e.location].filter(Boolean).join(' · ')).join('; ');
     } catch (err) { status.textContent = err.message; }
