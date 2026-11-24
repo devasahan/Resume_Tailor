@@ -159,9 +159,8 @@ def test_the_demo_writes_no_weak_bullet_and_needs_no_fix(router, db, profile, jd
     db.set_settings({"metrics_mode": metrics})
     result = asyncio.run(run_tailor(router, db, profile=person, profile_id=None, jd=jd, model_id="demo-concise",
                                     spelling=spelling, time_limit=0))
-    assert result.status == "ok"
-    if people != "five":  # five jobs ask for the fix round anyway: the demo repeats one title (title_growth_problems)
-        assert result.retries == 0
+    # five jobs too: the demo's titles climb into the posting's field without repeating one (prompt v39)
+    assert result.status == "ok" and result.retries == 0
     assert validate.weak_bullets(result.resume) == []
     assert not any("in the past tense" in n or "removed the closing" in n for n in result.notes)
 

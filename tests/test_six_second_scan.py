@@ -141,17 +141,19 @@ def test_the_title_line_is_larger_but_stays_on_one_line(profile):
     assert not headline.runs[0].bold and headline.runs[0].font.size.pt == size  # Medium: not bold in Word
 
 
-# ------------------------------------------------------------------ the headline: the role's short name
-def test_prompt_asks_for_the_roles_short_name():
+# ------------------------------------------------------------------ the headline: the most recent title (prompt v39)
+def test_prompt_asks_for_the_most_recent_title_in_the_headline():
     text = tailor_system("estimate")
-    assert "HEADLINE: `general_role`, the role's short, common name in 2-3 words, never the posting's full job title" in text
-    assert '"Full-Stack Engineer" for "Senior Software Engineer, Full Stack (Payments Platform)"' in text
-    assert "as the JD names it" not in text
-    assert ("In the summary, write the role as `general_role` (with a level such as Senior when the candidate's most "
-            "recent title in your plan has it), without the hiring company's level number (II, III, L5)") in text
+    assert "HEADLINE: the most recent job's title in your plan, word for word" in text
+    assert "It is never the posting's full job title" in text
+    assert '"Senior Full-Stack Engineer" for a "Senior Software Engineer, Full Stack (Payments Platform)" post' in text
+    assert "as the JD names it" not in text and "the role's short, common name in 2-3 words" not in text
+    assert ("The headline and the summary are without the hiring company's level number (II, III, L5) unless the "
+            "candidate's most recent title in your plan has that level") in text
 
 
 def test_a_copied_posting_title_becomes_the_roles_short_name(profile):
+    """A resume with no job keeps this headline (same_title needs a most recent title)."""
     resume = validate.build_resume(profile, make_output())
     short = {}
     for headline in ("Senior Software Engineer, Full Stack (Payments Platform)", "AI Engineer II - Agentic Systems",
@@ -189,11 +191,12 @@ class AddsToTheRole(LLMClient):
         return result
 
 
-def test_a_draft_headline_keeps_only_the_roles_short_name_without_a_fix_call(router, db, registry, profile, jd):
+def test_a_draft_headline_becomes_the_most_recent_title_without_a_fix_call(router, db, registry, profile, jd):
     plain = asyncio.run(run_tailor(router, db, profile=profile, profile_id=None, jd=jd, model_id="demo-concise"))
-    assert plain.resume.headline == "Data Engineer" and plain.retries == 0  # the posting asks for a Senior one
+    assert plain.resume.headline == plain.resume.experience[0].job_title == "Senior Data Engineer"
+    assert plain.retries == 0
     client = AddsToTheRole(FakeClient(registry.get("demo-concise")))
     router.overrides["demo-concise"] = client
     result = asyncio.run(run_tailor(router, db, profile=profile, profile_id=None, jd=jd, model_id="demo-concise"))
     assert result.status == "ok" and result.retries == 0 and len(client.prompts) == 1  # fixed in code, for free
-    assert result.resume.headline == "Data Engineer"
+    assert result.resume.headline == "Senior Data Engineer"  # no skills after it: the most recent title

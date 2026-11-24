@@ -7,6 +7,9 @@
   claim_flags             numbers and skills the user never supplied, for the review step
   unshown_must_haves      required JD terms missing, or only listed, instead of shown in the summary or a bullet
   posting_match_flags     sentences added to match the JD that the user's hints do not back up
+  same_title              the headline and the summary's first words are the most recent job title (prompt v39)
+  title_path_problems     older titles that do not move into the target's field as they get closer to today
+  missing_language        a current job that does not name the job post's most wanted programming language
   resolve_certifications  the model's certification picks: only the person's own are printed, the rest are ideas
   certification_mentions  certification names in the text (they belong only in their own section)
   vary_figures            figures and their bases in varied shapes, a base in brackets at most once (the AI's drafts)
@@ -39,7 +42,7 @@ from ..schemas import (
     TailorOutput,
     TailorRevision,
 )
-from . import spelling, tense
+from . import languages, spelling, tense
 from .facts import is_current, is_expired, months_phrase, parse_point, stay_months
 from .notes import clean_notes
 from .numerals import normal, numerals
@@ -1915,6 +1918,77 @@ def title_growth_problems(resume: Resume) -> list[str]:
     return problems[:1]
 
 
+# Title words that name no field of their own: the role nouns, their levels and small words ('Senior Software
+# Engineer' has no field words; 'AI Platform Engineer' has 'AI' and 'Platform')
+_GENERIC_TITLE_WORDS = frozenset({
+    "engineer", "engineers", "engineering", "developer", "developers", "development", "programmer", "software",
+    "specialist", "manager", "analyst", "architect", "consultant", "scientist", "designer", "administrator",
+    "coordinator", "director", "technician", "officer", "representative", "assistant", "head", "tech", "technical",
+    "and", "of", "the", "for", "&", "senior", "sr", "staff", "lead", "principal", "junior", "jr", "associate",
+    "graduate", "intern", "trainee", "mid", "level", "entry", "i", "ii", "iii", "iv", "v",
+})
+_FIELD_FAMILY = {"ml": "ai", "mlops": "ai", "llm": "ai"}  # titles of one field: an ML Engineer works in AI's
+
+
+def _field_words(title: str) -> set[str]:
+    """The words that set a title's field apart, in lower case and either spelling ('AI Platform Engineer' -> {'ai',
+    'platform'}); 'Machine Learning' and 'ML' are AI's field, 'Back-End' is 'backend' (languages.title_words). None for
+    a plain title ('Senior Software Engineer')."""
+    return {_FIELD_FAMILY.get(word, word) for word in languages.title_words(spelling.us_text(title))
+            if word not in _GENERIC_TITLE_WORDS and not re.fullmatch(r"l?\d+", word)}
+
+
+def target_titles(analysis: JDAnalysis | None) -> list[str]:
+    """The titles the career path leads to: a special posting title's common title alone ('AI Engineer' for 'Voice AI
+    Engineer': its specialty is never a field), else the posting's title and its common title without their levels
+    ('AI Platform Engineer' for 'Senior AI Platform Engineer'); [] without an analysis."""
+    if analysis is None:
+        return []
+    special, common = common_title(analysis)
+    titles = [common] if special else [_role_core(analysis.target_role), _role_core(analysis.general_role)]
+    return [title for title in dict.fromkeys(titles) if title]
+
+
+def title_path_problems(resume: Resume, analysis: JDAnalysis | None) -> tuple[list[str], bool]:
+    """(what is wrong, whether that alone asks for the rewrite pass) for job titles that do not move into the target's
+    field as they get closer to today (the JOB TITLES rule, prompt v39): the job right before the current one has none
+    of the target's field words (_field_words: 'AI' or 'Platform' for 'Senior AI Platform Engineer'), which is asked
+    along with other fixes, and on its own when no older title has one either. ([], False) for a career of one job, a
+    target without field words ('Senior Software Engineer') or a path that is fine. Levels are fix_title_regressions'
+    and title_growth_problems' to check."""
+    targets = [title for title in target_titles(analysis) if _field_words(title)]
+    field = set().union(*(_field_words(title) for title in targets))
+    exps = resume.experience  # most recent first
+    if len(exps) < 2 or not field or _field_words(exps[1].job_title) & field:
+        return [], False
+    strong = not any(_field_words(exp.job_title) & field for exp in exps[2:])
+    company = resume.profile.companies[exps[1].company_index].name
+    return [f"'{exps[1].job_title}' at {company}, the job before the current one, is not in the field of "
+            f"'{targets[0]}'" + (", and no older title is either." if strong else ".")], strong
+
+
+def current_job(resume: Resume) -> ResumeExperience | None:
+    """The job the person holds now (facts.is_current: 'Present'), else the most recent one; None without a job."""
+    return next((exp for exp in resume.experience
+                 if is_current(resume.profile.companies[exp.company_index], exp.company_index)),
+                resume.experience[0] if resume.experience else None)
+
+
+def missing_language(resume: Resume, analysis: JDAnalysis | None, jd: str = "") -> tuple[str, str | None] | None:
+    """(the current job's employer, the language its bullets should name) when they name no programming language, or
+    not the one the job post wants most (languages.wanted_language): the owner's rule, prompt v39. The language is None
+    when the post names none: then any language counts, and only for work built in code (languages.codes: a nurse's
+    resume needs none). None when the current job's bullets are fine. Other jobs never count."""
+    job = current_job(resume)
+    wanted = languages.wanted_language(analysis, jd)
+    if job is None or (wanted is None and not languages.codes(analysis)):
+        return None
+    text = "\n".join(job.bullets)
+    if (languages.names(text, wanted) if wanted else languages.mentioned(text)):
+        return None
+    return resume.profile.companies[job.company_index].name, wanted
+
+
 def ats_lint(resume: Resume, page_target: int = 1) -> list[str]:
     """Format and length warnings, by the limits of the prompt the run was made with: the one-page rules (prompt v38),
     or, for a run saved before them (`page_target` 0, prompt v36), that prompt's own, so its notes stay as they
@@ -2794,10 +2868,8 @@ _AFTER_ROLE = re.compile(r"\s*\|.*$|\s+-\s+.*$")
 
 
 # Level words before a role ("Senior Data Engineer"); "Tech Lead" and a bare "Lead" stay
-_LEADING_LEVEL = re.compile(
-    r"^(?:(?:senior|sr|staff|lead|principal|junior|jr|associate|graduate|mid-level|entry-level)\.?\s+)+(?=\S)",
-    re.IGNORECASE,
-)
+_LEVEL_WORD = r"(?:senior|sr|staff|lead|principal|junior|jr|associate|graduate|mid-level|entry-level)\.?"
+_LEADING_LEVEL = re.compile(rf"^(?:{_LEVEL_WORD}\s+)+(?=\S)", re.IGNORECASE)
 
 
 def _without_level(role: str) -> str:
@@ -2821,10 +2893,45 @@ def _role_core(title: str) -> str:
 
 def short_role_headline(resume: Resume) -> None:
     """The headline is the role's short, common name, never the posting's full title (see _role_core). Changes the
-    resume in place."""
+    resume in place. A new run's headline is then its most recent job title (same_title), unless it has no job."""
     role = _role_core(resume.headline)
     if role:
         resume.headline = role
+
+
+def _title_core(title: str) -> str:
+    """A job title as the line under the name shows it: what follows a '|' or a spaced dash goes, and so do brackets and
+    the part after a comma, but the level stays ('Staff Data Engineer, Analytics Infrastructure (Remote)' -> 'Staff Data
+    Engineer'). A bare role noun takes its function from after the comma ('Senior Manager, Customer Success' -> 'Senior
+    Customer Success Manager')."""
+    text = re.sub(r"\s*\([^)]*\)", "", _AFTER_ROLE.sub("", title or ""))
+    role, _comma, rest = text.partition(",")
+    role, rest, bare = role.strip(), _without_level(rest), _without_level(role)
+    if len(bare.split()) == 1 and rest:
+        level = _LEADING_LEVEL.match(role)
+        role = f"{level.group(0) if level else ''}{rest} {bare}"
+    return role.strip()
+
+
+# A level number after a role in a summary's opening ('Software Engineer II with ...'); never a figure ('5+ years')
+_TITLE_LEVEL_AFTER = r"(?:\s+(?:I{1,3}|IV|V|L[1-9]))?"
+
+
+def same_title(resume: Resume) -> None:
+    """The line under the name, the summary's first words and the most recent job's title read the same (the owner's
+    rule, prompt v39): the headline becomes the most recent job's title as written, without what follows it
+    (_title_core), and a summary that opens with that title's words, in any letter case and with or without a level,
+    opens with the exact title ('Senior AI platform engineer with 7+ years ...' -> 'Senior AI Platform Engineer with 7+
+    years ...'; 'AI Platform Engineer with ...' -> 'Senior AI Platform Engineer with ...'). A summary that opens with
+    anything else is left alone. With no job, the headline stays the role's short name (short_role_headline, before).
+    Changes the resume in place."""
+    title = _title_core(resume.experience[0].job_title) if resume.experience else ""
+    if not title:
+        return
+    resume.headline = title
+    words = r"[\s-]+".join(either_spelling(word) for word in _without_level(title).split())
+    opening = re.compile(rf"^(\s*)(?:{_LEVEL_WORD}\s+)*{words}{_TITLE_LEVEL_AFTER}(?![\w-])", re.IGNORECASE)
+    resume.summary = opening.sub(lambda match: match.group(1) + title, resume.summary, count=1)
 
 
 # A broad field is part of a common title, never a specialty: 'AI Platform Engineer', 'Data Platform Engineer' and
@@ -2984,20 +3091,26 @@ def claim_flags(resume: Resume, jd: str, hints: str, notes: str = "") -> list[Fl
 MAX_POSTING_FLAGS = 10
 
 
-def posting_match_flags(resume: Resume, analysis: JDAnalysis, hints: str) -> list[Flag]:
+def posting_match_flags(resume: Resume, analysis: JDAnalysis, hints: str, language: str | None = None) -> list[Flag]:
     """One 'info' flag per bullet or summary sentence that carries must-have terms the user's hints do not back
     up: the app writes those in to match the posting, so the user should confirm them. The first place each term
-    appears is flagged, most recent employer first, then the summary."""
+    appears is flagged, most recent employer first, then the summary. `language`: the programming language the job
+    post wants most (languages.wanted_language), flagged the same way, a must-have or not: the current job names it
+    even when the person never listed it (prompt v39); by any of its names ('Golang' in the hints backs Go)."""
     places: list[tuple[str, str]] = [
         (f"experience:{exp.company_index}", bullet) for exp in resume.experience for bullet in exp.bullets
     ]
     places += [("summary", s) for s in re.split(r"(?<=[.!?])\s+", resume.summary) if s.strip()]
+    terms = _unique(analysis.must_have_skills)
+    if language and not any(languages.names(term, language) for term in terms):
+        terms.append(language)
     grouped: dict[tuple[str, str], list[str]] = {}
-    for term in _unique(analysis.must_have_skills):
-        if mentions(hints, term):
+    for term in terms:
+        named = bool(language) and languages.names(term, language)  # the language, by its careful match
+        if languages.names(hints, language) if named else mentions(hints, term):
             continue
         for place in places:
-            if mentions(place[1], term):
+            if languages.names(place[1], language) if named else mentions(place[1], term):
                 grouped.setdefault(place, []).append(term)
                 break
     flags = [
