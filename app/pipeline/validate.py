@@ -3045,7 +3045,7 @@ def same_title(resume: Resume) -> None:
     'Present', else the most recent) read the same (the owner's rule, prompt v39): the headline and that job's line
     become its title without what follows it (_title_core), and a summary that opens with that title's words, in any
     letter case, with or without a level and whatever its hyphens, or with the title as the model wrote it, opens with
-    the exact title ('Senior AI platform engineer with 7+ years ...' -> 'Senior AI Platform Engineer with 7+ years ...';
+    the exact title ('Senior AI platform engineer with 9+ years ...' -> 'Senior AI Platform Engineer with 9+ years ...';
     'AI Platform Engineer with ...' -> 'Senior AI Platform Engineer with ...'; 'Senior manager, customer success with
     ...' -> 'Senior Customer Success Manager with ...'). A summary that opens with anything else is left alone. With no
     job, the headline stays the role's short name (short_role_headline, before). Changes the resume in place."""

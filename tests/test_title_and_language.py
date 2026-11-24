@@ -78,14 +78,14 @@ def tailored(router, db, jd=AI_POST, person: Profile | None = None, change=None,
 
 # ------------------------------------------------------------------ B. one title in three places
 @pytest.mark.parametrize("summary,expected", [
-    ("Senior AI platform engineer with 7+ years of Python platform work for retail and learning products.",
-     "Senior AI Platform Engineer with 7+ years of Python platform work for retail and learning products."),
-    ("AI Platform Engineer with 7+ years of Python platform work.",  # the level comes back
-     "Senior AI Platform Engineer with 7+ years of Python platform work."),
-    ("ai platform engineer with 7+ years of Python platform work.",
-     "Senior AI Platform Engineer with 7+ years of Python platform work."),
-    ("Staff AI Platform Engineer with 7+ years of Python platform work.",  # one title, one level
-     "Senior AI Platform Engineer with 7+ years of Python platform work."),
+    ("Senior AI platform engineer with 9+ years of Python platform work for retail and learning products.",
+     "Senior AI Platform Engineer with 9+ years of Python platform work for retail and learning products."),
+    ("AI Platform Engineer with 9+ years of Python platform work.",  # the level comes back
+     "Senior AI Platform Engineer with 9+ years of Python platform work."),
+    ("ai platform engineer with 9+ years of Python platform work.",
+     "Senior AI Platform Engineer with 9+ years of Python platform work."),
+    ("Staff AI Platform Engineer with 9+ years of Python platform work.",  # one title, one level
+     "Senior AI Platform Engineer with 9+ years of Python platform work."),
     ("Builds AI platforms for learning products, with 7+ years of Python work.",  # not the role: left alone
      "Builds AI platforms for learning products, with 7+ years of Python work."),
     ("AI Platform Engineering lead with 7+ years of Python work.",  # a longer word is not the title

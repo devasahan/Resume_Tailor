@@ -933,7 +933,7 @@ def _analysis(target_role, general_role=""):
 
 def test_a_special_posting_title_becomes_its_common_title_everywhere_but_the_bullets(profile):
     analysis = _analysis("Senior Voice AI Engineer", "AI Engineer")
-    out = make_output(headline="Voice AI Engineer", summary="Voice AI Engineer with 7+ years of experience building "
+    out = make_output(headline="Voice AI Engineer", summary="Voice AI Engineer with 9+ years of experience building "
                       "Python services. As a Voice AI Engineer I shipped 4 agents.")
     out.sections.experience[0].job_title = "Senior Voice AI Engineer"
     out.sections.experience[0].bullets = ["Built voice agents in Python for 3 call centers.", "Ran the voice AI rollout."]
@@ -941,14 +941,14 @@ def test_a_special_posting_title_becomes_its_common_title_everywhere_but_the_bul
     validate.short_role_headline(resume)
     validate.general_role_fixes(resume, analysis)
     assert resume.headline == "AI Engineer"
-    assert resume.summary == ("AI Engineer with 7+ years of experience building Python services. As an AI Engineer I "
+    assert resume.summary == ("AI Engineer with 9+ years of experience building Python services. As an AI Engineer I "
                               "shipped 4 agents.")
     assert [exp.job_title for exp in resume.experience] == ["Senior AI Engineer", "Engineer 1", "Engineer 2"]
     assert resume.experience[0].bullets[1] == "Ran the voice AI rollout."  # the specialty stays in the bullets
     assert validate.specialty_problems(resume, analysis) == []
     validate.same_title(resume)  # then, in build(): the most recent title, its level too (prompt v39)
     assert resume.headline == "Senior AI Engineer"
-    assert resume.summary.startswith("Senior AI Engineer with 7+ years of experience building Python services.")
+    assert resume.summary.startswith("Senior AI Engineer with 9+ years of experience building Python services.")
     assert validate.specialty_problems(resume, analysis) == []
     resume.summary += " I build voice agents."
     assert validate.specialty_problems(resume, analysis) == ["summary"]
@@ -975,19 +975,19 @@ def test_a_title_of_broad_fields_is_a_common_one_whatever_the_model_offers(targe
 
 def test_an_ai_platform_engineer_post_keeps_its_title_and_its_ai(profile):
     analysis = _analysis("Senior AI Platform Engineer", "AI Engineer")
-    out = make_output(headline="AI Engineer", summary="AI Platform Engineer with 7+ years of AI and ML platform work on "
+    out = make_output(headline="AI Engineer", summary="AI Platform Engineer with 9+ years of AI and ML platform work on "
                       "Kubernetes and Ray.")
     out.sections.experience[0].job_title = "Senior AI Platform Engineer"
     resume = validate.build_resume(profile, out)
     validate.short_role_headline(resume)
     validate.general_role_fixes(resume, analysis)
     assert resume.headline == "AI Platform Engineer"  # a draft's shorter headline gets the posting's title back
-    assert resume.summary == "AI Platform Engineer with 7+ years of AI and ML platform work on Kubernetes and Ray."
+    assert resume.summary == "AI Platform Engineer with 9+ years of AI and ML platform work on Kubernetes and Ray."
     assert resume.experience[0].job_title == "Senior AI Platform Engineer"
     assert validate.specialty_problems(resume, analysis) == []  # 'AI' is a field, never a specialty to take out
     validate.same_title(resume)  # then, in build(): one title in three places, the level too (prompt v39)
     assert resume.headline == resume.experience[0].job_title == "Senior AI Platform Engineer"
-    assert resume.summary == ("Senior AI Platform Engineer with 7+ years of AI and ML platform work on Kubernetes and "
+    assert resume.summary == ("Senior AI Platform Engineer with 9+ years of AI and ML platform work on Kubernetes and "
                               "Ray.")
 
 
