@@ -41,8 +41,11 @@ from .fit import LADDER, render_smallest, styles, try_styles
 LAYOUT = 1  # whole jobs on one page, 'B.S. in Computer Science · School · Town' (app/render/pdf.py)
 ONE_PAGE, TWO_PAGES = 1, 2
 MAX_REMOVED_IN_NOTE = 5
-# How the notes of a fit start (fit_new, fit_report, and fit.py for older runs): the notes of a new fit replace them
-FIT_NOTE = re.compile(r"Removed \d+ bullet\(s\) to fit |Kept two pages|Font reduced|Still ")
+# How the notes of a fit start (fit_new, fit_report, and fit.py for older runs), see refitted_notes: the notes on how
+# the text was laid out (FIT_NOTE) give way to a new fit's; a note naming the bullets removed (REMOVED_NOTE) stays while
+# they are off the resume
+FIT_NOTE = re.compile(r"Kept two pages|Font reduced|Still ")
+REMOVED_NOTE = re.compile(r"Removed \d+ bullet\(s\) to fit ")
 
 
 def design_style(paper: str = "Letter") -> FitStyle:
@@ -325,15 +328,28 @@ def removed_note(removed: list[str], pages: int) -> str:
     return f"Removed {len(removed)} bullet(s) to fit {pages_word(pages)}: {shown}{more}"
 
 
-def refitted_notes(notes: list[str], fit: list[str]) -> list[str]:
-    """A run's notes after it is fitted again (a hand edit, a certification tick): the earlier fit's notes (FIT_NOTE:
-    bullets removed, two pages kept, the font reduced, still over) give way to the new fit's `fit`, each note once."""
-    return list(dict.fromkeys([note for note in notes if not FIT_NOTE.match(note)] + fit))
+def refitted_notes(notes: list[str], fit: list[str], restored: bool = False) -> list[str]:
+    """A run's notes after it is fitted again (a hand edit, a certification tick), each note once: the earlier fit's
+    notes on the layout (FIT_NOTE: two pages kept, the font reduced, still over) give way to the new fit's `fit`. A note
+    naming removed bullets (REMOVED_NOTE: when the run was made, or by a tick) stays while they are off the resume; only
+    `restored` (a tick that started again from the bullets an earlier tick removed, TailorResult.untrimmed) drops the
+    last such note, that tick's, with any copy of it."""
+    removed = [note for note in notes if REMOVED_NOTE.match(note)]
+    back = removed[-1] if restored and removed else None
+    return list(dict.fromkeys([note for note in notes if note != back and not FIT_NOTE.match(note)] + fit))
+
+
+def shortest_over_two(resume: Resume, paper: str = "Letter") -> bool:
+    """Whether the text is over two pages at the design's own sizes even with every removable bullet gone (each job
+    with only its first): only then does fit_new lay it out on the size ladder."""
+    order = removal_order(resume)
+    return measure(_without(resume, order, len(order)), paper) > TWO_PAGES
 
 
 def on_the_ladder(resume: Resume, paper: str, document: str = "Resume") -> tuple[FitStyle, int, bytes, list[str]]:
     """Text over two pages at the design's own sizes, as it is, on the old size ladder (fit.py): the largest step that
-    fits two pages (try_styles), else the smallest step (render_smallest); a note says the font was reduced."""
+    fits two pages (try_styles), else the smallest step (render_smallest); a note says the font was reduced (and to fit
+    how many pages, only when it does)."""
     found = try_styles(resume, paper, document, layout=LAYOUT)
     if found:
         small, pages, pdf, notes = found
@@ -341,7 +357,8 @@ def on_the_ladder(resume: Resume, paper: str, document: str = "Resume") -> tuple
         small, pages, pdf = render_smallest(resume, paper, document, layout=LAYOUT)
         notes = []
     if not any(note.startswith("Font reduced") for note in notes) and small != design_style(paper):
-        notes.append(f"Font reduced to {small.font_pt:g} pt to fit {pages_word(min(pages, TWO_PAGES))}.")
+        to_fit = f" to fit {pages_word(pages)}" if pages <= TWO_PAGES else ""
+        notes.append(f"Font reduced to {small.font_pt:g} pt{to_fit}.")
     return small, pages, pdf, notes
 
 

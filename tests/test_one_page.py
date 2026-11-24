@@ -19,7 +19,9 @@ from app.pipeline.page_fit import (
     fit_new,
     job_relevance,
     measure,
+    pages_word,
     plan_pages,
+    refitted_notes,
     removal_order,
     trim_to_page,
 )
@@ -357,9 +359,17 @@ def fit_notes(notes: list[str]) -> list[str]:
     return [note for note in notes if re.match(r"Removed \d+ bullet|Kept two pages|Font reduced|Still ", note)]
 
 
+def unchanged(resume: Resume) -> dict:
+    """A hand edit's body (PUT /api/runs/{id}/resume) with the run's text as it is."""
+    return {"headline": resume.headline, "summary": resume.summary, "skills": [g.model_dump() for g in resume.skills],
+            "experience": [{"company_index": e.company_index, "job_title": e.job_title, "bullets": e.bullets}
+                           for e in resume.experience]}
+
+
 def test_a_tick_and_an_untick_leave_no_stale_or_repeated_fit_notes(client):
     """A tick that removes bullets notes them; the untick that brings them back drops that note, and a tick again
-    notes them once. A hand edit drops a tick's notes too. Other notes stay."""
+    notes them once. A hand edit keeps the last tick's note: those bullets are still off the resume. Other notes
+    stay."""
     db = client.app.state.db
     db.set_settings({"certifications_section": True})
     run_id = tailor_request(client, profile_id=upload(client)["id"]).json()["run_id"]
@@ -388,11 +398,185 @@ def test_a_tick_and_an_untick_leave_no_stale_or_repeated_fit_notes(client):
         notes = db.get_run(run_id).notes
         assert fit_notes(notes) == [] and "Removed a repeated word: 'the the'." in notes, notes
     ticks(client, run_id, [True] * len(have))
-    run = db.get_run(run_id).resume
-    edited = client.put(f"/api/runs/{run_id}/resume", json={
-        "headline": run.headline, "summary": run.summary, "skills": [g.model_dump() for g in run.skills],
-        "experience": [{"company_index": e.company_index, "job_title": e.job_title, "bullets": e.bullets}
-                       for e in run.experience]})
+    [ticked_note] = fit_notes(db.get_run(run_id).notes)
+    edited = client.put(f"/api/runs/{run_id}/resume", json=unchanged(db.get_run(run_id).resume))
     assert edited.status_code == 200, edited.text
     notes = db.get_run(run_id).notes
-    assert fit_notes(notes) == [] and "Removed a repeated word: 'the the'." in notes, notes
+    assert fit_notes(notes) == [ticked_note] and "Removed a repeated word: 'the the'." in notes, notes
+
+
+# ------------------------------------------------------------------ second review fixes (fit)
+def edited_past_two_pages(jobs: int) -> tuple[int, Resume]:
+    """(page target, text): a run written to its plan, then bullets added by hand until it is over two pages at the
+    design's own sizes, where removing bullets would still reach its page."""
+    profile = career(jobs)
+    target, counts = plan_pages(profile, today=TODAY)
+    edited, added = resume_with(profile, counts), 0
+    while measure(edited) <= 2:
+        edited.experience[added % jobs].bullets.append(BULLET)
+        added += 1
+    order = removal_order(edited)
+    assert measure(edited) == 3 and measure(page_fit._without(edited, order, len(order))) <= target
+    return target, edited
+
+
+@pytest.mark.parametrize("jobs", [6, 18])
+def test_a_hand_edit_that_removing_bullets_would_fit_keeps_the_design_size(jobs):
+    """A run at the design's own sizes, edited past two pages, where removing bullets would reach its page (6 jobs: one
+    page, 18 jobs: two): the font is not reduced, as fit_new and a certification tick on the same text keep the
+    design's sizes. A hand edit never removes what was typed, so a note says to shorten the text."""
+    target, edited = edited_past_two_pages(jobs)
+    assert target == (1 if jobs == 6 else 2)
+    style, pages, fits, notes = asyncio.run(fit_report(edited, "Letter", target, design_style("Letter")))
+    assert (style, pages, fits) == (design_style("Letter"), 3, False)
+    assert notes == [(f"Still 3 pages at the design's own sizes: the resume is meant to fit {pages_word(target)}. "
+                      "Shorten the text.")]
+    _trimmed, tick_style, tick_pages, tick_fits, _notes, removed = asyncio.run(refit(edited, "Letter", target))
+    assert (tick_style, tick_pages, tick_fits) == (style, target, True) and removed  # a tick removes bullets instead
+
+
+def test_a_hand_edit_of_a_run_on_a_smaller_step_keeps_its_pages_when_removing_bullets_would_fit():
+    """A run saved on a smaller step of the size ladder keeps one for text over two pages at the design's own sizes,
+    even where removing bullets would reach two pages there (as after run_tailor shaped its skills): an edit never
+    turns its two pages into three."""
+    target, edited = edited_past_two_pages(18)
+    style, pages, fits, notes = asyncio.run(fit_report(edited, "Letter", target, FLOOR[0]))
+    assert style.font_pt < LADDER[0][0] and style.layout == LAYOUT and (pages, fits) == (2, True)
+    [note] = notes
+    assert note.startswith(f"Font reduced to {style.font_pt:g} pt") and note.endswith(" to fit two pages.")
+
+
+MORE = ("while keeping every partner feed on schedule through the quarterly peak for all downstream report owners and "
+        "the finance close team across three regions with clear runbooks and alerts that page the owning team")
+
+
+def lengthened(bullet: str, words: int) -> str:
+    """The bullet with `words` more words at its end."""
+    return bullet.rstrip(".") + ", " + " ".join((MORE.split() * 4)[:words]) + "."
+
+
+class LongDrafts(LLMClient):
+    """The demo model with longer bullets: the first draft's by `first` words each (kept through the fix round, as by a
+    model that ignores the line rule), the shorter draft's by `second`."""
+
+    def __init__(self, inner, first: int, second: int):
+        self.inner, self.first, self.second, self.kinds = inner, first, second, []
+
+    async def generate_structured(self, **kwargs):
+        result = await self.inner.generate_structured(**kwargs)
+        self.kinds.append(kwargs["schema_name"])
+        words = self.first if self.kinds.count("tailor_output") == 1 else self.second
+        if kwargs["schema_name"] == "tailor_output" and words:
+            for exp in result.data["sections"]["experience"]:
+                exp["bullets"] = [lengthened(b, words) for b in exp["bullets"]]
+        if kwargs["schema_name"] == "tailor_revision" and self.first:
+            result.data["bullets"] = [dict(b, text=lengthened(b["text"], self.first)) for b in result.data["bullets"]]
+        return result
+
+
+def bullets_in(resume: Resume) -> int:
+    return sum(len(exp.bullets) for exp in resume.experience)
+
+
+@pytest.mark.parametrize(("target", "jobs", "counts", "first", "second", "kept"), [
+    (1, 7, [5, 4, 4, 3, 3, 3, 3], 45, 0, "shorter"),  # the shorter draft fits one page, the first draft only two
+    (2, 16, [6, 4] + [3] * 14, 45, 6, "shorter"),  # the shorter draft fits at the design's sizes, the first at 8 pt
+    (2, 18, [4, 3] + [2] * 16, 0, 20, "first"),  # the first draft fits at the design's sizes, the shorter at 8.45 pt
+])
+def test_a_shorter_draft_is_judged_by_its_pages_and_font_before_its_bullets(router, db, registry, monkeypatch, target,
+                                                                            jobs, counts, first, second, kept):
+    """No time limit: of the trimmed first draft and the shorter draft, the one on fewer pages, or on as many at a
+    larger size, is kept, whichever keeps more bullets: more bullets never make up for an extra page or a smaller
+    font."""
+    monkeypatch.setattr(tailor, "plan_pages", lambda *args, **kwargs: (target, list(counts)))
+    fits, real = [], tailor.fit_new
+
+    def watch(resume, paper, target, analysis=None, document="Resume"):
+        fits.append(real(resume, paper, target, analysis, document))
+        return fits[-1]
+
+    monkeypatch.setattr(tailor, "fit_new", watch)
+    router.overrides["demo-concise"] = LongDrafts(FakeClient(registry.get("demo-concise")), first, second)
+    result = asyncio.run(run_tailor(router, db, profile=career(jobs), profile_id=None, jd=SAMPLE_JD,
+                                    model_id="demo-concise", save=False, time_limit=0))
+    trimmed, short = fits
+    better, worse = (short, trimmed) if kept == "shorter" else (trimmed, short)
+    assert better.style == design_style("Letter") and better.pages == target
+    assert worse.pages > target or worse.style.font_pt < better.style.font_pt
+    # what bullets alone would choose: the worse layout
+    assert bullets_in(better.resume) < bullets_in(worse.resume) or worse.removed < better.removed
+    assert result.status == "ok" and (result.style, result.pages) == (better.style, better.pages)
+    assert [len(e.bullets) for e in result.resume.experience] == [len(e.bullets) for e in better.resume.experience]
+    assert (f"The model shortened the resume to fit {pages_word(target)}." in result.notes) == (kept == "shorter")
+
+
+def test_a_note_on_a_reduced_font_never_claims_pages_the_text_does_not_fit():
+    """Text over two pages even at the smallest step: the notes say the font was reduced and that it is still over,
+    never that the smaller font made it fit two pages (a hand edit, and a new run's last resort)."""
+    resume = resume_with(career(44), [1] * 44)
+    style, pages, fits, notes = asyncio.run(fit_report(resume, "Letter", 2, design_style("Letter")))
+    assert style in FLOOR and pages == 3 and not fits
+    assert notes == ["Font reduced to 8 pt.",
+                     "Still 3 pages at the smallest font (the limit is two). Shorten the text."]
+    fitted = fit_new(resume, "Letter", 2)
+    assert fitted.pages == 3 and fitted.notes == [
+        "Font reduced to 8 pt.", "Still more than two pages after trimming. Shorten the text in the editor."]
+
+
+def test_a_note_of_removed_bullets_stays_while_they_are_off_the_resume():
+    """A new fit's notes replace the earlier fit's notes on the layout (two pages kept, the font reduced, still over).
+    A note naming removed bullets stays: only a tick that starts again from the bullets an earlier tick removed drops
+    that tick's note (every copy an older version repeated)."""
+    made = "Removed 2 bullet(s) to fit one page: Contoso: Rebuilt the ledger export for finance with dbt..."
+    ticked = "Removed 1 bullet(s) to fit one page: Fabrikam: Moved reports to SQL views, cutting refresh time..."
+    notes = [made, "Kept two pages: even one bullet ...", ticked, "Removed a repeated word: 'the the'.", ticked,
+             "Font reduced to 9.1 pt to fit two pages.", "Still 2 pages at the design's own sizes: ..."]
+    assert refitted_notes(notes, ["Font reduced to 9.1 pt to fit two pages."]) == [
+        made, ticked, "Removed a repeated word: 'the the'.", "Font reduced to 9.1 pt to fit two pages."]
+    assert refitted_notes(notes, [], restored=True) == [made, "Removed a repeated word: 'the the'."]
+    again = "Removed 2 bullet(s) to fit one page: Fabrikam: Moved reports to SQL views, cutting refresh time..."
+    assert refitted_notes(notes, [again], restored=True) == [made, "Removed a repeated word: 'the the'.", again]
+
+
+def test_a_tick_that_removes_nothing_and_a_hand_edit_keep_the_note_of_removed_bullets(client):
+    """The note naming the bullets a run's fit removed when it was made stays while they are off the resume: after a
+    certification tick that removes nothing and after a hand edit that changes nothing."""
+    db = client.app.state.db
+    db.set_settings({"certifications_section": True})
+    run_id = tailor_request(client, profile_id=upload(client)["id"]).json()["run_id"]
+    saved = db.get_run(run_id)
+    made = "Removed 2 bullet(s) to fit one page: Northwind Labs: Rebuilt the partner order sync in Go with retries..."
+    saved.notes = [*saved.notes, made, "Removed a repeated word: 'the the'."]  # as the fit wrote it when it was made
+    db.update_run(saved)
+    have = [row.have for row in saved.certifications]
+    counts = [len(e.bullets) for e in saved.resume.experience]
+    ticked = ticks(client, run_id, [h or i == have.index(False) for i, h in enumerate(have)])
+    assert ticked.status_code == 200, ticked.text
+    run = db.get_run(run_id)
+    assert [len(e.bullets) for e in run.resume.experience] == counts and not ticked.json().get("message")
+    assert fit_notes(run.notes) == [made] and "Removed a repeated word: 'the the'." in run.notes, run.notes
+    edited = client.put(f"/api/runs/{run_id}/resume", json=unchanged(run.resume))
+    assert edited.status_code == 200, edited.text
+    notes = db.get_run(run_id).notes
+    assert fit_notes(notes) == [made] and "Removed a repeated word: 'the the'." in notes, notes
+
+
+def test_a_hand_edit_keeps_an_older_runs_note_of_removed_bullets(client):
+    """A run saved before the one-page rule (page_target 0, layout 0) whose fit removed bullets: a hand edit that
+    changes nothing keeps the note naming them, as such runs always did."""
+    db = client.app.state.db
+    profile = Profile(name="Taylor Quinn", companies=[Company(name="Contoso", start="Jan 2020", end="Present"),
+                                                      Company(name="Fabrikam", start="Jan 2015", end="Dec 2019")],
+                      education=[Education(school="Lakeside University", degree="B.S.", field="Computer Science",
+                                           end="2014")])
+    resume = resume_with(profile, [1, 1])
+    made = "Removed 3 bullet(s) to fit two pages: Contoso: Rebuilt the ledger export for finance with dbt and Airf..."
+    analysis = JDAnalysis(target_role="Backend Engineer", seniority="", domain="", must_have_skills=["Go"],
+                          nice_to_have_skills=[], keywords=[])
+    run_id = db.save_run(TailorResult(requested_model="demo-concise", status="ok", resume=resume, page_target=0,
+                                      style=FitStyle(), analysis=analysis,
+                                      notes=[made, "Removed a repeated word: 'the the'."]), None, "")
+    edited = client.put(f"/api/runs/{run_id}/resume", json=unchanged(resume))
+    assert edited.status_code == 200, edited.text
+    run = db.get_run(run_id)
+    assert run.style.layout == 0 and run.notes == [made, "Removed a repeated word: 'the the'."], run.notes

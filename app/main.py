@@ -1463,7 +1463,8 @@ def create_app(db: Database | None = None, registry: Registry | None = None, rou
         if latest is not None and body.cover_paragraphs is None:
             result.cover_letter, result.cover_cost_usd = latest.cover_letter, latest.cover_cost_usd
         result.style, result.pages, result.fits = style, pages, fits
-        result.notes = refitted_notes(result.notes, notes)  # the earlier fit's notes give way to this one's
+        # the earlier fit's notes on the layout give way to this one's; bullets removed before are still off the resume
+        result.notes = refitted_notes(result.notes, notes)
         run_checks(result, result.jd or analysis_terms(result.analysis))
         db.update_run(result)
         return result.model_dump()
@@ -1504,7 +1505,8 @@ def create_app(db: Database | None = None, registry: Registry | None = None, rou
         fresh.resume, fresh.certifications = resume, rows
         fresh.untrimmed = whole if removed else []
         fresh.style, fresh.pages, fresh.fits = style, pages, fits
-        fresh.notes = refitted_notes(fresh.notes, notes)  # bullets brought back are no longer noted as removed
+        # bullets brought back (from untrimmed) are no longer noted as removed; the ones removed before still are
+        fresh.notes = refitted_notes(fresh.notes, notes, restored=bool(result.untrimmed))
         run_checks(fresh, fresh.jd or analysis_terms(fresh.analysis))
         db.update_run(fresh)
         view = viewed(fresh, user)
