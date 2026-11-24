@@ -145,17 +145,47 @@ CONCISE = [  # (past, present), 15-22 words, each with its result; one ends with
     ("Standardized how {k1} and {k3} work was reviewed and tested, so reviews took fewer rounds as the team grew.",
      "Standardize how {k1} and {k3} work is reviewed and tested, so reviews take fewer rounds as the team grows."),
 ]
-DETAILED = [
-    "Migrated legacy {k1} jobs to a versioned, documented setup, running both side by side until every output matched, so the cut-over caused no downtime.",
-    "Streamlined recurring {k3} reporting with a shared automated pipeline and clear ownership, so managers saw current numbers every morning instead of weekly exports.",
-    "Cut release lead time from 47 to 36 days, a 23.4% drop, by redesigning {k1} workflows across teams and documenting trade-offs for every release.",
-    "Owned the day-to-day execution of {k2} initiatives from intake to hand-off, tracking risks openly and reporting status to leadership in plain language.",
-    "Partnered with stakeholders to translate ambiguous requirements into clear {k3} deliverables, validating assumptions early, agreeing on acceptance criteria, and reducing late changes during delivery.",
-    "Mentored colleagues on {k1} and {k2} practices through reviews, pairing sessions and short written guides, raising consistency and shortening onboarding for new team members.",
-    "Improved {k3} processes by identifying recurring failure points, proposing practical fixes, and following up with owners until the changes were adopted and measured.",
-    "Monitored {k2} health with simple dashboards and alerts, triaged issues quickly, and wrote post-incident notes that fed back into the team's planning.",
-    "Hardened {k2} deployments with staged rollouts, automated health checks and one-step rollbacks agreed with operations, letting the team release during working hours without late-night follow-ups.",
-    "Standardized how {k1} and {k3} work was reviewed and tested, writing short checklists that cut back-and-forth in reviews as the team doubled.",
+DETAILED = [  # (past, present), deliberately long
+    (("Migrated legacy {k1} jobs to a versioned, documented setup, running both side by side until every output "
+      "matched, so the cut-over caused no downtime."),
+     ("Migrate legacy {k1} jobs to a versioned, documented setup, running both side by side until every output "
+      "matches, so the cut-over causes no downtime.")),
+    (("Streamlined recurring {k3} reporting with a shared automated pipeline and clear ownership, so managers saw "
+      "current numbers every morning instead of weekly exports."),
+     ("Streamline recurring {k3} reporting with a shared automated pipeline and clear ownership, so managers see "
+      "current numbers every morning instead of weekly exports.")),
+    (("Cut release lead time from 47 to 36 days, a 23.4% drop, by redesigning {k1} workflows across teams and "
+      "documenting trade-offs for every release."),
+     ("Cut release lead time from 47 to 36 days, a 23.4% drop, by redesigning {k1} workflows across teams and "
+      "documenting trade-offs for every release.")),  # 'Cut' is the same word in both tenses
+    (("Owned the day-to-day execution of {k2} initiatives from intake to hand-off, tracking risks openly and reporting "
+      "status to leadership in plain language."),
+     ("Own the day-to-day execution of {k2} initiatives from intake to hand-off, tracking risks openly and reporting "
+      "status to leadership in plain language.")),
+    (("Partnered with stakeholders to translate ambiguous requirements into clear {k3} deliverables, validating "
+      "assumptions early, agreeing on acceptance criteria, and reducing late changes during delivery."),
+     ("Partner with stakeholders to translate ambiguous requirements into clear {k3} deliverables, validating "
+      "assumptions early, agreeing on acceptance criteria, and reducing late changes during delivery.")),
+    (("Mentored colleagues on {k1} and {k2} practices through reviews, pairing sessions and short written guides, "
+      "raising consistency and shortening onboarding for new team members."),
+     ("Mentor colleagues on {k1} and {k2} practices through reviews, pairing sessions and short written guides, "
+      "raising consistency and shortening onboarding for new team members.")),
+    (("Improved {k3} processes by identifying recurring failure points, proposing practical fixes, and following up "
+      "with owners until the changes were adopted and measured."),
+     ("Improve {k3} processes by identifying recurring failure points, proposing practical fixes, and following up "
+      "with owners until the changes are adopted and measured.")),
+    (("Monitored {k2} health with simple dashboards and alerts, triaged issues quickly, and wrote post-incident notes "
+      "that fed back into the team's planning."),
+     ("Monitor {k2} health with simple dashboards and alerts, triage issues quickly, and write post-incident notes "
+      "that feed back into the team's planning.")),
+    (("Hardened {k2} deployments with staged rollouts, automated health checks and one-step rollbacks agreed with "
+      "operations, letting the team release during working hours without late-night follow-ups."),
+     ("Harden {k2} deployments with staged rollouts, automated health checks and one-step rollbacks agreed with "
+      "operations, letting the team release during working hours without late-night follow-ups.")),
+    (("Standardized how {k1} and {k3} work was reviewed and tested, writing short checklists that cut back-and-forth "
+      "in reviews as the team doubled."),
+     ("Standardize how {k1} and {k3} work is reviewed and tested, writing short checklists that cut back-and-forth "
+      "in reviews as the team doubles.")),
 ]
 
 
@@ -355,12 +385,11 @@ class FakeClient(LLMClient):
             present = is_current(Company.model_validate(company), index)  # the present tense, as the prompt asks
             for j in range(n):
                 template = bank[(index * 2 + j) % len(bank)]
-                if j >= len(bank) and "23.4%" in template:  # the one invented figure: once per job
+                if j >= len(bank) and "23.4%" in template[0]:  # the one invented figure: once per job
                     template = bank[(index * 2 + j + 1) % len(bank)]
                 if j == 0 and ctx.get("metrics", "estimate") == "estimate":  # opens with its size and its result
                     template = LEADS[index % len(LEADS)]
-                if isinstance(template, tuple):  # (past, present); DETAILED is past only (the app fixes its tense)
-                    template = template[1] if present else template[0]
+                template = template[1] if present else template[0]  # every bank is (past, present)
                 bullets.append(template.format(k1=lead if j == 0 and lead else mine[j % len(mine)],
                                                k2=mine[(j + 1) % len(mine)],
                                                k3=mine[(j + 2) % len(mine)], size=LEAD_SIZES[index % len(LEAD_SIZES)],

@@ -62,6 +62,8 @@ from .test_validate import make_output
      "Processed 2M insurance claims a day in Spark, cutting the nightly backlog from 9 to 2 hours."),
     ("Track and reduce cloud costs across 40 AWS accounts with Cost Explorer.",  # 'reduce' is only a verb
      "Tracked and reduced cloud costs across 40 AWS accounts with Cost Explorer."),
+    ("Lead the platform team (and its on-call rotation) for 3 product lines.",  # no verb in the brackets
+     "Led the platform team (and its on-call rotation) for 3 product lines."),
 ])
 def test_a_present_tense_opening_is_put_in_the_past(given, expected):
     assert past_opening(given) == expected
@@ -110,7 +112,7 @@ def test_past_tense_and_noun_openings_are_left_as_they_are(text):
                     "charges by 31%.")),
     (past_opening, ("Create runbooks in Confluence that help on-call engineers identify and resolve Airflow incidents "
                     "in under 30 minutes.")),
-    # a second verb phrase in the old tense: the bullet stays whole, for the rewrite pass, never in two tenses
+    # a second verb phrase in the opening's own form: the bullet stays whole, for the rewrite pass, never in two tenses
     (present_opening, ("Rebuilt the Airflow scheduler in Python, wrote 300 pytest cases and caught 17 regressions "
                        "before each release.")),
     (present_opening, ("Monitored Kafka health in Datadog, triaged incidents and wrote post-mortems that cut repeat "
@@ -121,6 +123,18 @@ def test_past_tense_and_noun_openings_are_left_as_they_are(text):
                     "partner teams.")),
     (past_opening, ("Optimize slow database queries in PostgreSQL and add Redis caching layers to handle spikes "
                     "without errors.")),
+    # also after '(and' or a comma with no space after it
+    (present_opening, ("Rebuilt the billing service in Go (and automated its regression tests), cutting failed charges "
+                       "by 31%.")),
+    (present_opening, "Built the claims API in Go,and automated its tests."),
+    (past_opening, "Lead the platform team (and add Redis caching to the API)."),
+    (past_opening, "Lead the platform team,and add Redis caching."),
+    # a hyphenated verb with its object or a particle after it is a verb, not a modifier such as 'role-based'
+    (present_opening, ("Added Redis caching to the checkout API and re-based 40 feature branches onto main, cutting "
+                       "merge conflicts.")),
+    (present_opening, "Rebuilt the planning process and laser-focused the team on 3 OKRs, lifting delivery by 20%."),
+    (present_opening, ("Moved the event queue to Kafka and piggy-backed on the existing stream for alerting, cutting "
+                       "pages by 30%.")),
 ])
 def test_a_bullet_is_never_left_in_two_tenses(change, text):
     assert change(text) == text
@@ -206,6 +220,55 @@ def test_a_bullet_left_whole_is_not_counted_in_the_notes():
      "Rebuild the Airflow scheduler in Python and cut failed runs from 40 to 12 a month."),
     ("Certified 40 engineers on SOC 2 controls in Vanta, cutting audit prep from 6 to 2 weeks.",
      "Certify 40 engineers on SOC 2 controls in Vanta, cutting audit prep from 6 to 2 weeks."),
+    # a third-person opening: a later participle or past verb is not in its form, so the opening is put right
+    ("Builds the claims API in Go, deployed to 40 regions on GKE.",
+     "Build the claims API in Go, deployed to 40 regions on GKE."),
+    ("Leads a team of 6 engineers, focused on payments reliability and fraud checks.",
+     "Lead a team of 6 engineers, focused on payments reliability and fraud checks."),
+    # a hyphenated modifier after 'and' is no second verb
+    ("Added single sign-on (SSO) and role-based access control (RBAC) to the admin console for 38 teams.",
+     "Add single sign-on (SSO) and role-based access control (RBAC) to the admin console for 38 teams."),
+    ("Configured HIPAA audit logging and role-based access in Epic for 3,000 clinical users.",
+     "Configure HIPAA audit logging and role-based access in Epic for 3,000 clinical users."),
+    (("Migrated the legacy monolith's user accounts and session handling to a separate authentication service with "
+      "OAuth 2.0 and short-lived tokens, closing two audit findings."),
+     ("Migrate the legacy monolith's user accounts and session handling to a separate authentication service with "
+      "OAuth 2.0 and short-lived tokens, closing two audit findings.")),
+    ("Built a churn model in Python and cloud-based dashboards in Looker for 38 account managers.",
+     "Build a churn model in Python and cloud-based dashboards in Looker for 38 account managers."),
+    # no sentence of its own after the opening: a possessive ('each partner's export jobs'), a plural before a number
+    # ('nightly builds 21% faster'), or a verb in a later clause ('models that make ...', 'before customers see ...')
+    ("Added retry logic to each partner's export jobs in Airflow, cutting failed syncs from 41 to 6 a week.",
+     "Add retry logic to each partner's export jobs in Airflow, cutting failed syncs from 41 to 6 a week."),
+    ("Built Grafana views of each team's deploy history, cutting rollback time by 40%.",
+     "Build Grafana views of each team's deploy history, cutting rollback time by 40%."),
+    ("Made nightly builds 21% faster, from 14 to 11 minutes.",
+     "Make nightly builds 21% faster, from 14 to 11 minutes."),
+    ("Made page loads 40% faster on the checkout flow with Redis caching.",
+     "Make page loads 40% faster on the checkout flow with Redis caching."),
+    ("Built ranking models that make personalized recommendations for 2M shoppers.",
+     "Build ranking models that make personalized recommendations for 2M shoppers."),
+    ("Wrote SQL checks on AWS that catch broken imports before customers see them.",
+     "Write SQL checks on AWS that catch broken imports before customers see them."),
+    ("Built the claims API (and its SDK) in Go for 12 partner teams.",  # no verb in the brackets
+     "Build the claims API (and its SDK) in Go for 12 partner teams."),
+    ("Rebuilt the search service (Go, gRPC), cutting p95 latency by 40%.",
+     "Rebuild the search service (Go, gRPC), cutting p95 latency by 40%."),
+    # a duty before 'to' or 'as', never a passive: the current job's own work
+    ("Contributed to the open-source Kafka connector, with 12 merged pull requests for schema evolution.",
+     "Contribute to the open-source Kafka connector, with 12 merged pull requests for schema evolution."),
+    ("Responded to 60 tickets a day in Zendesk with a 96% CSAT across billing and API issues.",
+     "Respond to 60 tickets a day in Zendesk with a 96% CSAT across billing and API issues."),
+    ("Reported to the VP of Engineering on platform reliability through a monthly SLO review.",
+     "Report to the VP of Engineering on platform reliability through a monthly SLO review."),
+    ("Presented to the board each quarter on security posture, securing $1.5M for the zero-trust program.",
+     "Present to the board each quarter on security posture, securing $1.5M for the zero-trust program."),
+    ("Served as tech lead for the 6-person payments squad, owning design reviews and on-call.",
+     "Serve as tech lead for the 6-person payments squad, owning design reviews and on-call."),
+    ("Partnered as the data lead with the growth team on 4 pricing tests, adding $2M in revenue.",
+     "Partner as the data lead with the growth team on 4 pricing tests, adding $2M in revenue."),
+    ("Designed and presented to the board the zero-trust roadmap for 2026.",
+     "Design and present to the board the zero-trust roadmap for 2026."),
 ])
 def test_a_past_opening_in_the_current_job_becomes_present(given, expected):
     assert present_opening(given) == expected
@@ -230,6 +293,12 @@ def test_a_past_opening_in_the_current_job_becomes_present(given, expected):
     "Automated tests in CI run in 4 minutes on every pull request.",
     "Standardized Terraform modules let 12 teams ship infrastructure changes without platform tickets.",
     "Automated triage in Zendesk saves the support team 10 hours a week.",
+    "Paid search campaigns in Google Ads drove 40% of signups.",  # past forms that also open a noun
+    "Thought leadership posts on LinkedIn drove 2K signups a quarter.",
+    "Custom-built Looker dashboards give 38 analysts current numbers each morning.",
+    "Self-built CI runners on EKS cut queue times from 9 to 2 minutes.",
+    "Rebuilt onboarding flows in React lift completion by 9% a quarter.",
+    "Sent invoices in Stripe reach 4K customers on the first of each month.",
     # true only in the past: a passive opening or a one-time event, never a command
     "Promoted to Senior Data Engineer within 18 months for leading the Airflow migration across 40 pipelines.",
     ("Selected as 1 of 4 engineers to rebuild the Spark ingestion layer, cutting nightly load time from 47 to 36 "
@@ -241,6 +310,16 @@ def test_a_past_opening_in_the_current_job_becomes_present(given, expected):
     "Won the 2025 company hackathon with a Kafka fraud detector adopted by 3 teams.",
     "Earned the AWS Solutions Architect certification in 2025 while leading the move to EKS.",
     "Promoted twice in 3 years for owning the claims API rebuild in Go.",
+    "Reported by the CFO as the main driver of a 12% cut in cloud spend.",
+    "Reported as the top contributor to the Airflow project in 2025.",  # only 'Reported to' is a duty
+    # a change made once before 'to': true only in the past
+    "Moved to the platform team in 2025 to lead the EKS migration.",
+    "Migrated to PostgreSQL from MySQL for 30 services, cutting hosting costs by 30%.",
+    "Transitioned to a staff engineer role in 2025, leading 3 platform teams.",
+    "Relocated to the Berlin office in 2025 to open the EU data team.",
+    "Returned to the payments team in 2025 to lead the Stripe migration.",
+    "Switched to Bazel from Maven for the 2M-line monorepo, cutting CI time from 50 to 15 minutes.",
+    "Upgraded to Java 21 across 25 services with OpenRewrite recipes, removing 600 deprecated calls.",
 ])
 def test_a_present_opening_is_left_alone_when_unsure_or_weak(text):
     assert present_opening(text) == text
@@ -284,6 +363,18 @@ def test_a_slip_in_any_job_is_fixed_on_the_draft(router, db, registry, profile, 
     assert result.resume.experience[1].bullets[1].startswith(second)
     assert any(n.endswith("in the present tense, as the current job is written.") for n in result.notes)
     assert any(n.endswith("in the past tense, as every earlier job is written.") for n in result.notes)
+
+
+@pytest.mark.parametrize("model", ["demo-concise", "demo-detailed"])
+def test_the_demo_writes_each_job_in_its_tense(registry, profile, jd, model):
+    """Both demo styles write the current job in the present tense and every other job in the past, as the prompt
+    asks, so the app has no opening to put right (and no bullet left in the past where it could not)."""
+    reply = asyncio.run(FakeClient(registry.get(model)).generate_structured(
+        system="", user="", schema={}, schema_name="tailor_output", max_tokens=1,
+        context={"jd": jd, "profile": profile.model_dump()}))
+    current, *older = reply.data["sections"]["experience"]
+    assert all(present_base(b.split()[0]) is None and present_opening(b) == b for b in current["bullets"])
+    assert older and all(past_opening(b) == b for job in older for b in job["bullets"])
 
 
 def test_the_prompt_asks_for_the_present_tense_in_the_current_job_only():
