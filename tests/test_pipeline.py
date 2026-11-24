@@ -22,7 +22,7 @@ def test_demo_run_is_ok_on_one_page_and_keeps_fixed_facts(router, db, profile, j
     result = tailor(router, db, profile, jd)
     assert result.status == "ok" and result.fits and result.pages == 1 and result.page_target == 1
     assert (result.style.font_pt, result.style.margin_in) == LADDER[0]  # one well-filled page at the design's sizes
-    assert [len(e.bullets) for e in result.resume.experience] == [5, 3, 3]  # the most recent role gets the most
+    assert [len(e.bullets) for e in result.resume.experience] == [6, 3, 3]  # half for the most recent role
     assert [s.product for s in result.career_plan] == ["", "", ""]  # the demo knows no companies: generic context
     assert result.resume.profile == profile  # name, contact, companies, dates, education untouched
     assert [e.company_index for e in result.resume.experience] == [0, 1, 2]

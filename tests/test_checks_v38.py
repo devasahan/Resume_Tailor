@@ -304,10 +304,12 @@ def test_two_result_led_bullets_cost_no_rewrite(router, db, registry, profile):
 
 # ------------------------------------------------------------------ figures per job, as the METRICS rule says
 @pytest.mark.parametrize("counts", [[5, 3, 3], [4, 3, 2, 1], [4, 2, 1, 1, 1], [3, 2, 1, 1, 1, 1],
-                                    [6, 5, 4, 4, 3, 2, 2, 2], [3, 2, 2, 1, 1], [3, 2, 1, 2, 1]])
+                                    [6, 5, 4, 4, 3, 2, 2, 2], [3, 2, 2, 1, 1], [3, 2, 1, 2, 1], [5, 2, 1, 1, 1],
+                                    [6, 3, 3], [3, 1, 1, 1, 1, 1, 1]])
 def test_a_draft_at_the_metrics_rules_allowance_has_no_density_problem(counts):
     # the current job: its first bullet and 2 more with figures; every other job: its first and at most 1 more,
-    # older or short roles usually none ([3, 2, 2, 1, 1]: the plan of five stays of about three years)
+    # older or short roles usually none ([5, 2, 1, 1, 1]: the plan of five stays of about three years, about half
+    # for the current job)
     usual = jobs_resume(counts, [2, 1] + [0] * (len(counts) - 2))
     most = jobs_resume(counts, [2] + [1] * (len(counts) - 1))
     assert validate.metric_density_problems(usual) == validate.metric_density_problems(most) == []
@@ -351,7 +353,7 @@ FIVE_TITLES = ["Senior Data Engineer", "Data Engineer III", "Data Engineer II", 
 
 
 def test_a_five_job_draft_within_the_rule_costs_no_rewrite(router, db, registry):
-    year = date.today().year  # five stays of three years: the plan 3 / 2 / 2 / 1 / 1
+    year = date.today().year  # five stays of three years (the plan: 5 / 2 / 1 / 1 / 1), written as 3 / 2 / 2 / 1 / 1
     person = career([(f"Jan {year - 3 * i - 3}", "Present" if i == 0 else f"Dec {year - 3 * i - 1}")
                      for i in range(5)])
 
@@ -361,7 +363,7 @@ def test_a_five_job_draft_within_the_rule_costs_no_rewrite(router, db, registry)
 
     client, result = tailored(router, db, registry, person, within_the_rule)
     assert result.retries == 0 and client.fix_round() == ""
-    assert [exp.bullets for exp in result.resume.experience] == FIVE_JOBS  # the plan's 3 / 2 / 2 / 1 / 1, kept
+    assert [exp.bullets for exp in result.resume.experience] == FIVE_JOBS  # 3 / 2 / 2 / 1 / 1, kept
     assert not any(w.startswith("Many bullets carry figures") for w in result.ats_warnings)
 
 
