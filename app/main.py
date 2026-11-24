@@ -380,10 +380,25 @@ def carry_project_notes(profile: Profile, earlier: list[Profile]) -> list[str]:
     return list(dict.fromkeys(kept))
 
 
+def _school_name(name: str) -> str:
+    """A school's name to compare two uploads, whatever its case, punctuation, 'The' and '&' or 'and': 'The Fabrikam
+    College of Arts & Sciences' and 'Fabrikam College of Arts and Sciences' are one school, 'Fabrikam College' is
+    another."""
+    words = re.sub(r"[^\w\s]", " ", re.sub(r"[.'’]", "", name.lower().replace("&", " and "))).split()
+    return " ".join(word for word in words if word != "the")
+
+
+_YEAR = re.compile(r"(?<!\d)(?:19|20)\d{2}(?!\d)")
+
+
 def _end_year(edu: Education) -> int | str:
-    """When a school ended, to compare two uploads: the year ('May 2014' and '2014' match), else the text."""
+    """When a school ended, to compare two uploads: the year ('May 2014' and '2014' match, so do 'Expected May 2027'
+    and 'May 2027'), else the text."""
     point = parse_point(edu.end, is_end=True)
-    return point[0] if point else _same_name(edu.end)
+    if point:
+        return point[0]
+    years = _YEAR.findall(edu.end)
+    return int(years[-1]) if years else _same_name(edu.end)
 
 
 def _degree_name(degree: str) -> str:
@@ -392,21 +407,31 @@ def _degree_name(degree: str) -> str:
 
 
 def _other_degree(new: Education, old: Education) -> bool:
-    """Two entries of one school that are surely not the same degree: both end dates known and different years, or
-    both degrees known and different. A degree written with its field ('B.S. Computer Science') is still the 'B.S.'."""
-    if new.end.strip() and old.end.strip() and _end_year(new) != _end_year(old):
-        return True
+    """Two entries of one school that are surely not the same: both end years known and different, or both degrees
+    known and different. The same end year at a named school is the same entry, however its degree is written ('B.S.'
+    as on the diploma, the file's 'Bachelor of Science'); rows without a school must have the same degree too. A
+    degree written with its field ('B.S. Computer Science') is still the 'B.S.'."""
+    if new.end.strip() and old.end.strip():
+        if _end_year(new) != _end_year(old):
+            return True
+        if _school_name(new.school):
+            return False
     one, two = _degree_name(new.degree), _degree_name(old.degree)
     return bool(one and two) and not (f"{one} ".startswith(f"{two} ") or f"{two} ".startswith(f"{one} "))
 
 
 def _paired_education(new: list[Education], old: list[Education]) -> list[tuple[Education, Education]]:
     """Entries of one school in a new and an earlier upload, in pairs, in passes over all the new ones: the same end
-    year first, then the same degree, then the rest in their order. Two that are surely different degrees never pair
-    (a master's never takes what was typed for the bachelor's). Each one pairs once at most."""
-    passes = (lambda a, b: bool(a.end.strip() and b.end.strip()) and _end_year(a) == _end_year(b),
-              lambda a, b: bool(a.degree.strip()) and _degree_name(a.degree) == _degree_name(b.degree),
-              lambda a, b: True)
+    year and degree first, then the same end year, then the same degree, then the rest in their order. Two that are
+    surely different (_other_degree) never pair (a master's never takes what was typed for the bachelor's). Each one
+    pairs once at most."""
+    def year(a: Education, b: Education) -> bool:
+        return bool(a.end.strip() and b.end.strip()) and _end_year(a) == _end_year(b)
+
+    def degree(a: Education, b: Education) -> bool:
+        return bool(a.degree.strip()) and _degree_name(a.degree) == _degree_name(b.degree)
+
+    passes = (lambda a, b: year(a, b) and degree(a, b), year, degree, lambda a, b: True)
     pairs: list[tuple[Education, Education]] = []
     left = list(old)
     for same in passes:
@@ -422,19 +447,20 @@ def _paired_education(new: list[Education], old: list[Education]) -> list[tuple[
 
 def carry_education(profile: Profile, earlier: list[Profile]) -> list[str]:
     """A resume uploaded again keeps what the Profile page's Education box added: for each school (the name, whatever
-    its case and spacing) the new file leaves without a town, degree or field, the newest earlier upload of the same
-    person (the same name) that lists the school gives it, entry by entry (_paired_education). What the new file says
-    wins. The degree and its field go together: the field is given only with the degree, or to the same degree, and
-    never to a degree that already names it ('B.S. Computer Science'). Returns the schools changed."""
+    its case, punctuation, 'The' and '&' or 'and': _school_name) the new file leaves without a town, degree or field,
+    the newest earlier upload of the same person (the same name) that lists the school gives it, entry by entry
+    (_paired_education), never to another school. What the new file says wins. The degree and its field go together:
+    the field is given only with the degree, or to the same degree, and never to a degree that already names it ('B.S.
+    Computer Science'). Returns the schools changed."""
     person = _same_name(profile.name)
     mine = [old for old in earlier if _same_name(old.name) == person]  # newest first
     kept: list[str] = []
-    for name in dict.fromkeys(_same_name(edu.school) for edu in profile.education):
-        upload = next((old for old in mine if any(_same_name(e.school) == name for e in old.education)), None)
+    for name in dict.fromkeys(_school_name(edu.school) for edu in profile.education):
+        upload = next((old for old in mine if any(_school_name(e.school) == name for e in old.education)), None)
         if upload is None:
             continue
-        for edu, source in _paired_education([e for e in profile.education if _same_name(e.school) == name],
-                                             [e for e in upload.education if _same_name(e.school) == name]):
+        for edu, source in _paired_education([e for e in profile.education if _school_name(e.school) == name],
+                                             [e for e in upload.education if _school_name(e.school) == name]):
             before = (edu.location, edu.degree, edu.field)
             if not edu.location.strip() and source.location.strip():
                 edu.location = source.location

@@ -185,6 +185,9 @@ function degreeText(e) {
   if (NOT_SUBJECT.test(e.field)) return `${e.degree}, ${e.field}`;
   return `${e.degree} in ${e.field}`;
 }
+// A school's row as a new resume prints it, as app/render/pdf.py education_runs: the parts that are there, so a row
+// read without its school is 'B.S. in Computer Science · Austin, TX'
+const educationRow = e => [degreeText(e), e.school, e.location].filter(Boolean).join(' · ');
 
 // Each school as new resumes print it: 'B.S. in Computer Science · School · St. Louis, MO'. The degree is written exactly
 // as on the diploma, and the town is the school's.
@@ -234,7 +237,7 @@ function educationBox(r) {
       const saved = data.resume.profile.education;
       loaded = asLoaded(saved);
       saved.forEach((e, i) => { if (rows[i]) EDUCATION_FIELDS.forEach(([key]) => { rows[i][key].value = rows[i][key].dataset.saved = e[key] || ''; }); });
-      status.textContent = 'Saved. New resumes print: ' + saved.map(e => [degreeText(e), e.school, e.location].filter(Boolean).join(' · ')).join('; ');
+      status.textContent = 'Saved. New resumes print: ' + saved.map(educationRow).join('; ');
     } catch (err) { status.textContent = err.message; }
     finally { save.disabled = false; }
   });

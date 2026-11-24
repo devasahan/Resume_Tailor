@@ -1,12 +1,15 @@
 """Education as the reviewer asked: the degree exactly as on the diploma, then its subject ("B.S. in Computer Science"),
 the school and its town ("St. Louis, MO"). Both upload readers keep the town, the Profile page's Education box edits
 each school, and a resume uploaded again keeps what that box added. Every person and school here is invented."""
+import io
 import json
 import shutil
 import subprocess
 from pathlib import Path
 
 import pytest
+from docx import Document
+from pypdf import PdfReader
 
 from app.llm.schema import strict_json_schema
 from app.main import carry_education
@@ -15,7 +18,8 @@ from app.parsing.resume_parser import profile_warnings
 from app.render.pdf import degree_text, education_runs
 from app.schemas import Company, Education, Profile
 
-from .test_api import save_profile
+from .test_api import docx_bytes, pdf_bytes, save_profile
+from .test_api import tailor as tailor_request
 
 TOWN = "Education: add each school's town"
 PAGE = Path(__file__).parents[1] / "app/web/templates/profile.html"
@@ -112,6 +116,35 @@ def test_the_town_is_a_place_after_the_school_and_never_a_degree(line, school, t
     assert any(warning.startswith(TOWN) for warning in profile_warnings(profile)) == (not town)  # asked for it
 
 
+@pytest.mark.parametrize("line,town", [
+    # a town written with its province, state or country, then majors shaped like a place: the town is the real place
+    ("Lakeside University | Toronto, Ontario | B.Sc. | Computer Science, Statistics | 2016", "Toronto, Ontario"),
+    ("Lakeside University | London, United Kingdom | BA | Economics, Politics | 2015", "London, United Kingdom"),
+    ("Tailspin University | Springfield, Illinois | B.S. | Biology, Chemistry | 2014", "Springfield, Illinois"),
+    ("Tailspin University | Mumbai, India | Bachelor of Engineering | Computer Science, Honours | 2015",
+     "Mumbai, India"),
+    ("Lakeside University | Paris, France | MSc | Finance, Economics", "Paris, France"),
+    ("Lakeside University | B.Sc. | Computer Science, Statistics | Toronto, Ontario | 2016", "Toronto, Ontario"),
+    # a subject ending in two capitals is no state's code
+    ("Lakeside University | Springfield, IL | B.S. | Computer Science, AI | 2020", "Springfield, IL"),
+    ("Lakeside University | Austin, TX | MBA | Finance, IT | 2019", "Austin, TX"),
+    ("Lakeside University | Austin, TX | Information Systems, HR | 2019", "Austin, TX"),
+    ("Lakeside University | Toronto, ON | B.Sc. | 2016", "Toronto, ON"),
+    ("Lakeside University | London, UK | MSc | 2016", "London, UK"),
+    # no real place after the school: no town, so the town warning asks for it
+    ("Lakeside University | B.S. | Computer Science, AI | 2020", ""),
+    ("Lakeside University | B.Sc. | Computer Science, Statistics | 2016", ""),
+    ("Lakeside University | Information Systems, HR | 2019", ""),
+    ("Lakeside University, Computer Science, AI", ""),
+])
+def test_the_town_is_a_real_place_never_a_major(line, town):
+    [entry] = _parse_education([line])
+    assert entry.location == town
+    profile = Profile(name="Taylor Quinn", companies=[Company(name="Northwind Labs", start="Jan 2022", end="Present")],
+                      education=[entry])
+    assert any(warning.startswith(TOWN) for warning in profile_warnings(profile)) == (not town)  # asked for it
+
+
 def test_a_degree_above_its_school_joins_it():
     """The degree line first, then the school's: one row, never a row without its school."""
     [entry] = _parse_education(["Bachelor of Science in Computer Science   2016 - 2020",
@@ -121,10 +154,10 @@ def test_a_degree_above_its_school_joins_it():
     text = resume_text("Bachelor of Science in Computer Science\t2016 - 2020\nLakeside University, Springfield, IL")
     assert [(e.school, e.degree, e.location, e.end) for e in parse_resume_text(text).education] == [
         ("Lakeside University", "Bachelor of Science", "Springfield, IL", "2020")]
-    # a school line with its own degree keeps it, and the degree above takes the school too
+    # a school line with its own degree is that degree's row only: the degree above keeps no school, as before
     assert [(e.school, e.degree) for e in _parse_education(["M.S. in Data Science   2022",
                                                              "Lakeside University | B.S. in Biology | 2016"])] == [
-        ("Lakeside University", "M.S."), ("Lakeside University", "B.S.")]
+        ("", "M.S."), ("Lakeside University", "B.S.")]
     # every degree above its own school: each one joins the school under it
     assert [(e.school, e.degree, e.end) for e in _parse_education([
         "M.S. in Data Science   2018", "Tailspin University", "B.S. in Computer Science   2016",
@@ -133,6 +166,52 @@ def test_a_degree_above_its_school_joins_it():
     assert [(e.school, e.degree) for e in _parse_education(["Lakeside University", "B.S. in Computer Science, 2016",
                                                              "Tailspin University", "M.S. in Data Science"])] == [
         ("Lakeside University", "B.S."), ("Tailspin University", "M.S.")]
+    # the degree's dates on their own line between it and its school
+    assert [(e.school, e.degree, e.end) for e in _parse_education([
+        "Bachelor of Science in Computer Science", "2016 - 2020", "Lakeside University, Springfield, IL"])] == [
+        ("Lakeside University", "Bachelor of Science", "2020")]
+
+
+# A school written without a school word ('Fabrikam Tech', as people write a school's short name) is no school line to
+# the rules, so it must never let a degree take another school's name: the rows are read as before (45b617c)
+WRONG_SCHOOL = [
+    # each school over its degree, the first one without a school word: that line is the first degree's school
+    (["Fabrikam Tech, Atlanta, GA", "M.S. in Computer Science   2018", "Lakeside University, Springfield, IL",
+      "B.S. in Computer Science   2016"],
+     [("", "M.S.", "", "2018"), ("Lakeside University", "B.S.", "Springfield, IL", "2016")]),
+    (["Contoso State", "MBA   2020", "Tailspin University", "Bachelor of Arts in Economics   2014"],
+     [("", "MBA", "", "2020"), ("Tailspin University", "Bachelor of Arts", "", "2014")]),
+    # one line per school: a school line with its own degree is that degree's row only
+    (["M.S. in Computer Science, Fabrikam Tech, 2018", "B.S. in Computer Science, Lakeside University, 2016"],
+     [("", "M.S.", "", "2018"), ("Lakeside University", "B.S.", "", "2016")]),
+    # a degree line holding its own school before the degree waits for no school line
+    (["Fabrikam Tech | M.S. Computer Science | 2018", "Lakeside University", "B.S. Computer Science, 2016"],
+     [("", "Fabrikam Tech | M.S. Computer Science", "", "2018"),
+      ("Lakeside University", "B.S. Computer Science", "", "2016")]),
+    # each degree over its school: a degree takes only the school line right under it
+    (["B.S. in Computer Science   2014", "Fabrikam Tech, Atlanta, GA", "M.S. in Computer Science   2016",
+      "Lakeside University, Springfield, IL"],
+     [("", "B.S.", "", "2014"), ("Lakeside University", "", "Springfield, IL", "")]),
+    # a Word table's cells, one per line: degree, school, year
+    (["M.S. in Computer Science", "Fabrikam Tech", "2018", "B.S. in Computer Science", "Lakeside University", "2016"],
+     [("", "M.S.", "", "2018"), ("Lakeside University", "", "", "2016")]),
+]
+
+
+@pytest.mark.parametrize("lines,expected", WRONG_SCHOOL)
+def test_a_degree_never_takes_the_name_of_another_school(lines, expected):
+    assert [(e.school, e.degree, e.location, e.end) for e in _parse_education(lines)] == expected
+
+
+@pytest.mark.parametrize("kind", ["pdf", "docx"])
+def test_a_pdf_and_a_word_upload_keep_each_degree_with_its_own_school(client, kind):
+    text = resume_text("Fabrikam Tech, Atlanta, GA\nM.S. in Computer Science   2018\n"
+                       "Lakeside University, Springfield, IL\nB.S. in Computer Science   2016")
+    data = pdf_bytes(text) if kind == "pdf" else docx_bytes(text)
+    response = client.post("/api/resumes", files={"file": (f"base.{kind}", data)})
+    assert response.status_code == 200, response.text
+    assert [(e["school"], e["degree"], e["location"], e["end"]) for e in response.json()["resume"]["profile"][
+        "education"]] == [("", "M.S.", "", "2018"), ("Lakeside University", "B.S.", "Springfield, IL", "2016")]
 
 
 def test_a_degree_on_its_own_line_joins_the_school_above():
@@ -230,6 +309,61 @@ def test_the_profile_page_prints_the_degree_as_the_resume_does(tmp_path):
     assert run.returncode == 0, run.stderr
     assert json.loads(run.stdout) == [
         degree_text(Education(school="Tailspin University", degree=degree, field=field), 1) for degree, field in cases]
+
+
+ROW_HARNESS = r"""
+const fs = require('fs');
+const page = fs.readFileSync(process.argv[2], 'utf8');
+const code = page.slice(page.indexOf('// The degree as a new resume prints it'),
+                        page.indexOf('// Each school as new resumes print it'));
+const educationRow = new Function(code + '\nreturn educationRow;')();
+const rows = JSON.parse(fs.readFileSync(process.argv[3], 'utf8'));
+console.log(JSON.stringify(rows.map(([school, degree, field, location]) =>
+  educationRow({ school, degree, field, location }))));
+"""
+ROWS = [  # (school, degree, field, town)
+    ("Tailspin University", "B.S.", "Computer Science", "St. Louis, MO"),
+    ("", "B.S.", "Computer Science", "Austin, TX"),  # read without its school
+    ("", "B.S.", "Computer Science", ""),
+    ("Tailspin University", "", "", "St. Louis, MO"),
+    ("Tailspin University", "MBA", "", ""),
+    ("Tailspin University", "", "", ""),
+    ("", "", "Computer Science", "Austin, TX"),
+    ("", "", "", "Austin, TX"),
+    ("Tailspin University", "Master of Science", "School of Engineering", "Boston, MA"),
+    ("", "", "", ""),
+]
+
+
+@pytest.mark.skipif(shutil.which("node") is None, reason="runs the Profile page's own script with Node.js")
+def test_the_profile_page_prints_each_row_as_the_resume_does(tmp_path):
+    """The 'New resumes print' after Save (the page's educationRow) is the row the PDF and the Word copy print."""
+    (tmp_path / "rows.json").write_text(json.dumps(ROWS), encoding="utf-8")
+    (tmp_path / "row.js").write_text(ROW_HARNESS, encoding="utf-8")
+    run = subprocess.run(["node", str(tmp_path / "row.js"), str(PAGE), str(tmp_path / "rows.json")],
+                         capture_output=True, text=True, timeout=60, check=False)
+    assert run.returncode == 0, run.stderr
+    assert json.loads(run.stdout) == ["".join(piece.text for piece in education_runs(Education(
+        school=school, degree=degree, field=field, location=town), 1)) for school, degree, field, town in ROWS]
+    assert "'Saved. New resumes print: ' + saved.map(educationRow).join('; ')" in PAGE.read_text(encoding="utf-8")
+
+
+def test_a_row_without_its_school_prints_no_empty_place(client):
+    """A row read without its school, given only its town in the Education box: the PDF and the Word copy print what
+    the page says ('B.S. in Computer Science · Austin, TX'), never an empty place between two dots."""
+    entry = save_profile(client, text=resume_text("B.S. in Computer Science   2012 - 2016"))
+    url = f"/api/resumes/{entry['id']}/education"
+    assert client.put(url, json=education_body(entry, location="Austin, TX")).status_code == 200
+    run = tailor_request(client)
+    assert run.status_code == 200, run.text
+    run_id = run.json()["run_id"]
+    pdf = client.get(f"/api/runs/{run_id}/resume.pdf")
+    lines = "\n".join(page.extract_text() for page in PdfReader(io.BytesIO(pdf.content)).pages).splitlines()
+    [printed] = [line for line in lines if "Computer Science" in line and "2016" in line]
+    assert printed.startswith("B.S. in Computer Science · Austin, TX ") and "· ·" not in printed
+    word = Document(io.BytesIO(client.get(f"/api/runs/{run_id}/resume.docx").content))
+    assert [p.text for p in word.paragraphs if "Computer Science" in p.text and "2016" in p.text] == [
+        "B.S. in Computer Science · Austin, TX\t2012 – 2016"]
 
 
 def test_a_school_without_its_town_gets_a_warning():
@@ -409,6 +543,79 @@ def test_the_same_file_uploaded_again_after_the_box_split_its_degree(client):
     again = save_profile(client, text=resume_text("B.S. Computer Science | Tailspin University | 2014"))
     [edu] = again["profile"]["education"]
     assert (edu["degree"], edu["field"], edu["location"]) == ("B.S. Computer Science", "", "St. Louis, MO")
+
+
+@pytest.mark.parametrize("typed,read", [
+    # the degree written as on the diploma, as the box asks
+    ({"degree": "B.S.", "field": "Computer Science", "end": "2014"},
+     {"degree": "Bachelor of Science", "field": "Computer Science", "end": "2014"}),
+    # the file's 'B.S. Computer Science' split by the box: the field is not given to it a second time
+    ({"degree": "Bachelor of Science", "field": "Computer Science", "end": "2014"},
+     {"degree": "B.S. Computer Science", "end": "2014"}),
+    # the End typed with a word before the date
+    ({"degree": "M.S.", "field": "Data Science", "end": "Expected May 2027"},
+     {"degree": "M.S.", "field": "Data Science", "end": "May 2027"}),
+])
+def test_a_typed_town_is_kept_when_the_degree_or_the_end_was_rewritten(typed, read):
+    """The same school and graduation year upload again: the town typed in the Education box is kept, whatever the
+    box did to the degree or the End. What the new file says wins, and the field goes only with its own degree."""
+    earlier = [person(Education(school="Lakeside University", location="Springfield, IL", **typed))]
+    new = person(Education(school="Lakeside University", **read))
+    assert carry_education(new, earlier) == ["Lakeside University"]
+    [edu] = new.education
+    assert (edu.degree, edu.field, edu.end, edu.location) == (
+        read["degree"], read.get("field", ""), read["end"], "Springfield, IL")
+
+
+def test_two_degrees_of_one_school_each_keep_their_typed_town_after_a_rewrite():
+    earlier = [person(Education(school="Lakeside University", degree="M.S.", field="Data Science",
+                                location="Springfield, IL", end="Expected May 2027"),
+                      Education(school="Lakeside University", degree="B.S.", field="Computer Science",
+                                location="Springfield, IL", end="2022"))]
+    new = person(Education(school="Lakeside University", degree="Master of Science", end="May 2027"),
+                 Education(school="Lakeside University", degree="Bachelor of Science", end="May 2022"))
+    carry_education(new, earlier)
+    assert [(e.degree, e.field, e.location) for e in new.education] == [
+        ("Master of Science", "", "Springfield, IL"), ("Bachelor of Science", "", "Springfield, IL")]
+    # a B.A. and a B.S. of the same year, listed in the other order: each keeps its own field
+    earlier = [person(Education(school="Lakeside University", degree="B.A.", field="Economics", end="2014",
+                                location="Springfield, IL"),
+                      Education(school="Lakeside University", degree="B.S.", field="Mathematics", end="2014",
+                                location="Springfield, IL"))]
+    new = person(Education(school="Lakeside University", degree="B.S.", end="2014"),
+                 Education(school="Lakeside University", degree="B.A.", end="2014"))
+    carry_education(new, earlier)
+    assert [(e.degree, e.field, e.location) for e in new.education] == [
+        ("B.S.", "Mathematics", "Springfield, IL"), ("B.A.", "Economics", "Springfield, IL")]
+
+
+def test_a_typed_town_finds_its_school_by_name_and_never_goes_to_another_school():
+    """The school's name is compared whatever its case, punctuation, 'The' and '&' or 'and'; another school, or a
+    school-less row whose degree is another one, never gets the town."""
+    earlier = [person(Education(school="The Fabrikam College of Arts & Sciences", degree="B.A.", end="2012",
+                                location="Springfield, IL"),
+                      Education(school="St. Contoso's College", degree="B.S.", end="2014",
+                                location="Austin, TX"),
+                      Education(school="", degree="B.S.", end="2016", location="Boston, MA"))]
+    new = person(Education(school="fabrikam college of arts and sciences", degree="B.A.", end="2012"),
+                 Education(school="St Contosos College", degree="B.S.", end="2014"),
+                 Education(school="Fabrikam College of Arts", degree="B.A.", end="2012"),
+                 Education(school="St. Contoso's University", degree="B.S.", end="2014"),
+                 Education(school="", degree="M.S.", end="2016"))
+    carry_education(new, earlier)
+    assert [e.location for e in new.education] == ["Springfield, IL", "Austin, TX", "", "", ""]
+
+
+def test_the_same_file_uploaded_again_keeps_the_town_typed_with_the_degree_as_on_the_diploma(client):
+    line = "Bachelor of Science in Computer Science | Lakeside University | 2014"
+    entry = save_profile(client, text=resume_text(line))
+    body = education_body(entry, degree="B.S.", location="Springfield, IL")
+    assert client.put(f"/api/resumes/{entry['id']}/education", json=body).status_code == 200
+    again = save_profile(client, text=resume_text(line))
+    [edu] = again["profile"]["education"]
+    assert (edu["degree"], edu["field"], edu["location"]) == (
+        "Bachelor of Science", "Computer Science", "Springfield, IL")
+    assert not any(w.startswith(TOWN) for w in again["warnings"])
 
 
 def test_two_degrees_from_one_school_each_keep_their_own_details():

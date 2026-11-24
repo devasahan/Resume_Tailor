@@ -605,6 +605,42 @@ _DEGREE_LETTERS = re.compile(r"(?:[A-Z]\.?){2,4}|[A-Z]\.?[A-Z][a-z]{1,4}\.?")
 # A state's code after a town, where a comma-only line has a degree's: 'Boston, MA, B.S. ...', 'Boston, MA 02115, ...'
 _STATE_AFTER_TOWN = re.compile(r"[A-Z]{2}(?=,|\s*\d|$)")
 _COMMA = re.compile(r",\s*")
+# What a school's town ends with (see _real_place): a US state's or territory's code, a Canadian province's or
+# territory's, the UK's; or a US state, Canadian province or country written out, in a form LOCATION_RE reads (one or
+# two words)
+_REGIONS = (
+    "AL|AK|AZ|AR|CA|CO|CT|DE|FL|GA|HI|ID|IL|IN|IA|KS|KY|LA|ME|MD|MA|MI|MN|MS|MO|MT|NE|NV|NH|NJ|NM|NY|NC|ND|OH|OK|OR|PA|"
+    "RI|SC|SD|TN|TX|UT|VT|VA|WA|WV|WI|WY|DC|PR|GU|VI|AS|MP|AB|BC|MB|NB|NL|NS|NT|NU|ON|PE|QC|SK|YT|UK|"
+    "Alabama|Alaska|Arizona|Arkansas|California|Colorado|Connecticut|Delaware|Florida|Georgia|Hawaii|Idaho|Illinois|"
+    "Indiana|Iowa|Kansas|Kentucky|Louisiana|Maine|Maryland|Massachusetts|Michigan|Minnesota|Mississippi|Missouri|"
+    "Montana|Nebraska|Nevada|New Hampshire|New Jersey|New Mexico|New York|North Carolina|North Dakota|Ohio|Oklahoma|"
+    "Oregon|Pennsylvania|Rhode Island|South Carolina|South Dakota|Tennessee|Texas|Utah|Vermont|Virginia|Washington|"
+    "West Virginia|Wisconsin|Wyoming|Puerto Rico|Guam|"
+    "Alberta|British Columbia|Manitoba|New Brunswick|Newfoundland|Nova Scotia|Ontario|Quebec|Saskatchewan|Yukon|"
+    "Nunavut|Northwest Territories|"
+    "United States|United Kingdom|Great Britain|Britain|England|Scotland|Wales|Northern Ireland|Afghanistan|Albania|"
+    "Algeria|Andorra|Angola|Argentina|Armenia|Australia|Austria|Azerbaijan|Bahamas|Bahrain|Bangladesh|Barbados|Belarus|"
+    "Belgium|Belize|Benin|Bermuda|Bhutan|Bolivia|Botswana|Brazil|Brunei|Bulgaria|Burma|Burundi|Cambodia|Cameroon|"
+    "Canada|Cape Verde|Chad|Chile|China|Colombia|Comoros|Congo|Costa Rica|Croatia|Cuba|Cyprus|Czechia|Czech Republic|"
+    "Denmark|Djibouti|Dominica|Dominican Republic|East Timor|Ecuador|Egypt|El Salvador|Eritrea|Estonia|Eswatini|"
+    "Ethiopia|Fiji|Finland|France|Gabon|Gambia|Germany|Ghana|Greece|Greenland|Grenada|Guatemala|Guinea|Guyana|Haiti|"
+    "Holland|Honduras|Hong Kong|Hungary|Iceland|India|Indonesia|Iran|Iraq|Ireland|Israel|Italy|Ivory Coast|Jamaica|"
+    "Japan|Jordan|Kazakhstan|Kenya|Kiribati|Korea|Kosovo|Kuwait|Kyrgyzstan|Laos|Latvia|Lebanon|Lesotho|Liberia|Libya|"
+    "Liechtenstein|Lithuania|Luxembourg|Macau|Macedonia|Madagascar|Malawi|Malaysia|Maldives|Mali|Malta|Mauritania|"
+    "Mauritius|Mexico|Micronesia|Moldova|Monaco|Mongolia|Montenegro|Morocco|Mozambique|Myanmar|Namibia|Nauru|Nepal|"
+    "Netherlands|New Zealand|Nicaragua|Niger|Nigeria|North Korea|North Macedonia|Norway|Oman|Pakistan|Palau|Palestine|"
+    "Panama|Paraguay|Peru|Philippines|Poland|Portugal|Qatar|Romania|Russia|Rwanda|Saint Lucia|Samoa|San Marino|"
+    "Saudi Arabia|Senegal|Serbia|Seychelles|Sierra Leone|Singapore|Slovakia|Slovenia|Somalia|South Africa|South Korea|"
+    "South Sudan|Spain|Sri Lanka|Sudan|Suriname|Sweden|Switzerland|Syria|Taiwan|Tajikistan|Tanzania|Thailand|Togo|"
+    "Tonga|Trinidad|Tunisia|Turkey|Turkmenistan|Tuvalu|Uganda|Ukraine|Uruguay|Uzbekistan|Vanuatu|Vatican City|"
+    "Venezuela|Vietnam|Yemen|Zambia|Zimbabwe")
+_REAL_PLACE = re.compile(rf",\s*(?:{_REGIONS})$")
+
+
+def _real_place(part: str) -> bool:
+    """A town and its state, province or country, as a school's town is written ('Springfield, IL', 'Toronto,
+    Ontario', 'Mumbai, India'), never majors shaped like one ('Computer Science, AI', 'Finance, Economics')."""
+    return bool(_REAL_PLACE.search(part))
 
 
 def _degree_like(part: str) -> bool:
@@ -620,9 +656,10 @@ def _degree_like(part: str) -> bool:
 
 
 def _peel_town(school: str) -> tuple[str, str]:
-    """(the school, its town) from 'Tailspin University, St. Louis, MO'; (the school, '') when no town ends it."""
+    """(the school, its town) from 'Tailspin University, St. Louis, MO'; (the school, '') when no town ends it
+    ('Lakeside University, Computer Science, AI' stays whole)."""
     joined = _SCHOOL_TOWN.match(school)
-    if joined and not _degree_like(joined.group(2)):
+    if joined and not _degree_like(joined.group(2)) and _real_place(joined.group(2)):
         return joined.group(1).strip(), joined.group(2).strip()
     return school, ""
 
@@ -648,8 +685,10 @@ def _school_and_degree(text: str) -> tuple[str, str, str]:
     Springfield, MA' (the app's own row) or 'State University | B.S. in Computer Science'. The school is the part naming
     a school, one that names no degree first (not 'Master of Science, School of Engineering'); without separators it is
     the whole line. A state's code is no degree: 'State University – Springfield, MA' names none, and that part is the
-    school's town, as is one after a comma ('State University, Springfield, MA'). The town is the last place after the
-    school, never a degree ('BBA, Finance | State University | Austin, TX')."""
+    school's town, as is one after a comma ('State University, Springfield, MA'). The town is the first real place
+    after the school (_real_place), never a degree ('BBA, Finance | State University | Austin, TX') or majors shaped
+    like a place ('Computer Science, AI', 'Computer Science, Statistics'); with none it stays empty, and the town
+    warning asks for it."""
     parts = [part.strip(" ,-–—") for part in SEPARATOR_RE.split(text)]
     parts = [part for part in parts if part]
     schools = [part for part in parts if SCHOOL_RE.search(part)]
@@ -657,9 +696,8 @@ def _school_and_degree(text: str) -> tuple[str, str, str]:
     degree = next((part for part in parts
                    if part != school and DEGREE_RE.search(re.sub(r",\s*[A-Z]{2}$", "", part))), "")
     after = parts[parts.index(school) + 1:] if school in parts else []
-    places = [part for part in after if part != degree and LOCATION_RE.fullmatch(part) and not _degree_like(part)]
-    # the last place after the school, one with a state's code first ('Springfield, IL', not majors after it)
-    town = next((part for part in reversed(places) if _TOWN_AND_STATE.search(part)), places[-1] if places else "")
+    town = next((part for part in after if part != degree and LOCATION_RE.fullmatch(part) and not _degree_like(part)
+                 and _real_place(part)), "")
     if not town:
         school, town = _peel_town(school)
     named = list(SCHOOL_RE.finditer(school))
@@ -682,12 +720,27 @@ def _school_and_degree(text: str) -> tuple[str, str, str]:
     return school, degree, town
 
 
+def _part_before_degree(text: str) -> bool:
+    """True when a degree line holds a part before its degree, set off by a separator or a comma: its own school,
+    written without a school word ('Fabrikam Tech | M.S. Computer Science', 'Fabrikam Tech, M.S. in Computer
+    Science')."""
+    found = DEGREE_RE.search(text)
+    head = text[:found.start()].rstrip() if found else ""
+    return bool(re.search(r"[^\W\d_]", head)) and head.endswith((",", "|", "•", "·", "—", "–", "-"))
+
+
 def _parse_education(lines: list[str]) -> list[Education]:
     """Each school's row. A degree line above any school line ('Bachelor of Science in Computer Science   2016 -
-    2020', then 'Lakeside University, Springfield, IL') joins the school line under it: no row is left without its
-    school when one follows. In that layout each later degree waits for the school line under it too."""
+    2020', then 'Lakeside University, Springfield, IL') joins the school line right under it (its dates on a line of
+    their own between them aside), one that names no degree of its own. In that layout each later degree waits for the
+    school line right under it too. A school written without a school word ('Fabrikam Tech, Atlanta, GA') is no school
+    line to the rules: on a line before the first degree it is that degree's school, so that degree waits for none;
+    under a degree it ends the wait; before the degree on its line, that line waits for none (_part_before_degree). A
+    degree that finds no school line keeps no school, as before, never the next school's name."""
     entries: list[Education] = []
     above = False  # the degrees come above their schools
+    waiting = False  # the last row is the degree line's just above, waiting for its school line
+    unread = False  # a line before the first row that names no school, degree or dates
     for line in lines:
         text, start, end = _take_dates(_LIST_MARK.sub("", line.strip()))
         if SCHOOL_RE.search(text):
@@ -695,17 +748,19 @@ def _parse_education(lines: list[str]) -> list[Education]:
             entry = Education(school=school or text, start=start, end=end, location=town)
             if degree_part:
                 entry.degree, entry.field = _degree_and_field(degree_part)
-            if entries and not entries[-1].school:  # the degree line above: this is its school
+            if waiting and not entry.degree:  # the degree line just above: this is its school
                 held, above = entries[-1], True
                 held.school, held.location = entry.school, entry.location
                 if not held.end:
                     held.start, held.end = entry.start, entry.end
-                if not entry.degree:
-                    continue
-            entries.append(entry)
+            else:
+                entries.append(entry)
+            waiting = False
         elif DEGREE_RE.search(text):
-            if not entries or (above and entries[-1].degree):
+            fresh = not entries or (above and bool(entries[-1].degree))
+            if fresh:
                 entries.append(Education(school=""))
+            waiting = fresh and not unread and not _part_before_degree(text)
             entry = entries[-1]
             if not entry.degree:
                 entry.degree, entry.field = _degree_and_field(text)
@@ -713,6 +768,8 @@ def _parse_education(lines: list[str]) -> list[Education]:
                 entry.start, entry.end = start, end
         elif end and not text and entries and not entries[-1].end:  # the dates on their own line under the school
             entries[-1].start, entries[-1].end = start, end
+        elif text:
+            waiting, unread = False, unread or not entries
     return [e for e in entries if e.school or e.degree]
 
 
