@@ -1,7 +1,9 @@
 """DOCX export (editable copy), in the PDF's look: Inter (Word shows Arial where Inter is not installed), the same
 sizes, colours, gaps and order, from the same helpers. Plain paragraphs, tab stops and the built-in bullet style: no
 tables or text boxes. Word paginates the resume itself; keep-with-next and keep-together ask it to break pages the way
-the PDF does. SemiBold and Bold text is bold here, Medium text regular: Word knows bold or not."""
+the PDF does. SemiBold and Bold text is bold here, Medium text regular: Word knows bold or not. The contact line's
+email, LinkedIn and website are real hyperlinks, in the line's gray (no blue underline), as they are links on the
+PDF."""
 from __future__ import annotations
 
 import math
@@ -56,7 +58,7 @@ from .pdf import (
     Run,
     certification_dates,
     certification_runs,
-    contact_lines,
+    contact_runs,
     education_runs,
     fit_size,
     fmt_dates,
@@ -98,6 +100,18 @@ def _add_run(paragraph, run: Run, size: float):
         spacing = OxmlElement("w:spacing")
         spacing.set(qn("w:val"), str(round(run.tracking * size * 20)))
         added._r.get_or_add_rPr().insert_element_before(spacing, *_AFTER_SPACING)
+    return added
+
+
+def _add_link(paragraph, run: Run, size: float):
+    """`run` (as _add_run adds it) inside a real hyperlink to its address, an external relationship. It keeps the run's
+    own look: no Hyperlink style and no underline (w:u none), so the line looks as it does without the link."""
+    added = _add_run(paragraph, run, size)
+    added.font.underline = False
+    hyperlink = OxmlElement("w:hyperlink")
+    hyperlink.set(qn("r:id"), paragraph.part.relate_to(run.link, RELATIONSHIP_TYPE.HYPERLINK, is_external=True))
+    added._r.addprevious(hyperlink)
+    hyperlink.append(added._r)
     return added
 
 
@@ -177,26 +191,32 @@ def _bottom_border(paragraph, space: float) -> None:
 
 
 def _header(doc, name: str, headline: str, contact: Contact, body: float, width: float):
-    """The name, the title line and the contact line, centred, as on the PDF (draw_header); returns the last of them."""
-    def centred(runs: list[Run], size: float, line: float, before: float):
+    """The name, the title line and the contact line, centred, as on the PDF (draw_header); returns the last of them.
+    The contact line's email, LinkedIn and website are hyperlinks, in the line's own look (contact_runs)."""
+    def centred(lines: list[list[Run]], size: float, line: float, before: float):
+        """One paragraph of these lines, each after a line break."""
         paragraph = doc.add_paragraph()
         paragraph.alignment = WD_ALIGN_PARAGRAPH.CENTER
         paragraph.paragraph_format.space_before = Pt(before)
         paragraph.paragraph_format.line_spacing = line / WORD_LINE
-        for index, run in enumerate(runs):
+        for index, runs in enumerate(lines):
             if index:
                 paragraph.add_run().add_break()
-            _add_run(paragraph, run, size)
+            for run in runs:
+                if run.link:
+                    _add_link(paragraph, run, size)
+                else:
+                    _add_run(paragraph, run, size)
         return paragraph
 
     size = fit_size(name, BOLD, NAME_SIZE * body, width, tracking=NAME_TRACKING)
-    last = centred([Run(name, weight=BOLD, color=INK, tracking=NAME_TRACKING)], size, NAME_LINE, 0.0)
+    last = centred([[Run(name, weight=BOLD, color=INK, tracking=NAME_TRACKING)]], size, NAME_LINE, 0.0)
     if headline:
-        last = centred([Run(headline, weight=MEDIUM, color=ACCENT)], headline_size(headline, body, width), TITLE_LINE,
-                       HEADER_GAP * body)
-    lines = contact_lines(contact, CONTACT_SIZE * body, width)  # broken between items, as on the PDF
+        last = centred([[Run(headline, weight=MEDIUM, color=ACCENT)]], headline_size(headline, body, width),
+                       TITLE_LINE, HEADER_GAP * body)
+    lines = contact_runs(contact, CONTACT_SIZE * body, width)  # broken between items, as on the PDF
     if lines:
-        last = centred([Run(line, color=MUTED) for line in lines], CONTACT_SIZE * body, LINE, HEADER_GAP * body)
+        last = centred(lines, CONTACT_SIZE * body, LINE, HEADER_GAP * body)
     return last
 
 

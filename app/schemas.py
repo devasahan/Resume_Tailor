@@ -10,10 +10,15 @@ Three groups:
 """
 from __future__ import annotations
 
+import re
 from typing import Literal
 
 from pydantic import BaseModel, Field, field_validator
 from pydantic.json_schema import SkipJsonSchema
+
+# An email address as the app reads one from a resume (app/parsing/heuristic.py) and links one in its files
+# (app/render/pdf.py email_link)
+EMAIL_RE = re.compile(r"[\w.+-]+@[\w-]+(?:\.[\w-]+)+")
 
 
 # ---------------------------------------------------------------- fixed facts (from the base resume)

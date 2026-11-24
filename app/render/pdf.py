@@ -2,7 +2,8 @@
 
 Pure Python: no system libraries (no Pango/Cairo/GTK), so the file is the same on Windows, macOS and Linux. One bundled
 font family (Inter, in four weights), single column, real text, no tables, images or icons: the layout ATS parsers read
-best.
+best. The contact line's email, LinkedIn and website are clickable: invisible link annotations over their text, so the
+page is drawn exactly as without them.
 
 The look is the owner's design "standard" (a US Letter page drawn at 816 x 1056 CSS px): a centred header, small spaced
 capitals in navy for the section headings with a thin gray rule beside them, the job title first on each job line,
@@ -34,6 +35,7 @@ from collections import OrderedDict
 from dataclasses import dataclass
 from functools import cache
 from pathlib import Path
+from urllib.parse import quote, urlsplit
 
 from fontTools.ttLib import TTFont
 from fpdf import FPDF
@@ -45,6 +47,7 @@ except ImportError:  # an fpdf2 without it has nothing to forget
     SubsetMap = None
 
 from ..schemas import (
+    EMAIL_RE,
     Certification,
     Company,
     Contact,
@@ -132,10 +135,10 @@ SPACES = re.compile(r"(\s+)")
 
 
 def display_url(url: str) -> str:
-    """linkedin.com/in/name instead of https://www.linkedin.com/in/name/.
+    """linkedin.com/in/name instead of https://www.linkedin.com/in/name/: shorter, and still ATS-readable.
 
-    PDF viewers (Chrome, Edge, Acrobat) turn text that starts with http(s):// or www. into a clickable
-    link by themselves; without the prefix it stays plain text, and it is shorter and still ATS-readable.
+    PDF viewers (Chrome, Edge, Acrobat) would turn text that starts with http(s):// or www. into a link by themselves;
+    the printed text needs no prefix for that, as the PDF and the Word copy link it to the full address (web_link).
     """
     value = url.strip()
     for prefix in ("https://", "http://"):
@@ -146,11 +149,71 @@ def display_url(url: str) -> str:
     return value.rstrip("/")
 
 
+# ---------------------------------------------------------------------- the contact line's links
+_SCHEME = re.compile(r"[a-z][a-z0-9+.-]*:", re.IGNORECASE)  # 'https:', 'mailto:', 'javascript:', 'localhost:'
+_WEB_SCHEME = re.compile(r"https?://", re.IGNORECASE)
+_HOST = re.compile(r"(?:[\w-]+\.)+[\w-]+(?::\d{1,5})?")  # a host name with a dot, maybe a port; no user name
+_UNSAFE = frozenset("\"'`<>\\{}|^")  # characters a link never holds, nor the text it is made of
+
+
+def _linkable(value: str) -> bool:
+    """True when a link may hold every character of the value: printable ASCII other than a space, quotes, angle
+    brackets, a backslash and the like, or a letter, digit or mark of another script (percent-encoded in the link).
+    Never a space or an invisible character of any kind."""
+    return bool(value) and all(
+        (char.isascii() and char.isprintable() and char != " " and char not in _UNSAFE)
+        or (not char.isascii() and unicodedata.category(char)[0] in "LNM") for char in value)
+
+
+def _ascii(target: str) -> str:
+    """The address in 7-bit ASCII, as a PDF's link and a URI must be: any other character percent-encoded (UTF-8)."""
+    return "".join(char if char.isascii() else quote(char, safe="") for char in target)
+
+
+def email_link(email: str) -> str:
+    """'mailto:' and the address, for an email the app reads as one (EMAIL_RE, the whole value); "" for anything
+    else, which stays plain text."""
+    value = email.strip()
+    return "mailto:" + _ascii(value) if _linkable(value) and EMAIL_RE.fullmatch(value) else ""
+
+
+def web_link(url: str) -> str:
+    """The address a LinkedIn or website value opens: the value as written (its scheme in small letters) when it starts
+    with http:// or https:// (a site may have no https), else 'https://' and the value as printed (display_url). The
+    address holds ASCII only (_ascii). "" for anything that is no
+    web address a browser can open, which stays plain text: a value with a space, quotes or angle brackets, another
+    scheme (javascript:, data:, file:, mailto:) or no host name with a dot ('N/A')."""
+    value = url.strip()
+    if not _linkable(value):
+        return ""
+    scheme = _WEB_SCHEME.match(value)
+    if scheme:
+        target = scheme.group(0).lower() + value[scheme.end():]
+    elif _SCHEME.match(value) or value.startswith("/"):
+        return ""
+    else:
+        target = "https://" + display_url(value)
+    try:
+        host = urlsplit(target).netloc
+    except ValueError:  # a broken IPv6 address: 'https://[::1'
+        return ""
+    return _ascii(target) if _HOST.fullmatch(host) else ""
+
+
+def contact_items(contact: Contact) -> list[tuple[str, str]]:
+    """The contact line's items in the usual resume order (contact_parts), each with the address it links to: the
+    email, LinkedIn and the website link when their value is safe to (email_link, web_link); the place and the phone
+    never do ("")."""
+    items = [(contact.location, ""), (contact.phone, ""), (contact.email, email_link(contact.email)),
+             (display_url(contact.linkedin), web_link(contact.linkedin)),
+             (display_url(contact.website), web_link(contact.website))]
+    return [(text.strip(), link) for text, link in items if text and text.strip()]
+
+
 def contact_parts(contact: Contact) -> list[str]:
     """The usual resume order, whatever order the base resume used: City, State, Phone, Email, LinkedIn,
     Portfolio/GitHub. Missing parts are left out."""
-    parts = [contact.location, contact.phone, contact.email, display_url(contact.linkedin), display_url(contact.website)]
-    return [part.strip() for part in parts if part and part.strip()]
+    return [text for text, _link in contact_items(contact)]
 
 
 def contact_line(contact: Contact) -> str:
@@ -268,12 +331,14 @@ def headline_size(headline: str, body: float, width: float) -> float:
 class Run:
     """Text in one style. `bold` stays for callers that pass it (Run(text, True)); a `weight` wins over it, and `bold`
     then says whether the weight reads as bold (SemiBold and Bold do: the Word file uses it). `color` is a hex colour
-    ("" for the body text's), `tracking` the letter spacing in em."""
+    ("" for the body text's), `tracking` the letter spacing in em. `link` is the address the text opens when clicked
+    ("" for none): a link annotation over it in the PDF, a hyperlink in the Word file, in the run's own look."""
     text: str
     bold: bool = False
     weight: str = ""
     color: str = ""
     tracking: float = 0.0
+    link: str = ""
 
     def __post_init__(self) -> None:
         self.weight = self.weight or (BOLD if self.bold else REGULAR)
@@ -283,12 +348,13 @@ class Run:
 
 @dataclass
 class Piece:
-    """A measured word or space of a wrapped line, in its run's style."""
+    """A measured word or space of a wrapped line, in its run's style, with its run's link."""
     text: str
     weight: str
     width: float
     color: str = TEXT
     tracking: float = 0.0
+    link: str = ""
 
 
 Line = list[Piece]
@@ -303,6 +369,32 @@ def forget_glyph_caches() -> None:
         clear = getattr(getattr(SubsetMap, name, None), "cache_clear", None)
         if clear is not None:
             clear()
+
+
+def _link_notes(line: Line, x: float, y: float, size: float, height: float) -> list[tuple]:
+    """A ("link", address, x, y, width, height) note over each stretch of a line drawn from (x, y) whose pieces carry
+    the same link: as tall as the line, and from the left to the right edge of that text as the PDF draws it.
+    finish() starts each text cell (the pieces of one style) where the one before ends as measured, and fpdf2 writes
+    the cell's place and its font size with two decimals: in a cell the letters are drawn at that size (9.38 pt for a
+    measured 9.375), so a little wider than measured, and a link made of the measured widths would end up to the left
+    of its text."""
+    drawn_size = float(f"{size:.2f}")
+    notes: list[list] = []
+    cell = inside = 0.0  # where the current cell is drawn from, and how far into it the next piece is drawn
+    start, style, previous = x, None, ""
+    for piece in line:
+        if (piece.weight, piece.color, piece.tracking) != style:  # a new cell, where the measured text before ends
+            cell, inside, style, previous = float(f"{start:.2f}"), 0.0, (piece.weight, piece.color, piece.tracking), ""
+        width = (text_width(piece.text, piece.weight, drawn_size)
+                 + char_spacing(piece.tracking, size) * len(drawable(piece.text)))
+        if piece.link and piece.link == previous:
+            notes[-1][4] += width
+        elif piece.link:
+            notes.append(["link", piece.link, cell + inside, y, width, height])
+        previous = piece.link
+        inside += width
+        start += piece.width
+    return [tuple(note) for note in notes]
 
 
 def _blank_pdf(paper: str, margin: float, top: float) -> FPDF:
@@ -330,7 +422,8 @@ class Sheet:
         self.pdf.add_page()
         self.paper = paper
         self._file_info = (title, author, lang)  # finish() writes them into the file
-        self._notes: list[tuple] = []  # what finish() draws, in order: ("page",), ("text", ...), ("rule", ...)
+        # what finish() draws, in order: ("page",), ("text", ...), ("rule", ...), and ("link", ...) over a text
+        self._notes: list[tuple] = []
         self.margin = margin
         self.top = top
         self.size = size
@@ -352,7 +445,7 @@ class Sheet:
         return headline_size(headline, body, self.width)
 
     def wrap(self, runs: list[Run], width: float, size: float) -> list[Line]:
-        key = (tuple((run.text, run.weight, run.color, run.tracking) for run in runs), round(width, 3), size)
+        key = (tuple((run.text, run.weight, run.color, run.tracking, run.link) for run in runs), round(width, 3), size)
         if key not in self._wraps:
             self._wraps[key] = self._wrap(runs, width, size)
         return self._wraps[key]
@@ -377,7 +470,7 @@ class Sheet:
 
         for text, run, is_space in tokens:
             w = text_width(text, run.weight, size, run.tracking)
-            piece = Piece(text, run.weight, w, run.color, run.tracking)
+            piece = Piece(text, run.weight, w, run.color, run.tracking, run.link)
             if is_space:
                 if current:  # no leading spaces on a line
                     current.append(piece)
@@ -397,13 +490,13 @@ class Sheet:
             for ch in text:
                 if chunk and text_width(chunk + ch, run.weight, size, run.tracking) > width:
                     lines.append([Piece(chunk, run.weight, text_width(chunk, run.weight, size, run.tracking),
-                                        run.color, run.tracking)])
+                                        run.color, run.tracking, run.link)])
                     chunk = ch
                 else:
                     chunk += ch
             if chunk:
                 used = text_width(chunk, run.weight, size, run.tracking)
-                current = [Piece(chunk, run.weight, used, run.color, run.tracking)]
+                current = [Piece(chunk, run.weight, used, run.color, run.tracking, run.link)]
         flush()
         return lines
 
@@ -448,7 +541,8 @@ class Sheet:
         self._ensure(min(height, self.bottom - self.top))
 
     def _draw(self, line: Line, x: float, y: float, size: float, height: float) -> None:
-        """Note a line to draw from (x, y) on the current page (finish() draws it)."""
+        """Note a line to draw from (x, y) on the current page (finish() draws it), and a link over each stretch of it
+        whose pieces carry one (_link_notes). The text is noted as it is without links: a link changes nothing drawn."""
         merged: list[list] = []  # neighbours in the same style become one text string
         for piece in line:
             style = (piece.weight, piece.color, piece.tracking)
@@ -458,6 +552,8 @@ class Sheet:
             else:
                 merged.append([piece.text, style, piece.width])
         self._notes.append(("text", merged, x, y, size, height))
+        if any(piece.link for piece in line):
+            self._notes.extend(_link_notes(line, x, y, size, height))
 
     def space(self, points: float) -> None:
         self.y += points
@@ -596,6 +692,9 @@ class Sheet:
                 _kind, width, x1, y1, x2, y2 = note
                 pdf.set_line_width(width)
                 pdf.line(x1, y1, x2, y2)
+            elif note[0] == "link":  # an annotation over text drawn just before (no border): nothing is drawn
+                _kind, address, x, y, width, height = note
+                pdf.link(x, y, width, height, address)
             else:
                 _kind, merged, x, y, size, height = note
                 for text, (weight, color, tracking), width in merged:
@@ -611,21 +710,54 @@ class Sheet:
 
 
 # ---------------------------------------------------------------------- the header (resume and cover letter)
+def _contact_rows(contact: Contact, size: float, width: float) -> list[list[tuple[str, str]]]:
+    """The contact items (contact_items) line by line: a line breaks between two items (never inside an email or
+    link) when the next one does not fit on it."""
+    rows: list[list[tuple[str, str]]] = []
+    line = ""
+    for item in contact_items(contact):
+        joined = f"{line} · {item[0]}"
+        if rows and text_width(joined, REGULAR, size) <= width:
+            rows[-1].append(item)
+            line = joined
+        else:
+            rows.append([item])
+            line = item[0]
+    return rows
+
+
 def contact_lines(contact: Contact, size: float, width: float) -> list[str]:
     """The contact line, split between items (never inside an email or link) when it is too wide for one line."""
-    lines: list[str] = []
-    for item in contact_parts(contact):
-        joined = f"{lines[-1]} · {item}" if lines else item
-        if lines and text_width(joined, REGULAR, size) <= width:
-            lines[-1] = joined
-        else:
-            lines.append(item)
+    return [" · ".join(text for text, _link in row) for row in _contact_rows(contact, size, width)]
+
+
+def contact_runs(contact: Contact, size: float, width: float) -> list[list[Run]]:
+    """The contact lines (contact_lines) as runs in the muted colour, as the PDF and the Word file draw them: an item
+    with a link (the email, LinkedIn, the website: contact_items) is a run of its own that carries its address, and
+    the text between two such items one run."""
+    lines: list[list[Run]] = []
+    for row in _contact_rows(contact, size, width):
+        runs: list[Run] = []
+        plain = ""
+        for index, (text, link) in enumerate(row):
+            plain += " · " if index else ""
+            if not link:
+                plain += text
+                continue
+            if plain:
+                runs.append(Run(plain, color=MUTED))
+            runs.append(Run(text, color=MUTED, link=link))
+            plain = ""
+        if plain:
+            runs.append(Run(plain, color=MUTED))
+        lines.append(runs)
     return lines
 
 
 def draw_header(sheet: Sheet, name: str, headline: str, contact: Contact, body: float) -> None:
     """The name, the title line and the contact line, centred, in sizes taken from `body`. The resume draws it at its
-    own size step; the cover letter at the resume's first step, so the two look like one set."""
+    own size step; the cover letter at the resume's first step, so the two look like one set. The contact line's
+    email, LinkedIn and website are clickable (contact_runs): links over their text, which look as they did."""
     name_size = fit_size(name, BOLD, NAME_SIZE * body, sheet.width, tracking=NAME_TRACKING)
     sheet.para([Run(name, weight=BOLD, color=INK, tracking=NAME_TRACKING)], size=name_size, align="C",
                line=NAME_LINE)
@@ -633,11 +765,11 @@ def draw_header(sheet: Sheet, name: str, headline: str, contact: Contact, body: 
         sheet.space(HEADER_GAP * body)
         sheet.para([Run(headline, weight=MEDIUM, color=ACCENT)], size=sheet.headline_size(headline, body),
                    align="C", line=TITLE_LINE)
-    lines = contact_lines(contact, CONTACT_SIZE * body, sheet.width)
+    lines = contact_runs(contact, CONTACT_SIZE * body, sheet.width)
     if lines:
         sheet.space(HEADER_GAP * body)
-    for line in lines:
-        sheet.para([Run(line, color=MUTED)], size=CONTACT_SIZE * body, align="C", line=LINE)
+    for runs in lines:
+        sheet.para(runs, size=CONTACT_SIZE * body, align="C", line=LINE)
 
 
 # ---------------------------------------------------------------------- resume

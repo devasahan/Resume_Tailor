@@ -499,7 +499,9 @@ def test_word_text_is_never_larger_than_it_was_measured(resume):
         doc = Document(io.BytesIO(resume_docx(resume, style)))
         width = doc.sections[0].page_width.pt - doc.sections[0].left_margin.pt - doc.sections[0].right_margin.pt
         contact = next(p for p in doc.paragraphs if "lschmidt@example-mail.com" in p.text)
-        for run in (run for run in contact.runs if run.text):
+        linked = [run for link in contact.hyperlinks for run in link.runs]  # the email, LinkedIn and the website
+        assert len(linked) == 3
+        for run in (run for run in contact.runs + linked if run.text):
             assert run.font.size.pt <= CONTACT_SIZE * style.font_pt
             assert text_width(run.text, REGULAR, run.font.size.pt) <= width
         assert doc.styles["Normal"].font.size.pt <= style.font_pt
