@@ -10,6 +10,8 @@
   same_title              the headline, the summary's first words and the current job's title read the same (v39)
   title_path_problems     older titles that do not move into the target's field as they get closer to today
   missing_language        a current job that does not name the job post's most wanted programming language
+  language_rule           what that rule asks of the current job (meets_language_rule: whether a text gives it)
+  rule_language           the language that rule has the current job name, for posting_match_flags to flag
   resolve_certifications  the model's certification picks: only the person's own are printed, the rest are ideas
   certification_mentions  certification names in the text (they belong only in their own section)
   vary_figures            figures and their bases in varied shapes, a base in brackets at most once (the AI's drafts)
@@ -2020,17 +2022,50 @@ def current_job(resume: Resume) -> ResumeExperience | None:
 
 def missing_language(resume: Resume, analysis: JDAnalysis | None, jd: str = "") -> tuple[str, str | None] | None:
     """(the current job's employer, the language its bullets should name) when they name no programming language, or
-    not the one the job post wants most (languages.wanted_language): the owner's rule, prompt v39. The language is None
-    when the post names none: then any language counts, and only for work built in code (languages.codes: a nurse's
-    resume needs none). None when the current job's bullets are fine. Other jobs never count."""
+    none of those the job post wants most (languages.wanted_languages: either of 'C/C++' will do, named 'C or C++'):
+    the owner's rule, prompt v39. The language is None when the post names none: then any language counts ('Node.js'
+    too), and only for work built in code (languages.codes: a nurse's resume needs none). A language is read the way
+    people write it ('the Go payment gateway', 'C++17', 'Python-based'). None when the current job's bullets are fine.
+    Other jobs never count."""
     job = current_job(resume)
-    wanted = languages.wanted_language(analysis, jd)
-    if job is None or (wanted is None and not languages.codes(analysis)):
+    wanted = language_rule(analysis, jd)
+    if job is None or wanted is None or meets_language_rule("\n".join(job.bullets), wanted):
         return None
-    text = "\n".join(job.bullets)
-    if (languages.names(text, wanted) if wanted else languages.mentioned(text)):
+    return resume.profile.companies[job.company_index].name, languages.either(wanted)
+
+
+def language_rule(analysis: JDAnalysis | None, jd: str = "") -> list[str] | None:
+    """What the owner's rule (missing_language) asks of the current job's bullets: to name one of these languages
+    (languages.wanted_languages), or any language at all ([]: work built in code whose post names none); None when it
+    asks for none (work not built in code)."""
+    wanted = languages.wanted_languages(analysis, jd)
+    return wanted if wanted or languages.codes(analysis) else None
+
+
+def meets_language_rule(text: str, wanted: list[str]) -> bool:
+    """Whether a text (a bullet, or a job's bullets) gives what language_rule asks: one of `wanted`, or any language
+    when it is [] ('Node.js' too); read the way people write it ('the Go payment gateway', 'C++17')."""
+    return any(languages.names(text, language) for language in wanted) if wanted else languages.names_a_language(text)
+
+
+def rule_language(resume: Resume, analysis: JDAnalysis | None, jd: str = "", hints: str = "") -> str | None:
+    """The language the current job names by the owner's rule (missing_language), for posting_match_flags to flag
+    unless the person's hints or notes (`hints`) name it: of the languages the job post wants most, one the current
+    job names, one the hints name first ('C/C++' at a job that names C++: C++); when the post names none, for work
+    built in code, one the current job names (Python for AI work: the usual one the rule had it name). The post's
+    first language when the current job names none of them; None when the rule asks for none."""
+    wanted = language_rule(analysis, jd)
+    if wanted is None:
         return None
-    return resume.profile.companies[job.company_index].name, wanted
+    job = current_job(resume)
+    text = "\n".join(job.bullets) if job is not None else ""
+    # with no language in the post: the careful reading first, then the looser one but for C and R alone, so no flag
+    # lands on 'Hepatitis C testing'
+    shown = ([language for language in wanted if languages.names(text, language)] if wanted
+             else languages.mentioned(text) or [name for name in languages.named(text) if len(name) > 1])
+    if not shown:
+        return wanted[0] if wanted else None
+    return next((language for language in shown if languages.names(hints, language)), shown[0])
 
 
 def ats_lint(resume: Resume, page_target: int = 1) -> list[str]:
@@ -3212,9 +3247,10 @@ MAX_POSTING_FLAGS = 10
 def posting_match_flags(resume: Resume, analysis: JDAnalysis, hints: str, language: str | None = None) -> list[Flag]:
     """One 'info' flag per bullet or summary sentence that carries must-have terms the user's hints do not back
     up: the app writes those in to match the posting, so the user should confirm them. The first place each term
-    appears is flagged, most recent employer first, then the summary. `language`: the programming language the job
-    post wants most (languages.wanted_language), flagged the same way, a must-have or not: the current job names it
-    even when the person never listed it (prompt v39); by any of its names ('Golang' in the hints backs Go)."""
+    appears is flagged, most recent employer first, then the summary. `language`: the programming language the
+    current job names by the owner's rule (rule_language: the post's, or the usual one when the post names none),
+    flagged the same way, a must-have or not: the current job names it even when the person never listed it (prompt
+    v39); the hints back it as they back any term, or by any of its names ('Golang' backs Go, 'the Go gateway' too)."""
     places: list[tuple[str, str]] = [
         (f"experience:{exp.company_index}", bullet) for exp in resume.experience for bullet in exp.bullets
     ]
@@ -3224,8 +3260,8 @@ def posting_match_flags(resume: Resume, analysis: JDAnalysis, hints: str, langua
         terms.append(language)
     grouped: dict[tuple[str, str], list[str]] = {}
     for term in terms:
-        named = bool(language) and languages.names(term, language)  # the language, by its careful match
-        if languages.names(hints, language) if named else mentions(hints, term):
+        named = bool(language) and languages.names(term, language)  # the language, by any of its names
+        if mentions(hints, term) or (named and languages.names(hints, language)):
             continue
         for place in places:
             if languages.names(place[1], language) if named else mentions(place[1], term):

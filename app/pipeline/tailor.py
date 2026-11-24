@@ -227,13 +227,18 @@ def _possessive(name: str) -> str:
     return f"{name}'" if name.endswith("s") else f"{name}'s"
 
 
+def _either(language: str) -> str:
+    """' (either one)' after languages any one of which will do ('C or C++', languages.either), else ''."""
+    return " (either one)" if " or " in language else ""
+
+
 def language_fix(company: str, language: str | None, analysis: JDAnalysis | None) -> str:
     """The rewrite pass's line for a current job that does not name the job post's language (validate.missing_language:
-    `language` None when the post names none)."""
+    `language` None when the post names none, 'C or C++' when either will do)."""
     if language:
-        return (f"Name {language} in one of {_possessive(company)} bullets, where the work used it: the job post asks "
-                "for it most (BULLETS rule). Change only that bullet's words, keeping its length, its result and the "
-                "must-have phrases it shows.")
+        return (f"Name {language}{_either(language)} in one of {_possessive(company)} bullets, where the work used it: "
+                "the job post asks for it most (BULLETS rule). Change only that bullet's words, keeping its length, "
+                "its result and the must-have phrases it shows.")
     return (f"{company}, the current job, names no programming language: name the one this work is usually built in "
             f"({languages.usual_language(analysis) or 'Python'}, unless its notes name another) in one of its bullets, "
             "where the work used it (BULLETS rule), keeping that bullet's length, its result and the must-have "
@@ -243,9 +248,9 @@ def language_fix(company: str, language: str | None, analysis: JDAnalysis | None
 def language_warning(company: str, language: str | None, analysis: JDAnalysis | None) -> str:
     """The admin's note for a final resume whose current job still does not name the job post's language."""
     if language:
-        return (f"{company}, the current job, does not name {language}, the programming language the job post asks "
-                "for most. Recruiters and an ATS look for it in your current work: name it in the bullet where you "
-                "used it.")
+        return (f"{company}, the current job, does not name {language}{_either(language)}, the programming language "
+                "the job post asks for most. Recruiters and an ATS look for it in your current work: name it in the "
+                "bullet where you used it.")
     return (f"{company}, the current job, names no programming language. Name the one you built this work in (for "
             f"example {languages.usual_language(analysis) or 'Python'}) in one of its bullets.")
 
@@ -354,8 +359,12 @@ def run_checks(result: TailorResult, jd_text: str) -> None:
                     "remove it from the text.")
         for where, term in validate.certification_mentions(result.resume, names)
     ]
-    language = languages.wanted_language(result.analysis, jd_text) if result.page_target else None
-    posting = validate.posting_match_flags(result.resume, result.analysis, f"{result.hints}\n{own}", language)
+    # the language the owner's rule has the current job name (the post's, or the usual one when it names none):
+    # flagged for the person to confirm unless their hints or notes name it
+    backing = f"{result.hints}\n{own}"
+    language = (validate.rule_language(result.resume, result.analysis, jd_text, backing) if result.page_target
+                else None)
+    posting = validate.posting_match_flags(result.resume, result.analysis, backing, language)
     result.flags = [f for f in flags if f.level == "verify"] + posting + [f for f in flags if f.level != "verify"]
     # in hints-only mode, a figure the person gave is theirs to use: it never counts toward the density
     dense = validate.metric_density_problems(
