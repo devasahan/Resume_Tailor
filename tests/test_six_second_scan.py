@@ -73,7 +73,7 @@ def test_the_one_fix_round_puts_the_figures_first(router, db, registry, profile,
     result = asyncio.run(run_tailor(router, db, profile=profile, profile_id=None, jd=jd, model_id="demo-concise"))
     assert result.status == "ok" and result.retries == 1 and len(client.prompts) == 2
     assert "These jobs open without a measured result: Northwind Labs, Contoso Systems, Fabrikam" in client.prompts[1]
-    assert "at most 2 bullets with figures" in client.prompts[1]
+    assert "at most 3 bullets with figures in the current job and 2 in every other job" in client.prompts[1]
     assert validate.first_bullet_problems(result.resume) == [] and result.metrics_mode == "estimate"
     assert not any("do not open with a measured result" in w for w in result.ats_warnings)
 

@@ -17,7 +17,7 @@ from __future__ import annotations
 
 import re
 
-from ..schemas import JDAnalysis, Profile, Resume
+from ..schemas import FitStyle, JDAnalysis, Profile, Resume
 from . import tense
 from .facts import is_current
 from .numerals import normal
@@ -167,10 +167,14 @@ def letter_fixes(paragraphs: list[str], analysis: JDAnalysis | None = None, post
     return [normal(_named(paragraph, writing), keep) for paragraph in paragraphs]
 
 
-def number_words(resume: Resume) -> list[str]:
-    """Texts that still write a number as a word or a figure another way (a hand edit): for the admin's warnings."""
+def number_words(resume: Resume, analysis: JDAnalysis | None = None) -> list[str]:
+    """Texts that still write a number as a word or a figure another way (a hand edit): for the admin's warnings. What
+    fix_numbers keeps on purpose is never listed: a posting term ('three lines of defense', from `analysis`), an
+    employer's name or a skills item ('five whys')."""
+    keep = (_terms(analysis) + [company.name for company in resume.profile.companies]
+            + [item for group in resume.skills for item in group.skills])
     texts = [resume.summary, *(bullet for exp in resume.experience for bullet in exp.bullets)]
-    return [text for text in texts if normal(text) != text]
+    return [text for text in texts if normal(text, keep) != text]
 
 
 # ---------------------------------------------------------------------- the summary
@@ -375,11 +379,11 @@ def weak_openers(resume: Resume) -> list[str]:
 MIN_WEAK_OPENERS_FOR_RETRY = 2
 
 
-def text_lines(resume: Resume, paper: str = "Letter") -> tuple[int, list[list[int]]]:
-    """(the summary's lines, each job's bullets' lines) at the design's own sizes."""
+def text_lines(resume: Resume, paper: str = "Letter", style: FitStyle | None = None) -> tuple[int, list[list[int]]]:
+    """(the summary's lines, each job's bullets' lines) at the design's own sizes, or at `style` (a saved run's own)."""
     from ..render.pdf import Run, resume_sheet
 
-    sheet = resume_sheet(resume, design_style(paper))
+    sheet = resume_sheet(resume, style or design_style(paper))
     line = sheet.size * sheet.line
     summary = len(sheet.wrap([Run(resume.summary)], sheet.width, sheet.size))
     return summary, [[round(sheet.bullet_height(bullet) / line) for bullet in exp.bullets]
@@ -390,9 +394,10 @@ MAX_BULLET_LINES, MAX_SUMMARY_LINES = 2, 3
 MIN_LONG_BULLETS_FOR_RETRY = 2
 
 
-def long_text(resume: Resume, paper: str = "Letter") -> tuple[list[str], int]:
-    """(bullets of 3 lines or more, the summary's lines when over 3, else 0) at the design's own sizes."""
-    summary, lines = text_lines(resume, paper)
+def long_text(resume: Resume, paper: str = "Letter", style: FitStyle | None = None) -> tuple[list[str], int]:
+    """(bullets of 3 lines or more, the summary's lines when over 3, else 0) at the design's own sizes, or at `style`
+    (a saved run's own)."""
+    summary, lines = text_lines(resume, paper, style)
     long = [bullet for exp, counts in zip(resume.experience, lines) for bullet, n in zip(exp.bullets, counts)
             if n > MAX_BULLET_LINES]
     return long, summary if summary > MAX_SUMMARY_LINES else 0

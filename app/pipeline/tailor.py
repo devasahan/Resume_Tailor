@@ -66,6 +66,9 @@ log = logging.getLogger(__name__)
 # Must-have JD terms missing from the summary and bullets (absent, or only listed) that justify the one rewrite
 # pass. 1 means every required term is covered automatically; 2 roughly halves how often the rewrite runs.
 MIN_UNCOVERED_FOR_RETRY = 1
+# A summary of 4 lines is named in the rewrite pass only along with other fixes (30-40 words of long ones can wrap to
+# 4 lines); from this many lines on, it asks for the pass on its own
+STRONG_SUMMARY_LINES = 5
 # The time limit for a resume (Settings, default 30 s): the AI calls must end this much earlier, leaving time for the
 # layout, the checks and saving.
 CHECKS_RESERVE_SECONDS = 4.0
@@ -145,8 +148,8 @@ def coverage_feedback(resume: Resume, analysis: JDAnalysis) -> str | None:
         " Put each one in word for word, in the summary or in one existing bullet of the employer where it fits "
         "best (usually the most recent role), as part of the work that bullet describes (a soft skill such as "
         "\"stakeholder management\" goes in the summary or in a bullet about that work, never as a closing \"with "
-        "stakeholders\" phrase), replacing weaker words so each bullet stays 15-22 words and the summary 30-48 "
-        "words. Do not add or remove bullets: each employer keeps exactly the number given in "
+        "stakeholders\" phrase), replacing weaker words so each bullet stays 15-22 words and the summary "
+        f"{validate.SUMMARY_AIM} words. Do not add or remove bullets: each employer keeps exactly the number given in "
         "<employers>. Use at most two of these phrases per bullet, never as a list."
     )
 
@@ -157,32 +160,49 @@ def make_pdf(resume: Resume, style: FitStyle, document: str = "Resume") -> tuple
     return resume_sheet(resume, style, document).finish()
 
 
-def reviewer_warnings(resume: Resume, paper: str = "Letter") -> list[str]:
+def reviewer_warnings(resume: Resume, style: FitStyle | None = None, analysis: JDAnalysis | None = None) -> list[str]:
     """The one-page rules (rules.py) a resume still breaks, for the admin: after a hand edit too, whose words are never
-    changed for the person."""
+    changed for the person. Lines are measured at the run's own `style` (the design's sizes on Letter when not given);
+    a posting term in `analysis` keeps its number word, as fix_numbers keeps it."""
+    style = style or design_style("Letter")
     warnings = []
     weak = rules.weak_openers(resume)
     if weak:
         warnings.append("Bullets that open with a weak verb: " + "; ".join(f"'{b[:60]}...'" for b in weak[:4])
                         + ". Start each with a strong verb that says what was built, changed or decided.")
-    long, summary_lines = rules.long_text(resume, paper)
+    long, summary_lines = rules.long_text(resume, style.paper, style)
     if long:
         warnings.append(f"{len(long)} bullet(s) run to 3 lines: aim for 15-22 words (1-2 lines) each.")
     if summary_lines:
-        warnings.append(f"The summary takes {summary_lines} lines: aim for 2-3 lines (experience, current focus, "
-                        "one result).")
+        warnings.append(f"The summary takes {summary_lines} lines ({validate.word_count(resume.summary)} words): aim "
+                        f"for 2-3 lines, {validate.SUMMARY_AIM} words (experience, current focus, one result).")
     praise = rules.self_praise(resume.summary)
     if praise:
         warnings.append("The summary praises the candidate (" + "; ".join(f"'{s.strip()[:60]}'" for s in praise[:2])
                         + "): show it in the bullets instead.")
     for company, bullets in rules.so_endings(resume):
         warnings.append(f"{company}: {len(bullets)} bullets end with \"so ...\": vary how their results are said.")
-    written = rules.number_words(resume)
+    written = rules.number_words(resume, analysis)
     if written:
         warnings.append("Numbers written as words or in another format: " + "; ".join(f"'{t[:60]}...'" for t in
                                                                                      written[:3])
                         + ". Write every number as a numeral (7 schools, under 5 days), the same way throughout.")
     return warnings
+
+
+def first_draft_notes(notes: list[str], draft: Resume, fixed: Resume) -> list[str]:
+    """The first draft's notes that stay after the rewrite pass: one about a corrected job title, the headline or the
+    summary, while that text stays as it was. Notes about bullets (their tense, a closing teamwork clause) go, as the
+    rewrite may have replaced those bullets: build() notes what it changes in the fixed draft."""
+    titles = {draft.profile.companies[a.company_index].name
+              for a, b in zip(draft.experience, fixed.experience) if a.job_title == b.job_title}
+    fields = {field.title() for field in ("headline", "summary") if getattr(fixed, field) == getattr(draft, field)}
+    kept = []
+    for note in notes:
+        head, _colon, rest = note.partition(": ")
+        if head in fields or (head in titles and rest.startswith(validate.TITLE_NOTE)):
+            kept.append(note)
+    return kept
 
 
 def analysis_terms(analysis: JDAnalysis) -> str:
@@ -197,10 +217,11 @@ SPELLING_NAMES = {"us": "American", "eu": "British"}
 
 
 def run_checks(result: TailorResult, jd_text: str) -> None:
-    """(Re)compute coverage, ATS warnings and claim flags from the current resume text."""
+    """(Re)compute coverage, ATS warnings and claim flags from the current resume text. A run saved before the
+    one-page rule (page_target 0, prompt v36) keeps that prompt's limits and gets no one-page warnings."""
     assert result.resume is not None and result.analysis is not None
     result.coverage = validate.keyword_coverage(result.resume, result.analysis)
-    result.ats_warnings = validate.ats_lint(result.resume)
+    result.ats_warnings = validate.ats_lint(result.resume, result.page_target)
     result.ats_warnings += validate.era_problems(result.resume)
     copied = validate.copied_posting_spans(result.resume, jd_text, result.analysis)
     if copied:
@@ -218,7 +239,8 @@ def run_checks(result: TailorResult, jd_text: str) -> None:
     if weak:
         result.ats_warnings.append("Bullets that do not say how the work was done or what changed: "
                                    + validate.weak_bullet_list(weak) + ". Recruiters look for the tool and the result.")
-    result.ats_warnings += reviewer_warnings(result.resume, result.style.paper)
+    if result.page_target:
+        result.ats_warnings += reviewer_warnings(result.resume, result.style, result.analysis)
     letter_plain = validate.cover_plain_problems(result.cover_letter, result.analysis) if result.cover_letter else []
     if letter_plain:
         result.ats_warnings.append("Cover letter wording that can sound machine-written: " + "; ".join(letter_plain[:6])
@@ -285,11 +307,13 @@ def run_checks(result: TailorResult, jd_text: str) -> None:
     ]
     posting = validate.posting_match_flags(result.resume, result.analysis, f"{result.hints}\n{own}")
     result.flags = [f for f in flags if f.level == "verify"] + posting + [f for f in flags if f.level != "verify"]
-    dense = validate.metric_density_problems(result.resume)
+    # in hints-only mode, a figure the person gave is theirs to use: it never counts toward the density
+    dense = validate.metric_density_problems(
+        result.resume, f"{result.hints}\n{own}" if result.metrics_mode == "hints_only" else "")
     if dense:
         result.ats_warnings.append(
             "Many bullets carry figures (" + "; ".join(dense) + "). Recruiters read a few strong numbers better "
-            "than many: consider keeping at most 2 per role."
+            f"than many: consider keeping {validate.FIGURE_BULLETS_RULE}."
         )
     rounded = validate.figure_style_problems(result.resume, allowed, own)
     if rounded:
@@ -472,12 +496,14 @@ async def run_tailor(
                 "keywords": [k for k in out.jd_analysis.keywords if not validate.names_certification(k, names)]})
 
         allowed_figures = f"{hints}\n{facts}"  # and the figures own_notes give whole
+        # in hints-only mode, a figure the person gave is theirs to use: it never counts toward the density
+        own_figures = f"{hints}\n{own_notes}" if metrics_mode == "hints_only" else ""
 
         def reviewer_feedback(resume: Resume, asked: bool) -> list[str]:
             """The one-page rules' rewrite instructions (rules.py): each line when its problem is clear on its own
-            (2 weak openings or 3-line bullets, a 4-line summary, self-praise, 3 "so" endings in a job), else all of
-            them only with a fix round asked anyway (`asked`): most rules are kept in code for free, and under the time
-            limit the rewrite pass is often skipped."""
+            (2 weak openings or 3-line bullets, a summary of 5 lines or more, self-praise, 3 "so" endings in a job),
+            else all of them only with a fix round asked anyway (`asked`): most rules are kept in code for free, and
+            under the time limit the rewrite pass is often skipped."""
             strong, soft = [], []
             weak = rules.weak_openers(resume)
             if weak:
@@ -491,8 +517,12 @@ async def run_tailor(
                     "These bullets run to 3 lines: " + "; ".join(f"'{b}'" for b in long[:6]) + ". Cut each to one "
                     "sentence of 15-22 words, keeping its what, how and result and its must-have phrases.")
             if summary_lines:
-                strong.append(f"The summary takes {summary_lines} lines. Rewrite it as 2-3 sentences of 30-48 words: "
-                              "the experience, the current focus and one result (SUMMARY rule).")
+                words, (fewest, most) = validate.word_count(resume.summary), validate.SUMMARY_WORDS
+                # the words that fit 3 lines: 40, or fewer when its words are long ones
+                target = most if words > most else max(fewest, words * rules.MAX_SUMMARY_LINES // summary_lines)
+                (strong if summary_lines >= STRONG_SUMMARY_LINES else soft).append(
+                    f"The summary takes {summary_lines} lines: it has {words} words; cut it to {target} or fewer, in "
+                    "2-3 sentences: the experience, the current focus and one result (SUMMARY rule).")
             praise = rules.self_praise(resume.summary)
             if praise:
                 strong.append("The summary praises the candidate: " + "; ".join(f"'{s.strip()}'" for s in praise[:2])
@@ -522,12 +552,12 @@ async def run_tailor(
             what it changes (a TailorRevision): far less to write than a whole new draft, and everything that was
             fine stays word for word."""
             feedback = []
-            density = validate.metric_density_problems(value[1])
+            density = validate.metric_density_problems(value[1], own_figures)
             if density:
                 feedback.append(
-                    "Too many bullets carry numbers (" + "; ".join(density) + "). Keep a figure in at most "
-                    f"{validate.MAX_FIGURE_BULLETS_PER_JOB} bullets per employer and about 2 in 5 overall; rewrite "
-                    "the other bullets to describe the impact in words. Keep the candidate's own figures."
+                    "Too many bullets carry numbers (" + "; ".join(density) + f"). Keep {validate.FIGURE_BULLETS_RULE} "
+                    "(older or short roles usually only their first); rewrite the other bullets to describe the impact "
+                    "in words. Keep the candidate's own figures."
                 )
             openers = validate.first_bullet_problems(value[1]) if metrics_mode == "estimate" else []
             first_job = value[1].profile.companies[value[1].experience[0].company_index].name if openers else ""
@@ -537,8 +567,8 @@ async def run_tailor(
                     "only the first bullet of each job in a six-second scan: rewrite it as that job's biggest win for "
                     "this JD, with its size and its result as figures (for example 'for 83K concurrent players, "
                     "cutting queue-to-lobby time from 41 to 32 seconds'). If a later bullet of the same job already "
-                    "has a figure, move that result into the first bullet and say the later one in words, so the job "
-                    f"keeps at most {validate.MAX_FIGURE_BULLETS_PER_JOB} bullets with figures."
+                    "has a figure, move that result into the first bullet and say the later one in words, keeping "
+                    f"{validate.FIGURE_BULLETS_RULE}."
                 )
             unbased = validate.unbased_percentage_problems(value[1]) if metrics_mode == "estimate" else []
             mismatched = validate.base_mismatch_problems(value[1]) if metrics_mode == "estimate" else []
@@ -565,8 +595,9 @@ async def run_tailor(
             if thin:
                 feedback.append(
                     "The draft is too thin: " + "; ".join(thin) + ". Rewrite the summary as 2-3 flowing sentences "
-                    "of 30-48 words, and every weak bullet as 15-22 words that open with a strong verb and say "
-                    "specifically what was done, how, and what changed, following the SUMMARY and BULLETS rules."
+                    f"of {validate.SUMMARY_AIM} words, and every weak bullet as 15-22 words that open with a strong "
+                    "verb and say specifically what was done, how, and what changed, following the SUMMARY and "
+                    "BULLETS rules."
                 )
             coverage = coverage_feedback(value[1], value[0].jd_analysis)
             if coverage:
@@ -667,20 +698,17 @@ async def run_tailor(
             output, resume, first_notes = value
 
             def revised(data: dict):
-                """The fixed draft. A first-draft note about a corrected title, headline or summary stays while
-                that text does."""
+                """The fixed draft, with the first draft's notes that are still true of it (first_draft_notes)."""
                 out, fixed, notes = build(validate.apply_revision(output, resume, TailorRevision.model_validate(data)))
-                same = {resume.profile.companies[a.company_index].name
-                        for a, b in zip(resume.experience, fixed.experience) if a.job_title == b.job_title}
-                same |= {f.title() for f in ("headline", "summary") if getattr(fixed, f) == getattr(resume, f)}
-                return out, fixed, [n for n in first_notes if n.split(": ", 1)[0] in same] + notes
+                return out, fixed, first_draft_notes(first_notes, resume, fixed) + notes
 
             return Ask(
                 required=bool(named),  # a certification claim is removed even past the time limit
                 user=revise_user(jd, profile.companies, hints, facts, bullets=budget, today=today,
                                  analysis=without_certifications(output), plan=output.career_plan,
                                  draft=draft_text(resume), problems=" ".join(feedback),
-                                 certifications=profile.certifications, certifications_section=certifications_on),
+                                 certifications=profile.certifications, certifications_section=certifications_on,
+                                 pages=target),
                 schema=revision_schema, schema_name="tailor_revision",
                 parse=revised,
                 context={**context, "draft": resume.model_dump(exclude={"profile"})},  # read only by the demo models
@@ -688,7 +716,8 @@ async def run_tailor(
 
         system_prompt = tailor_system(metrics_mode, spelling, certifications_section=certifications_on)
         user_prompt = tailor_user(jd, profile.companies, hints, facts, bullets=budget, today=today,
-                                  certifications=profile.certifications, certifications_section=certifications_on)
+                                  certifications=profile.certifications, certifications_section=certifications_on,
+                                  pages=target)
         steps.mark("prompts")
         await generate_validated(
             router, chain, system=system_prompt, user=user_prompt,
@@ -765,7 +794,8 @@ async def run_tailor(
                 smaller[exp.company_index] = len(exp.bullets)
             shorter_system = tailor_system(metrics_mode, spelling, certifications_section=certifications_on)
             shorter_user = tailor_user(jd, profile.companies, hints, facts, shorten=True, bullets=smaller, today=today,
-                                       certifications=profile.certifications, certifications_section=certifications_on)
+                                       certifications=profile.certifications, certifications_section=certifications_on,
+                                       pages=target)
             try:
                 await generate_validated(
                     router, [outcome.final_model_id], system=shorter_system, user=shorter_user,
