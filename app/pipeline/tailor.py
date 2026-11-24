@@ -53,6 +53,7 @@ from .generate import (
 )
 from .page_fit import (
     TWO_PAGES,
+    Fitted,
     design_style,
     fit_new,
     job_relevance,
@@ -60,6 +61,7 @@ from .page_fit import (
     on_the_ladder,
     pages_word,
     plan_pages,
+    shortest_over_two,
 )
 
 log = logging.getLogger(__name__)
@@ -326,12 +328,24 @@ def run_checks(result: TailorResult, jd_text: str) -> None:
         result.flags += validate.cover_flags(result.cover_letter, result.hints, own)
 
 
-def keeps_as_much(trimmed: Resume, shorter: Resume, analyses: list[JDAnalysis]) -> bool:
-    """Whether a shorter draft, fitted to its page, keeps as much as the trimmed first draft: at least as many bullets,
-    and every must-have (of either draft's analysis) the trimmed draft shows in its summary or a bullet."""
-    if sum(len(exp.bullets) for exp in shorter.experience) < sum(len(exp.bullets) for exp in trimmed.experience):
+def _layout_rank(fitted: Fitted) -> tuple[int, float, float, bool]:
+    """How a fitted draft is laid out, the best lowest: fewer pages, then the larger size (the design's own sizes before
+    each smaller step of the size ladder: the font, then the spacing, then the skills in their column)."""
+    return fitted.pages, -fitted.style.font_pt, -fitted.style.spacing, fitted.style.inline_skills
+
+
+def keeps_as_much(trimmed: Fitted, shorter: Fitted, analyses: list[JDAnalysis]) -> bool:
+    """Whether a shorter draft, fitted to its page, is kept over the trimmed first draft (both from fit_new): laid out
+    better (fewer pages, or as many at a larger size), or as well with fewer bullets removed and at least as many left,
+    so more bullets never make up for an extra page or a smaller font; and showing every must-have (of either draft's
+    analysis) the trimmed draft shows in its summary or a bullet."""
+    def bullets(fitted: Fitted) -> int:
+        return sum(len(exp.bullets) for exp in fitted.resume.experience)
+
+    rank, first = _layout_rank(shorter), _layout_rank(trimmed)
+    if rank > first or (rank == first and (shorter.removed >= trimmed.removed or bullets(shorter) < bullets(trimmed))):
         return False
-    before, after = validate.evidence_text(trimmed), validate.evidence_text(shorter)
+    before, after = validate.evidence_text(trimmed.resume), validate.evidence_text(shorter.resume)
     terms = dict.fromkeys(term for analysis in analyses for term in analysis.must_have_skills)
     return all(validate.mentions(after, term) for term in terms if validate.mentions(before, term))
 
@@ -340,13 +354,16 @@ async def fit_report(resume: Resume, paper: str, page_target: int = 0,
                      style: FitStyle | None = None) -> tuple[FitStyle, int, bool, list[str]]:
     """Fit check for a hand-edited resume: never changes the text, only picks the style. A run made since the one-page
     rule (`page_target` 1 or 2) stays at the design's own sizes on its own paper (`style`), and a note says when the
-    text runs past its page; only text over two pages there gets a smaller font, from the size ladder as fit_new's last
-    resort uses it (on_the_ladder), so text it laid out that way keeps its pages. An older run (0) keeps the old
-    fitting: the largest size that keeps two pages."""
+    text runs past its page: removing bullets would reach it, so the font is not reduced. Text over two pages there
+    gets a smaller font only where fit_new would give it one (even with every removable bullet gone, it is over two
+    pages there) or where the run has one already (`style`, so an edit keeps its pages), from the size ladder as
+    fit_new's last resort uses it (on_the_ladder). An older run (0) keeps the old fitting: the largest size that keeps
+    two pages."""
     if page_target:
         paper = style.paper if style is not None else paper
         pages = await asyncio.to_thread(measure, resume, paper)
-        if pages > TWO_PAGES:
+        reduced = style is not None and style != design_style(paper)
+        if pages > TWO_PAGES and (reduced or await asyncio.to_thread(shortest_over_two, resume, paper)):
             small, pages, _pdf, notes = await asyncio.to_thread(on_the_ladder, resume, paper)
             if pages > TWO_PAGES:
                 notes.append(f"Still {pages} pages at the smallest font (the limit is two). Shorten the text.")
@@ -826,11 +843,12 @@ async def run_tailor(
                 short_doubled = validate.fix_repeated_words(short_resume)
                 short = await asyncio.to_thread(fit_new, short_resume, paper, target, short_output.jd_analysis,
                                                 document)
-                # kept when it reaches the page with fewer bullets removed, ends with as many bullets and still shows
-                # every must-have the trimmed draft shows (it had no fix round): its bullets are the model's own choice
-                # for the smaller budget, which beats removing many from a draft that ignored the plan
-                if (short.pages <= target and short.removed < fitted.removed
-                        and keeps_as_much(fitted.resume, short.resume, [output.jd_analysis, short_output.jd_analysis])):
+                # kept when it reaches the page laid out better (fewer pages, or a larger size), or as well with fewer
+                # bullets removed and as many left, and still shows every must-have the trimmed draft shows (it had no
+                # fix round): its bullets are the model's own choice for the smaller budget, which beats removing many
+                # from a draft that ignored the plan
+                analyses = [output.jd_analysis, short_output.jd_analysis]
+                if short.pages <= target and keeps_as_much(fitted, short, analyses):
                     output, resume, title_notes, doubled, fitted = (short_output, short_resume, short_title_notes,
                                                                     short_doubled, short)
                     notes.append(f"The model shortened the resume to fit {pages_word(target)}.")
