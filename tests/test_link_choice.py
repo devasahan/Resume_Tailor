@@ -275,7 +275,7 @@ def test_the_page_checks_the_length_the_server_does(client):
     assert main.MAX_LINK_CHARS == 300
     page = client.get("/profile").text
     assert f"const MAX_LINK_CHARS = {main.MAX_LINK_CHARS};" in page
-    assert "body: { ...typed, loaded }" in page and "maxlength: MAX_LINK_CHARS" in page
+    assert "body: { ...typed, loaded }" in page and "maxlength: MAX_LINK" not in page  # a paste is never cut
 
 
 # ------------------------------------------------------------------ a resume uploaded again
@@ -513,7 +513,10 @@ async function show(c) {
   const out = { start: seen(c.resumes[0].id), calls: calls.map(([method, path]) => `${method} ${path}`) };
   for (const step of c.steps || []) {
     const box = $$('.link-list').find(n => n.attributes['data-resume'] === String(step.resume));
-    if (step.type) Object.entries(step.type).forEach(([i, value]) => { $$('input', box)[Number(i)].value = value; });
+    if (step.type) Object.entries(step.type).forEach(([i, value]) => {  // a browser cuts typing or a paste at maxlength
+      const input = $$('input', box)[Number(i)], most = input.attributes.maxlength;
+      input.value = most === undefined ? value : value.slice(0, Number(most));
+    });
     if (step.open) box.open = true;
     calls.length = 0;
     if (step.save) await fire($$('button', box).find(b => b.textContent === 'Save links'), 'click');
@@ -552,6 +555,8 @@ def entry_of(resume_id: int, contact: dict, name: str = "Taylor Quinn") -> dict:
 SAVED = {"email": "taylor@example.com", "phone": "(555) 010-4477", "linkedin": LINKEDIN, "github": GITHUB,
          "website": WEBSITE, "location": "Austin, TX"}
 CARD_LINE = f"taylor@example.com | (555) 010-4477 | {LINKEDIN} | {GITHUB} | {WEBSITE} | Austin, TX"
+# a page's address too long for a link (725 characters): a box with a maxlength would keep only its start
+LONG_ADDRESS = f"https://{WEBSITE}/projects/" + "data-pipelines-for-northwind-labs-" * 20 + "final-report"
 
 
 @pytest.mark.skipif(shutil.which("node") is None, reason="runs the Profile page's own script with Node.js")
@@ -565,6 +570,8 @@ def test_the_profile_page_has_the_links_box_for_the_admin_only(tmp_path):
                   "steps": [{"name": "saved", "resume": 7, "type": typed, "save": True}]},
         "too long": {"admin": True, "resumes": [entry_of(7, SAVED)], "steps": [
             {"name": "refused", "resume": 7, "type": {"1": "github.com/" + "x" * 300}, "save": True}]},
+        "pasted": {"admin": True, "resumes": [entry_of(7, SAVED)], "steps": [
+            {"name": "refused", "resume": 7, "type": {"2": LONG_ADDRESS}, "save": True}]},
         "stale": {"admin": True, "resumes": [entry_of(7, SAVED)], "answers": {
             "/api/resumes/7/links": {"error": "The links of this resume were changed in another tab."}},
                   "steps": [{"name": "refused", "resume": 7, "type": {"2": ""}, "save": True}]},
@@ -579,12 +586,12 @@ def test_the_profile_page_has_the_links_box_for_the_admin_only(tmp_path):
     # another account: the card as before, with every link the upload read; no box
     assert seen["user"]["start"] == {"contact": {"text": CARD_LINE, "hidden": False}, "box": None}
     assert seen["user"]["calls"] == ["GET /api/resumes"]
-    # the admin: the box holds what was saved, each box at most 300 characters
+    # the admin: the box holds what was saved; no maxlength, which would cut a long paste unseen (checked on Save)
     start = seen["admin"]["start"]
     assert start["contact"] == {"text": CARD_LINE, "hidden": False}
     assert start["box"]["summary"] == "Links (3 of 3)" and start["box"]["labels"] == ["LinkedIn", "GitHub", "Website"]
-    assert start["box"]["inputs"] == [[LINKEDIN, "linkedin.com/in/your-name", "300"],
-                                      [GITHUB, "github.com/your-name", "300"], [WEBSITE, "your-name.dev", "300"]]
+    assert start["box"]["inputs"] == [[LINKEDIN, "linkedin.com/in/your-name", None],
+                                      [GITHUB, "github.com/your-name", None], [WEBSITE, "your-name.dev", None]]
     # Save sends each box trimmed and all three as loaded; the box and the card's contact line then show what was saved
     saved = seen["admin"]["saved"]
     assert saved["calls"] == [["PUT", "/api/resumes/7/links", {
@@ -600,6 +607,11 @@ def test_the_profile_page_has_the_links_box_for_the_admin_only(tmp_path):
     refused = seen["too long"]["refused"]
     assert refused["calls"] == [] and refused["box"]["status"] == (
         "The GitHub box has 311 characters, and a link can have up to 300. Shorten it, then press Save links again.")
+    # a long address pasted is kept whole and refused with its own length: never cut to a broken link and saved
+    pasted = seen["pasted"]["refused"]
+    assert pasted["calls"] == [] and pasted["box"]["status"] == (
+        "The Website box has 725 characters, and a link can have up to 300. Shorten it, then press Save links again.")
+    assert pasted["box"]["inputs"][2][0] == LONG_ADDRESS and len(LONG_ADDRESS) == 725
     assert seen["stale"]["refused"]["box"]["status"] == "The links of this resume were changed in another tab."
     # typed but not saved: kept when the cards are drawn again (another upload, a save in another box)
     again = seen["redrawn"]["again"]
@@ -612,19 +624,28 @@ def test_the_profile_page_has_the_links_box_for_the_admin_only(tmp_path):
 
 TAILOR_HARNESS = DOM + r"""
 // Runs the Tailor page's whole script, then what each case asks (ticks, another resume, the buttons), and prints the
-// tick boxes, what the page remembered and what it sent.
+// tick boxes, what the page remembered and what it sent. The resumes are read again for a new resume: then they are
+// what another tab saved since (resumesLater), or there is no answer (lostLater). With `blocked` the browser keeps
+// nothing (storage blocked); with `slow` each answer takes a moment.
 async function show(c) {
   const page = fs.readFileSync(process.argv[2], 'utf8');
   const code = page.slice(page.indexOf('<script>') + '<script>'.length, page.lastIndexOf('</script>'));
   const { $, $$ } = documentOf();
   ['#result', '#toggles', '#timing', '#certs', '#steps', '#links'].forEach(id => $(id).classList.add('hidden'));
   const store = { ...(c.store || {}) }, calls = [];
-  let made = 6, busyBoxes = null;
+  let made = 6, busyBoxes = null, reads = 0, busyReading = null;
   const run = (id, letter) => ({ run_id: id, status: 'ok', pages: 1, fits: true, coverage: { score: 0.9 },
     cover_letter: letter ? { paragraphs: ['I build data pipelines.'] } : null, spelling: 'us', certifications: [] });
   const api = async (path, options = {}) => {
     calls.push([path, options.body === undefined ? null : options.body]);
-    if (path === '/api/resumes') return { resumes: c.resumes };
+    if (c.slow) await new Promise(resolve => setTimeout(resolve, 5));
+    if (path === '/api/resumes') {
+      reads += 1;
+      if (reads === 1) return { resumes: c.resumes };
+      busyReading = $('#resume-only').disabled;
+      if (c.lostLater) throw new Error('Lost contact with the server. Check your internet connection and try again.');
+      return { resumes: c.resumesLater || c.resumes };
+    }
     if (path === '/api/settings') return { resolved: { resume: 'model-a', cover_letter: 'model-a' } };
     if (path === '/api/models') return { models: [{ id: 'model-a', label: 'Model A', demo: false }] };
     if (path === '/api/tailor') {
@@ -641,7 +662,7 @@ async function show(c) {
     'rememberValue', 'location', 'history', 'window', 'document', code + exposed)(
     $, $$, el, api, async data => data, notice, words => el('span', { text: words }), String,
     { id: '1', admin: c.admin }, name => (name in store ? store[name] : null),
-    (name, value) => { store[name] = String(value); }, { search: '' }, history,
+    (name, value) => { if (!c.blocked) store[name] = String(value); }, { search: '' }, history,
     { matchMedia: () => ({ matches: false }), addEventListener() {} }, { addEventListener() {} });
   await settle();
   const seen = () => ({
@@ -652,23 +673,33 @@ async function show(c) {
     messages: $('#messages').children.map(text),
   });
   const out = { start: { ...seen(), calls: calls.map(([path]) => path) } };
+  const fill = () => {
+    $('#jd').value = 'Senior Data Engineer at Fabrikam. Build pipelines in Python and SQL on AWS for analysts.';
+    $('#company').value = 'Fabrikam';
+    $('#job-link').value = 'https://jobs.example.com/data-engineer';
+  };
   for (const step of c.steps || []) {
     calls.length = 0;
     busyBoxes = null;
+    busyReading = null;
+    if (step.store) Object.assign(store, step.store);  // what another tab of this page remembered meanwhile
     if (step.tick) {
       const box = $$('#link-rows input').find(input => input.attributes.id === `link-${step.tick[0]}`);
       box.checked = step.tick[1];
       await fire(box, 'change');
     }
     if (step.choose) { $('#resume').value = String(step.choose); await fire($('#resume'), 'change'); }
-    if (step.create) {
-      $('#jd').value = 'Senior Data Engineer at Fabrikam. Build pipelines in Python and SQL on AWS for analysts.';
-      $('#company').value = 'Fabrikam';
-      $('#job-link').value = 'https://jobs.example.com/data-engineer';
-      await tailor.create(...step.create);
+    if (step.create) { fill(); await tailor.create(...step.create); }
+    if (step.double) {  // a quick double click on Create: two clicks, a task apart; a disabled button ignores one
+      fill();
+      const press = () => ($('#create').disabled ? null : tailor.create(true));
+      const first = press();
+      await new Promise(resolve => setTimeout(resolve, 0));
+      await Promise.all([first, press()]);
     }
     const current = tailor.current;
-    out[step.name] = { ...seen(), calls: JSON.parse(JSON.stringify(calls)), busyBoxes,
+    out[step.name] = { ...seen(), calls: JSON.parse(JSON.stringify(calls)), busyBoxes, busyReading,
+      buttonsOn: !$('#resume-only').disabled,
       current: current && { run: current.run.run_id, links: current.links === undefined ? 'unset' : current.links },
       state: history.state };
   }
@@ -720,9 +751,11 @@ def test_the_tailor_page_ticks_the_chosen_resumes_links_for_the_admin_only(tmp_p
     # an untick is remembered (per account) by its address
     assert admin["website off"]["unticked"] == [f"website {WEBSITE}"]
     assert admin["website off"]["boxes"][2] == ["Website", WEBSITE, False, False]
-    # the request names the ticked links; the boxes wait while it runs; the run and the page's address keep them
+    # the request names the ticked links, after the saved links are read again (the buttons waiting meanwhile); the
+    # boxes wait while it runs; the run and the page's address keep them
     made = admin["made"]
-    assert made["calls"] == [["/api/tailor", {**LINK_JOB, "links": ["linkedin", "github"]}]]
+    assert made["calls"] == [["/api/resumes", None], ["/api/tailor", {**LINK_JOB, "links": ["linkedin", "github"]}]]
+    assert made["busyReading"] is True and made["buttonsOn"]
     assert made["busyBoxes"] == [True, True, True] and made["boxes"][0][3] is False and made["messages"] == []
     assert made["current"] == {"run": 7, "links": ["linkedin", "github"]}
     assert made["state"]["links"] == ["linkedin", "github"]
@@ -731,7 +764,7 @@ def test_the_tailor_page_ticks_the_chosen_resumes_links_for_the_admin_only(tmp_p
         ["/api/runs/7/cover-letter", {"job_link": "https://jobs.example.com/data-engineer"}]]
     assert admin["website on"]["unticked"] == []
     assert admin["other links"]["calls"] == [
-        ["/api/tailor", {**LINK_JOB, "links": ["linkedin", "github", "website"]}]]
+        ["/api/resumes", None], ["/api/tailor", {**LINK_JOB, "links": ["linkedin", "github", "website"]}]]
     assert admin["other links"]["current"] == {"run": 8, "links": ["linkedin", "github", "website"]}
     # another resume: its own links, drawn again
     assert admin["other resume"]["boxes"] == [["GitHub", "github.com/taylorquinn-labs", True, False]]
@@ -744,15 +777,83 @@ def test_the_tailor_page_ticks_the_chosen_resumes_links_for_the_admin_only(tmp_p
     # no saved link: no boxes, and no choice sent (every saved link is printed)
     nothing = seen["no saved links"]
     assert nothing["start"]["shown"] is False and nothing["start"]["boxes"] == []
-    assert nothing["made"]["calls"] == [["/api/tailor", {**LINK_JOB, "profile_id": 8}]]
+    assert nothing["made"]["calls"] == [["/api/resumes", None], ["/api/tailor", {**LINK_JOB, "profile_id": 8}]]
     assert nothing["made"]["current"]["links"] is None
 
-    # another account: no boxes and no choice, as before
+    # another account: no boxes and no choice, and nothing read again, as before
     user = seen["user"]
     assert user["start"] == {"shown": False, "boxes": [], "unticked": None, "messages": [], "calls": ["/api/resumes"]}
     assert user["made"]["calls"] == [["/api/tailor", LINK_JOB]] and user["made"]["current"]["links"] is None
     assert user["letter again"]["calls"] == [
         ["/api/runs/7/cover-letter", {"job_link": "https://jobs.example.com/data-engineer"}]]
+
+
+@pytest.mark.skipif(shutil.which("node") is None, reason="runs the Tailor page's own script with Node.js")
+def test_a_link_saved_in_another_tab_is_shown_before_a_resume_is_made(tmp_path):
+    """The page reads the resume's links when it opens, and the server prints only the links the request names. A
+    link saved on the Profile page in another tab since then ('github.com/taylorquinn') had no box here, so it would be
+    left off unseen: before a new resume the page reads the links again, and when they changed it draws the boxes
+    again (a newly saved link ticked, the others as they were on screen) and asks the person to check them and press
+    again. The buttons wait while the links are read, so a double click makes one resume."""
+    only_linkedin = entry_of(5, {**SAVED, "github": "", "website": ""})
+    with_github = entry_of(5, {**SAVED, "website": ""})  # GitHub saved on the Profile page in another tab
+    new_github = entry_of(5, {**SAVED, "github": "github.com/taylorquinn-labs", "website": ""})
+    every = entry_of(5, SAVED)
+    cases = {
+        "added": {"admin": True, "resumes": [only_linkedin], "resumesLater": [with_github], "steps": [
+            {"name": "first", "create": [True]}, {"name": "again", "create": [True]}]},
+        "new address": {"admin": True, "resumes": [with_github], "resumesLater": [new_github],
+                        "store": {"untickedLinks": json.dumps([f"github {GITHUB}"])},
+                        "steps": [{"name": "first", "create": [True]}]},
+        "lost": {"admin": True, "resumes": [only_linkedin], "lostLater": True, "steps": [
+            {"name": "first", "create": [True]}]},
+        "deleted": {"admin": True, "resumes": [only_linkedin], "resumesLater": [], "steps": [
+            {"name": "first", "create": [True]}]},
+        "storage blocked": {"admin": True, "resumes": [every], "blocked": True, "steps": [
+            {"name": "website off", "tick": ["website", False]}, {"name": "made", "create": [True]}]},
+        "unticked in another tab": {"admin": True, "resumes": [every], "steps": [
+            {"name": "made", "store": {"untickedLinks": json.dumps([f"linkedin {LINKEDIN}"])}, "create": [True]}]},
+        "double click": {"admin": True, "resumes": [every], "slow": True, "steps": [{"name": "made", "double": True}]},
+    }
+    seen = node_run(tmp_path, TAILOR_HARNESS, TAILOR_PAGE, cases)
+    changed = "Your links changed in another tab. Check the Your links boxes, then press the button again."
+    every_link = ["linkedin", "github", "website"]
+
+    # nothing is made yet: the new link gets its box, ticked as a newly saved link is, for the person to check
+    first = seen["added"]["first"]
+    assert first["calls"] == [["/api/resumes", None]] and first["messages"] == [changed]
+    assert first["boxes"] == [["LinkedIn", LINKEDIN, True, False], ["GitHub", GITHUB, True, False]]
+    assert first["current"] is None and first["busyReading"] is True and first["buttonsOn"]
+    # pressed again: made with what the boxes show
+    again = seen["added"]["again"]
+    assert again["calls"] == [["/api/resumes", None], ["/api/tailor", {**LINK_JOB, "links": ["linkedin", "github"]}]]
+    assert again["messages"] == [] and again["current"]["links"] == ["linkedin", "github"]
+    # a new address for a link unticked before starts ticked too
+    new_address = seen["new address"]["first"]
+    assert new_address["calls"] == [["/api/resumes", None]] and new_address["messages"] == [changed]
+    assert new_address["boxes"] == [["LinkedIn", LINKEDIN, True, False],
+                                    ["GitHub", "github.com/taylorquinn-labs", True, False]]
+    # no answer: said, nothing sent, the buttons work again
+    lost = seen["lost"]["first"]
+    assert lost["calls"] == [["/api/resumes", None]] and lost["buttonsOn"] and lost["current"] is None
+    assert lost["messages"] == ["Lost contact with the server. Check your internet connection and try again."]
+    # the resume was deleted in the other tab: the page asks the server as before, and its message says so
+    assert seen["deleted"]["first"]["calls"] == [["/api/resumes", None],
+                                                 ["/api/tailor", {**LINK_JOB, "links": ["linkedin"]}]]
+    # the links read again are the same: the ticks on screen are sent, even when the browser keeps no choice, or
+    # another tab of this page remembered another one meanwhile
+    blocked = seen["storage blocked"]
+    assert blocked["website off"]["unticked"] is None and blocked["made"]["messages"] == []
+    assert blocked["made"]["calls"] == [["/api/resumes", None],
+                                        ["/api/tailor", {**LINK_JOB, "links": ["linkedin", "github"]}]]
+    assert blocked["made"]["boxes"][2] == ["Website", WEBSITE, False, False]
+    other_tab = seen["unticked in another tab"]["made"]
+    assert other_tab["calls"] == [["/api/resumes", None], ["/api/tailor", {**LINK_JOB, "links": every_link}]]
+    assert other_tab["boxes"][0] == ["LinkedIn", LINKEDIN, True, False]
+    # a double click while the links are read: one resume
+    double = seen["double click"]["made"]
+    assert double["calls"] == [["/api/resumes", None], ["/api/tailor", {**LINK_JOB, "links": every_link}]]
+    assert double["current"] == {"run": 7, "links": every_link}
 
 
 def test_the_tailor_page_sends_the_choice_with_the_job(client):

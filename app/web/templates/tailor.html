@@ -152,6 +152,7 @@ function resumeNote() {
 // it. Only ticked links are printed on the resume and its cover letter; the choice goes with the request (chosenLinks),
 // so to change it after tailoring, tailor again. The boxes remember the last choice in this browser, per account: a
 // link unticked stays unticked for its address, so a link newly saved starts ticked, as every link does the first time.
+// One saved in another tab while this page is open gets its box before a new resume is made (linksStillShown).
 const LINKS = [['linkedin', 'LinkedIn'], ['github', 'GitHub'], ['website', 'Website']];
 const MAX_UNTICKED = 30;  // addresses remembered as unticked, the newest first
 // The address as the files print it (app/render/pdf.py display_url): 'linkedin.com/in/taylorquinn'
@@ -163,14 +164,15 @@ function untickedLinks() {
     return Array.isArray(keys) ? keys.filter(key => typeof key === 'string') : [];
   } catch (err) { return []; }
 }
-function showLinks() {
+// `kept`: ticks to keep as they are on screen, by linkKey, when the same resume's boxes are drawn again
+function showLinks(kept = new Map()) {
   const r = ME.admin ? resumes.find(x => x.id === chosenId()) : null;
   const contact = (r && r.profile.contact) || {};
   const off = new Set(untickedLinks());
   const rows = LINKS.filter(([kind]) => (contact[kind] || '').trim()).map(([kind, name]) => {
     const key = linkKey(kind, contact[kind]);
     const box = el('input', { type: 'checkbox', id: `link-${kind}`, 'data-link': kind, 'data-key': key,
-      checked: !off.has(key), disabled: working });
+      checked: kept.get(key) ?? !off.has(key), disabled: working });
     box.addEventListener('change', rememberLinks);
     const named = el('span', { class: 'link-kind', text: name });
     const shown = el('span', { class: 'link-value', text: shownLink(contact[kind]) });
@@ -193,6 +195,30 @@ function chosenLinks() {
   return boxes.length ? boxes.filter(box => box.checked).map(box => box.dataset.link) : null;
 }
 const sameLinks = (a, b) => JSON.stringify(a ?? null) === JSON.stringify(b ?? null);
+
+// Just before a new resume is made (a letter for the resume already made keeps that resume's links): the chosen
+// resume's links as saved now. The server prints only the links the request names, so one saved in another tab since
+// this page read them ('github.com/taylorquinn' on the Profile page) had no box and would be left off unseen. When
+// they changed, the boxes are drawn again (a newly saved link ticked, the others as they are on screen) for the
+// person to check: false then, and when they could not be read (the message says why). The buttons wait while they
+// are read, so a double click makes one resume. A resume deleted meanwhile: true, and the server says so.
+const LINKS_CHANGED = 'Your links changed in another tab. Check the Your links boxes, then press the button again.';
+async function linksStillShown() {
+  if (!ME.admin) return true;
+  const boxes = () => $$('#link-rows input');
+  const ticks = new Map(boxes().map(box => [box.dataset.key, box.checked]));  // as on screen when it was pressed
+  let latest;
+  busy(true, '');
+  try { latest = (await api('/api/resumes')).resumes; }
+  catch (err) { busy(false, ''); $('#messages').replaceChildren(notice('bad', err.message)); return false; }
+  busy(false, '');
+  if (!latest.some(x => x.id === chosenId())) return true;
+  resumes = latest;
+  showLinks(ticks);  // the browser may keep no choice, or another tab of this page another one: the screen's wins
+  if (boxes().map(box => box.dataset.key).join('\n') === [...ticks.keys()].join('\n')) return true;
+  $('#messages').replaceChildren(notice('warn', LINKS_CHANGED));
+  return false;
+}
 
 function download(href, text) {
   return el('a', { class: 'btn primary', href }, el('span', { class: 'icon i-download', 'aria-hidden': 'true' }), text);
@@ -395,6 +421,7 @@ async function create(withLetter, keepResume = false) {
       $('#company').focus();
       return;
     }
+    if (!(await linksStillShown())) return;  // links saved in another tab since: their boxes are checked first
   }
   const together = withLetter && !reuse;  // one job writes both, so the list shows one row with one clock
   $('#steps').classList.remove('hidden');

@@ -76,14 +76,14 @@ function resumeCard(r) {
 // has a tick box for each saved link, so a resume prints only the ones it needs.
 const LINK_FIELDS = [['linkedin', 'LinkedIn', 'linkedin.com/in/your-name'],
   ['github', 'GitHub', 'github.com/your-name'], ['website', 'Website', 'your-name.dev']];
-const MAX_LINK_CHARS = 300;  // as app/main.py; checked on Save, so what a reader stored gets a plain message
+const MAX_LINK_CHARS = 300;  // as app/main.py; checked on Save (no maxlength), so a long paste is never cut off unseen
 const linksOf = c => Object.fromEntries(LINK_FIELDS.map(([key]) => [key, (c && c[key]) || '']));
 function linksBox(r, line) {
   if (!ME.admin) return null;
   let loaded = linksOf(r.profile.contact);  // as shown: the save is refused if any changed since (another tab saved)
   const inputs = Object.fromEntries(LINK_FIELDS.map(([key, name, example]) => {
     const input = el('input', { type: 'text', inputmode: 'url', autocomplete: 'off', autocapitalize: 'off',
-      spellcheck: 'false', maxlength: MAX_LINK_CHARS, placeholder: example,
+      spellcheck: 'false', placeholder: example,
       'aria-label': `${name}: ${r.profile.name}` });
     input.value = input.dataset.saved = loaded[key];
     return [key, input];
