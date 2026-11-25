@@ -13,12 +13,20 @@ from typing import NamedTuple
 
 from ..pipeline.facts import parse_point
 from ..pipeline.validate import same_certification
-from ..schemas import EMAIL_RE, Certification, Company, Contact, Education, Profile
+from ..schemas import (
+    CODE_SITE,
+    EMAIL_RE,
+    Certification,
+    Company,
+    Contact,
+    Education,
+    Profile,
+)
 
 PHONE_RE = re.compile(r"(?<!\d)(?:\+?\d{1,3}[\s.-]?)?(?:\(\d{3}\)|\d{3})[\s.-]?\d{3}[\s.-]?\d{4}(?!\d)")
 LINKEDIN_RE = re.compile(r"(?:https?://)?(?:www\.)?linkedin\.com/[\w\-/%.]+", re.IGNORECASE)
-# The person's own sites (see _website): a GitHub or GitLab address, with or without https:// and www.; and any other
-# address written with http(s):// or www. (a portfolio).
+# The person's own sites, as found in a line: a GitHub or GitLab address, with or without https:// and www. (_github);
+# and any other address written with http(s):// or www. (a portfolio: _website).
 CODE_SITE_RE = re.compile(r"(?<![\w@./-])(?:https?://)?(?:www\.)?(?:github|gitlab)\.com/[\w\-./%~]+", re.IGNORECASE)
 WEB_RE = re.compile(r"(?<![\w@./-])(?:https?://|www\.)[\w-]+(?:\.[\w-]+)+(?::\d+)?(?:[/?#][\w\-./%~?#=&+@:!$*]*)?",
                     re.IGNORECASE)
@@ -1013,8 +1021,8 @@ def _bare_site(lines: list[str]) -> str:
     website) on a contact line of the header, or on a line of nothing but such addresses right after one, where a
     contact line that wrapped puts the website. A contact line holds the email, a phone, LinkedIn's address or another
     web address, and does not read as a sentence (_reads_as_sentence). Only an address with no label before it or one
-    that names a site ('Portfolio:', 'My website:'), never another one ('Skype: taylor.quinn'). "" when there is
-    none."""
+    that names a site ('Portfolio:', 'My website:'), never another one ('Skype: taylor.quinn'), nor a GitHub or GitLab
+    address (_github's). "" when there is none."""
     after_contact = False
     for line in lines:
         pairs = [(label, item) for label, item in _site_pairs(line) if item]
@@ -1024,22 +1032,32 @@ def _bare_site(lines: list[str]) -> str:
         only_sites = bool(pairs) and all(_bare(item) for _label, item in pairs)
         if contact or (after_contact and only_sites):
             for label, item in pairs:
-                if _bare(item) and _names_a_site(label):
+                if _bare(item) and not CODE_SITE.fullmatch(item) and _names_a_site(label):
                     return item
         after_contact = contact or (after_contact and only_sites)
     return ""
 
 
+def _own_sites(lines: list[str]) -> list[str]:
+    """The header lines' items a person's own address is looked for in: each an item of its line on its own
+    (_site_items), never words of a sentence ('Maintainer of github.com/northwind/etl-kit'), and none of a line that
+    reads as one (_reads_as_sentence: a summary or tagline under the contact lines, with an employer's site or a
+    project's repository)."""
+    return [item for line in lines if not _reads_as_sentence(line) for item in _site_items(line)]
+
+
+def _github(lines: list[str]) -> str:
+    """The person's GitHub or GitLab address, from the header lines: the first one among their own sites (_own_sites,
+    CODE_SITE: 'github.com/taylorquinn', 'https://www.gitlab.com/tquinn/'). As written; "" when there is none."""
+    return next((item for item in _own_sites(lines) if CODE_SITE.fullmatch(item)), "")
+
+
 def _website(lines: list[str]) -> str:
-    """The person's GitHub, GitLab or own site, from the header lines: the first GitHub or GitLab address, else the
-    first other address written with http(s):// or www. that is not LinkedIn's, else the first one written without
-    them on a contact line (_bare_site). Only one that is an item of its line on its own (_site_items), never words of
-    a sentence ('Maintainer of github.com/northwind/etl-kit'), nor on a line that reads as one (_reads_as_sentence: a
-    summary or tagline under the contact lines, with an employer's site or a project's repository). As written; ""
-    when there is none."""
-    items = [item for line in lines if not _reads_as_sentence(line) for item in _site_items(line)]
-    found = next((item for item in items if CODE_SITE_RE.fullmatch(item)), "")
-    found = found or next((item for item in items if WEB_RE.fullmatch(item) and "linkedin.com" not in item.lower()), "")
+    """The person's own site other than LinkedIn, GitHub and GitLab (a portfolio, a blog), from the header lines: the
+    first address among their own sites (_own_sites) written with http(s):// or www. that is none of those, else the
+    first one written without them on a contact line (_bare_site). As written; "" when there is none."""
+    found = next((item for item in _own_sites(lines) if WEB_RE.fullmatch(item) and not CODE_SITE.fullmatch(item)
+                  and "linkedin.com" not in item.lower()), "")
     return found or _bare_site(lines)
 
 
@@ -1074,8 +1092,9 @@ def parse_resume_text(text: str) -> Profile:
     linkedin_match = LINKEDIN_RE.search(text)
     linkedin = linkedin_match.group(0) if linkedin_match else ""
     # only from lines before the first heading: when the text starts with one (the contact details in a Word table,
-    # whose text comes last, or in its page header), `top` is the body's, with a bullet's repository in it
-    website = _website(head[:10])
+    # whose text comes last, or in its page header), `top` is the body's, with a bullet's repository in it. GitHub and
+    # a portfolio are both kept, each in its own field.
+    github, website = _github(head[:10]), _website(head[:10])
 
     name = ""
     for line in top:
@@ -1098,7 +1117,8 @@ def parse_resume_text(text: str) -> Profile:
 
     return Profile(
         name=name,
-        contact=Contact(email=email, phone=phone, linkedin=linkedin, location=location, website=website),
+        contact=Contact(email=email, phone=phone, linkedin=linkedin, location=location, website=website,
+                        github=github),
         companies=_read_companies(sections["experience"]),
         education=_parse_education(sections["education"]),
         certifications=_parse_certifications(sections["certifications"]),

@@ -1,9 +1,9 @@
-"""Clickable contact details. In the PDF (resume and cover letter) the email, the LinkedIn address and the website
-(GitHub or portfolio) are link annotations over exactly their own text, and in the Word copy real hyperlinks; both look
+"""Clickable contact details. In the PDF (resume and cover letter) the email, the LinkedIn address, GitHub and the
+website (a portfolio) are link annotations over exactly their own text, and in the Word copy real hyperlinks; both look
 exactly as before (the same text, colour, sizes, centring and line breaks), and the phone and the place stay plain
-text. A link is made only from a value that is safe to link. The rule-based reader reads a GitHub, GitLab or portfolio
-address from a resume's header into the website, and the Profile page shows it. Every person, address and company
-here is invented."""
+text. A link is made only from a value that is safe to link. The rule-based reader reads a GitHub or GitLab address
+from a resume's header into GitHub and a portfolio's into the website, and the Profile page shows them. Every person,
+address and company here is invented."""
 import io
 import json
 import random
@@ -43,7 +43,7 @@ from .test_api import tailor as tailor_request
 from .test_validate import make_output
 
 CONTACT = Contact(email="taylor@example.com", phone="(555) 010-4477",
-                  linkedin="https://www.linkedin.com/in/taylorquinn", website="github.com/taylorquinn",
+                  linkedin="https://www.linkedin.com/in/taylorquinn", github="github.com/taylorquinn",
                   location="Austin, TX")
 # each clickable item as printed -> the address it opens
 LINKS = {"taylor@example.com": "mailto:taylor@example.com",
@@ -55,7 +55,7 @@ LETTER = CoverLetter(greeting="Dear Hiring Manager,", paragraphs=["I build data 
 # long enough to break between its items: the email ends the first line, LinkedIn and GitHub make the second
 LONG = Contact(email="taylor.quinn.data.engineering@example.com", phone="+1 (555) 010-4477",
                linkedin="linkedin.com/in/taylor-quinn-data-engineer-austin",
-               website="https://github.com/taylorquinn-data-engineering", location="San Francisco Bay Area, CA")
+               github="https://github.com/taylorquinn-data-engineering", location="San Francisco Bay Area, CA")
 LONG_LINKS = {"taylor.quinn.data.engineering@example.com": "mailto:taylor.quinn.data.engineering@example.com",
               "linkedin.com/in/taylor-quinn-data-engineer-austin":
                   "https://linkedin.com/in/taylor-quinn-data-engineer-austin",
@@ -169,8 +169,10 @@ def test_the_links_change_nothing_drawn(resume, monkeypatch):
 
 
 def test_a_value_unsafe_to_link_stays_plain_text(profile):
-    """A website or LinkedIn value with another scheme, a space or angle brackets is printed as before, unlinked."""
-    contact = CONTACT.model_copy(update={"website": "javascript:alert(1)", "linkedin": "linkedin.com/in/<taylor>"})
+    """A website, GitHub or LinkedIn value with another scheme, a space or angle brackets is printed as before,
+    unlinked."""
+    contact = CONTACT.model_copy(update={"website": "javascript:alert(1)", "linkedin": "linkedin.com/in/<taylor>",
+                                         "github": "github.com/taylor quinn"})
     pdf = render_resume_pdf(taylor(profile, contact), FitStyle())[0]
     assert [target for target, _rect in page_links(pdf)] == ["mailto:taylor@example.com"]
     first = PdfReader(io.BytesIO(pdf)).pages[0].extract_text().splitlines()
@@ -210,7 +212,7 @@ def test_a_link_whose_own_text_holds_a_character_the_font_lacks_ends_where_its_t
 def test_a_website_opens_the_host_it_was_written_with(profile, website, target):
     """Printed short ('taylorquinn.dev') whatever was written, and linked to the address as written, so a site that
     answers only on www opens the same with or without https:// before it: in the PDF and in the Word file."""
-    resume = taylor(profile, CONTACT.model_copy(update={"website": website}))
+    resume = taylor(profile, CONTACT.model_copy(update={"website": website, "github": ""}))
     pdf = render_resume_pdf(resume, FitStyle())[0]
     assert page_links(pdf)[-1][0] == target
     assert PdfReader(io.BytesIO(pdf)).pages[0].extract_text().splitlines()[2].endswith(" · taylorquinn.dev")
@@ -335,67 +337,71 @@ def read(*header: str, body: list[str] = BODY):
     return parse_resume_text("\n".join(["Taylor Quinn", *header, *body]))
 
 
-@pytest.mark.parametrize("header,website", [
+GH = "github.com/taylorquinn"
+
+
+@pytest.mark.parametrize("header,github,website", [
     (["Austin, TX | taylor@example.com | (555) 010-4477 | linkedin.com/in/taylorquinn | github.com/taylorquinn"],
-     "github.com/taylorquinn"),
+     GH, ""),
     (["Austin, TX · (555) 010-4477 · taylor@example.com",
-      "linkedin.com/in/taylorquinn · https://github.com/taylorquinn"], "https://github.com/taylorquinn"),
-    (["taylor@example.com | GitHub: github.com/taylorquinn"], "github.com/taylorquinn"),
-    (["taylor@example.com, www.github.com/taylorquinn/"], "www.github.com/taylorquinn/"),
-    (["taylor@example.com", "gitlab.com/taylorquinn"], "gitlab.com/taylorquinn"),
-    (["taylor@example.com | Portfolio: https://taylorquinn.dev"], "https://taylorquinn.dev"),
-    (["Austin, TX | www.taylorquinn.dev | taylor@example.com"], "www.taylorquinn.dev"),
-    # a GitHub or GitLab address first, wherever it is in the header
-    (["https://taylorquinn.dev | taylor@example.com", "github.com/taylorquinn"], "github.com/taylorquinn"),
+      "linkedin.com/in/taylorquinn · https://github.com/taylorquinn"], "https://github.com/taylorquinn", ""),
+    (["taylor@example.com | GitHub: github.com/taylorquinn"], GH, ""),
+    (["taylor@example.com, www.github.com/taylorquinn/"], "www.github.com/taylorquinn/", ""),
+    (["taylor@example.com", "gitlab.com/taylorquinn"], "gitlab.com/taylorquinn", ""),
+    (["taylor@example.com | Portfolio: https://taylorquinn.dev"], "", "https://taylorquinn.dev"),
+    (["Austin, TX | www.taylorquinn.dev | taylor@example.com"], "", "www.taylorquinn.dev"),
+    # a GitHub or GitLab address and a portfolio: both kept, wherever they are in the header
+    (["https://taylorquinn.dev | taylor@example.com", "github.com/taylorquinn"], GH, "https://taylorquinn.dev"),
     # LinkedIn's address is the LinkedIn one, never the website
-    (["taylor@example.com | https://www.linkedin.com/in/taylorquinn"], ""),
+    (["taylor@example.com | https://www.linkedin.com/in/taylorquinn"], "", ""),
     # an address written without https:// or www., as the app's own files print the website: as a last choice, and
     # only from a contact line (one with the email, a phone, LinkedIn or another address), or alone on the line after
     # one, where a contact line that wrapped puts it
-    (["taylor@example.com | taylorquinn.dev"], "taylorquinn.dev"),
+    (["taylor@example.com | taylorquinn.dev"], "", "taylorquinn.dev"),
     (["Austin, TX · (555) 010-4477 · taylor@example.com", "linkedin.com/in/taylorquinn · taylorquinn.dev"],
-     "taylorquinn.dev"),
+     "", "taylorquinn.dev"),
     (["New York, NY · (555) 010-4477 · taylor@example.com · linkedin.com/in/taylor-quinn-data",
-      "taylorquinn.github.io/portfolio"], "taylorquinn.github.io/portfolio"),
-    (["Austin, TX · (555) 010-4477 · taylorquinn.dev", "taylor@example.com"], "taylorquinn.dev"),
-    (["taylor@example.com | Personal website: taylorquinn.dev"], "taylorquinn.dev"),
-    (["taylor@example.com | taylorquinn.dev", "github.com/taylorquinn"], "github.com/taylorquinn"),
+      "taylorquinn.github.io/portfolio"], "", "taylorquinn.github.io/portfolio"),
+    (["Austin, TX · (555) 010-4477 · taylorquinn.dev", "taylor@example.com"], "", "taylorquinn.dev"),
+    (["taylor@example.com | Personal website: taylorquinn.dev"], "", "taylorquinn.dev"),
+    (["taylor@example.com | taylorquinn.dev", "github.com/taylorquinn"], GH, "taylorquinn.dev"),
     # ... never a name with a dot that is no site, nor one after another label or among words
-    (["Austin, TX | taylor@example.com | Python, Node.js, ASP.NET"], ""), (["St.Louis, MO | taylor@example.com"], ""),
-    (["Taylor Quinn, M.Sc | taylor@example.com"], ""), (["taylor@example.com | Skype: taylor.quinn"], ""),
-    (["taylor@example.com", "Maintainer of etl-kit.dev, used by 300 teams."], ""),
+    (["Austin, TX | taylor@example.com | Python, Node.js, ASP.NET"], "", ""),
+    (["St.Louis, MO | taylor@example.com"], "", ""), (["Taylor Quinn, M.Sc | taylor@example.com"], "", ""),
+    (["taylor@example.com | Skype: taylor.quinn"], "", ""),
+    (["taylor@example.com", "Maintainer of etl-kit.dev, used by 300 teams."], "", ""),
     # never words of a sentence, nor an item of a line that reads as one: a summary or a tagline under the contact
     # lines holds an employer's site or a project's repository, not the person's own
-    (["taylor@example.com", "Maintainer of github.com/northwind/etl-kit, used by 300 teams."], ""),
-    (["taylor@example.com | see https://taylorquinn.dev for my work"], ""),
-    (["Austin, TX | taylor@example.com", "Data engineer at Northwind Labs, www.northwind.example, since 2022."], ""),
+    (["taylor@example.com", "Maintainer of github.com/northwind/etl-kit, used by 300 teams."], "", ""),
+    (["taylor@example.com | see https://taylorquinn.dev for my work"], "", ""),
+    (["Austin, TX | taylor@example.com", "Data engineer at Northwind Labs, www.northwind.example, since 2022."],
+     "", ""),
     (["Austin, TX | taylor@example.com",
-      "Data engineer and creator of etl-kit — github.com/northwind/etl-kit — used by 300 teams."], ""),
-    (["taylor@example.com", "Most proud of: github.com/northwind/etl-kit"], ""),
+      "Data engineer and creator of etl-kit — github.com/northwind/etl-kit — used by 300 teams."], "", ""),
+    (["taylor@example.com", "Most proud of: github.com/northwind/etl-kit"], "", ""),
     (["Austin, TX | taylor@example.com | https://taylorquinn.dev",
       "Data engineer and creator of etl-kit — github.com/northwind/etl-kit — used by 300 teams."],
-     "https://taylorquinn.dev"),
+     "", "https://taylorquinn.dev"),
     # ... while a headline, a place or a line of links is no sentence, and a contact line never is one
-    (["Senior Data Engineer | github.com/taylorquinn", "taylor@example.com | (555) 010-4477"],
-     "github.com/taylorquinn"),
-    (["Berlin | github.com/taylorquinn", "taylor@example.com"], "github.com/taylorquinn"),
+    (["Senior Data Engineer | github.com/taylorquinn", "taylor@example.com | (555) 010-4477"], GH, ""),
+    (["Berlin | github.com/taylorquinn", "taylor@example.com"], GH, ""),
     (["taylor@example.com | (555) 010-4477", "Portfolio: taylorquinn.dev | GitHub: github.com/taylorquinn"],
-     "github.com/taylorquinn"),
-    (["taylor@example.com | My GitHub page: github.com/taylorquinn"], "github.com/taylorquinn"),
+     GH, "taylorquinn.dev"),
+    (["taylor@example.com | My GitHub page: github.com/taylorquinn"], GH, ""),
     # a label naming a site is no words of a sentence, however long
     (["taylor@example.com", "My GitHub page: github.com/taylorquinn · https://taylorquinn.dev"],
-     "github.com/taylorquinn"),
-    (["taylor@example.com", "My personal website: taylorquinn.dev"], "taylorquinn.dev"),
+     GH, "https://taylorquinn.dev"),
+    (["taylor@example.com", "My personal website: taylorquinn.dev"], "", "taylorquinn.dev"),
 ])
-def test_the_rules_reader_reads_the_website_from_the_header(header, website):
+def test_the_rules_reader_reads_github_and_the_website_from_the_header(header, github, website):
     profile = read(*header)
-    assert profile.contact.website == website
+    assert (profile.contact.github, profile.contact.website) == (github, website)
     assert profile.name == "Taylor Quinn" and profile.contact.email == "taylor@example.com"
 
 
 def test_the_website_is_read_only_from_the_header():
     profile = read("taylor@example.com", body=[*BODY, "• Published the loader at github.com/taylorquinn/loader."])
-    assert profile.contact.website == ""
+    assert profile.contact.website == "" and profile.contact.github == ""
 
 
 @pytest.mark.parametrize("text", [
@@ -409,7 +415,8 @@ def test_the_website_is_read_only_from_the_header():
      "• Published the loader: https://github.com/northwind/loader\n• Built the pipelines.\n"),
 ])
 def test_no_website_is_read_from_the_body_when_the_text_starts_with_a_heading(text):
-    assert parse_resume_text(text).contact.website == ""
+    contact = parse_resume_text(text).contact
+    assert contact.website == "" and contact.github == ""
 
 
 def test_a_word_resume_with_its_contact_details_in_a_table_takes_no_bullets_address():
@@ -428,7 +435,8 @@ def test_a_word_resume_with_its_contact_details_in_a_table_takes_no_bullets_addr
     document.save(data)
     text = extract_text(data.getvalue(), "resume.docx")
     assert "github.com/northwind/loader" in text and text.index("SUMMARY") < text.index("taylor@example.com")
-    assert parse_resume_text(text).contact.website == ""
+    contact = parse_resume_text(text).contact
+    assert contact.website == "" and contact.github == ""
 
 
 def test_a_web_address_is_kept_out_of_the_place():
@@ -436,31 +444,32 @@ def test_a_web_address_is_kept_out_of_the_place():
     assert profile.contact.location == "Austin, TX"
 
 
-@pytest.mark.parametrize("first", ["https://taylorquinn.dev", "GitHub: github.com/taylorquinn"])
-def test_a_line_of_web_addresses_is_never_the_name(first):
+@pytest.mark.parametrize("first,github,website", [("https://taylorquinn.dev", "", "https://taylorquinn.dev"),
+                                                  ("GitHub: github.com/taylorquinn", GH, "")])
+def test_a_line_of_web_addresses_is_never_the_name(first, github, website):
     profile = parse_resume_text("\n".join([first, "Taylor Quinn", "taylor@example.com", *BODY]))
-    assert profile.name == "Taylor Quinn" and profile.contact.website == first.removeprefix("GitHub: ")
+    assert profile.name == "Taylor Quinn" and (profile.contact.github, profile.contact.website) == (github, website)
 
 
 @pytest.mark.parametrize("kind", ["pdf", "docx"])
 def test_the_apps_own_files_read_back_with_the_github_address(resume, kind):
     data = render_resume_pdf(resume, FitStyle())[0] if kind == "pdf" else resume_docx(resume, FitStyle())
     contact = parse_resume_text(extract_text(data, f"resume.{kind}")).contact
-    assert (contact.email, contact.phone, contact.linkedin, contact.website, contact.location) == (
-        "taylor@example.com", "(555) 010-4477", "linkedin.com/in/taylorquinn", "github.com/taylorquinn", "Austin, TX")
+    assert (contact.email, contact.phone, contact.linkedin, contact.github, contact.website, contact.location) == (
+        "taylor@example.com", "(555) 010-4477", "linkedin.com/in/taylorquinn", GH, "", "Austin, TX")
 
 
 @pytest.mark.parametrize("kind", ["pdf", "docx"])
 @pytest.mark.parametrize("website", ["https://taylorquinn.dev", "www.taylorquinn.dev", "taylorquinn.github.io/cv/"])
 def test_the_apps_own_files_read_back_with_a_portfolio(profile, kind, website):
     """The files print a portfolio without https:// or www. ('taylorquinn.dev'): a re-upload of one reads it back in
-    that form, so the next resumes still print and link it."""
+    that form, so the next resumes still print and link it, beside GitHub."""
     resume = taylor(profile, CONTACT.model_copy(update={"website": website}))
     data = render_resume_pdf(resume, FitStyle())[0] if kind == "pdf" else resume_docx(resume, FitStyle())
     contact = parse_resume_text(extract_text(data, f"resume.{kind}")).contact
     printed = website.removeprefix("https://").removeprefix("www.").rstrip("/")
-    assert (contact.email, contact.linkedin, contact.website, contact.location) == (
-        "taylor@example.com", "linkedin.com/in/taylorquinn", printed, "Austin, TX")
+    assert (contact.email, contact.linkedin, contact.github, contact.website, contact.location) == (
+        "taylor@example.com", "linkedin.com/in/taylorquinn", GH, printed, "Austin, TX")
 
 
 # ------------------------------------------------------------------ the Profile page and the whole way through
@@ -475,18 +484,20 @@ console.log(JSON.stringify(JSON.parse(fs.readFileSync(process.argv[3], 'utf8')).
 
 
 @pytest.mark.skipif(shutil.which("node") is None, reason="runs the Profile page's own script with Node.js")
-def test_the_profile_card_shows_the_website(tmp_path):
+def test_the_profile_card_shows_github_and_the_website(tmp_path):
     cases = [CONTACT.model_dump(), Contact(email="taylor@example.com", website="github.com/taylorquinn").model_dump(),
-             Contact(email="taylor@example.com", phone="(555) 010-4477").model_dump()]
+             Contact(email="taylor@example.com", phone="(555) 010-4477").model_dump(),
+             Contact(email="taylor@example.com", github="gitlab.com/tquinn", website="taylorquinn.dev").model_dump()]
     (tmp_path / "cases.json").write_text(json.dumps(cases), encoding="utf-8")
     (tmp_path / "card.js").write_text(CARD_HARNESS, encoding="utf-8")
     run = subprocess.run(["node", str(tmp_path / "card.js"), str(PAGE), str(tmp_path / "cases.json")],
                          capture_output=True, text=True, timeout=60, check=False)
     assert run.returncode == 0, run.stderr
     everything = ("taylor@example.com | (555) 010-4477 | https://www.linkedin.com/in/taylorquinn | "
-                  "github.com/taylorquinn | Austin, TX")  # the website after LinkedIn
-    assert json.loads(run.stdout) == [everything, "taylor@example.com | github.com/taylorquinn",
-                                      "taylor@example.com | (555) 010-4477"]
+                  "github.com/taylorquinn | Austin, TX")  # GitHub after LinkedIn
+    assert json.loads(run.stdout) == [everything, "taylor@example.com | github.com/taylorquinn",  # saved before
+                                      "taylor@example.com | (555) 010-4477",
+                                      "taylor@example.com | gitlab.com/tquinn | taylorquinn.dev"]  # the website last
     assert "const contact = contactText(c);" in PAGE.read_text(encoding="utf-8")
 
 
@@ -497,7 +508,7 @@ TAILOR_HARNESS = r"""
 const fs = require('fs');
 const page = fs.readFileSync(process.argv[2], 'utf8');
 const code = page.slice(page.indexOf('<script>') + '<script>'.length, page.lastIndexOf('</script>'));
-const HIDDEN = ['#result', '#toggles', '#timing', '#certs', '#steps'];  // hidden when the page opens
+const HIDDEN = ['#result', '#toggles', '#timing', '#certs', '#steps', '#links'];  // hidden when the page opens
 
 class Classes {
   constructor(names) { this.names = new Set(names); }
@@ -543,6 +554,8 @@ async function show(c) {
   const history = { state: c.state, replaceState(state, _title, url) { this.state = state; urls.push(url); } };
   const api = async path => {
     if (path === '/api/resumes') return { resumes: [] };
+    if (path === '/api/settings' && c.admin) return { resolved: { resume: 'model-a', cover_letter: 'model-a' } };
+    if (path === '/api/models' && c.admin) return { models: [{ id: 'model-a', label: 'Model A', demo: false }] };
     if (c.runs[path] === 'offline') throw Object.assign(new Error('Lost contact.'), { transient: true });
     if (c.runs[path] === null || !(path in c.runs)) throw new Error('Run not found');
     return c.runs[path];
@@ -552,7 +565,7 @@ async function show(c) {
   const tailor = new Function('$', '$$', 'el', 'api', 'finished', 'notice', 'chip', 'money', 'ME', 'recallValue',
     'rememberValue', 'location', 'history', 'window', 'document', code + exposed)(
     $, () => [], el, api, async data => data, (kind, text) => el('div', { class: `notice ${kind}`, text }),
-    text => el('span', { text }), String, { id: '1', admin: false }, () => null, () => {}, { search: c.search },
+    text => el('span', { text }), String, { id: '1', admin: c.admin }, () => null, () => {}, { search: c.search },
     history, { matchMedia: () => ({ matches: false }), addEventListener() {} }, { addEventListener() {} });
   await new Promise(resolve => setTimeout(resolve, 50));  // the page's own init() has finished
   if (c.shown) {  // a run the page made: what create() keeps of it, then the result on screen
@@ -564,7 +577,8 @@ async function show(c) {
     empty: !$('#empty').classList.contains('hidden'), preview: $('#pdf').src.split('?')[0],
     downloads: $('#downloads').children.map(link => link.attributes.href || link.attributes.id),
     current: tailor.current && { run: tailor.current.run.run_id, jd: tailor.current.jd,
-      profileId: tailor.current.profileId, spelling: tailor.current.spelling, company: tailor.current.company },
+      profileId: tailor.current.profileId, spelling: tailor.current.spelling, company: tailor.current.company,
+      links: tailor.current.links },
     eu: $('#spell-eu').classList.contains('on'), messages: $('#messages').children.map(n => n.textContent) });
   const before = seen();
   tailor.clearResult();
@@ -580,20 +594,23 @@ async function show(c) {
 
 
 @pytest.mark.skipif(shutil.which("node") is None, reason="runs the Tailor page's own script with Node.js")
-def test_the_tailor_page_shows_its_result_again_after_a_link_in_the_preview(tmp_path):
+@pytest.mark.parametrize("admin", [False, True], ids=["user", "admin"])
+def test_the_tailor_page_shows_its_result_again_after_a_link_in_the_preview(tmp_path, admin):
     """The preview's links are clickable, and a browser's PDF viewer opens one in the page's own tab (Chrome does):
     the page then comes back without its result (Back loads it afresh). The page's address names the run it shows
     ('/tailor?run=7'), with what the page needs to tell whether the job's boxes still hold the same job, so the run
     and its downloads are shown again after Back or a reload. A run that is gone or failed drops the address; no
-    result on screen, no run in the address."""
+    result on screen, no run in the address. For the admin the links ticked for the run (tests/test_link_choice.py)
+    go with it; another account has no choice (null)."""
     def run(run_id, letter=True, spelling="us"):
         return {"run_id": run_id, "status": "ok", "pages": 1, "fits": True, "coverage": {"score": 0.9},
                 "cover_letter": {"paragraphs": ["I build data pipelines."]} if letter else None, "spelling": spelling,
                 "certifications": []}
 
+    links = ["linkedin", "github"] if admin else None
     made = {"run": run(7, letter=False), "jd": "Senior Data Engineer at Fabrikam ...", "profileId": 3,
-            "spelling": "us", "company": "Fabrikam"}
-    job = {"jd": made["jd"], "profileId": 3, "spelling": "eu", "company": "Fabrikam"}  # what run 7 was made from
+            "spelling": "us", "company": "Fabrikam", "links": links}
+    job = {"jd": made["jd"], "profileId": 3, "spelling": "eu", "company": "Fabrikam", "links": links}  # run 7's
     cases = {
         "made": {"search": "", "state": None, "runs": {}, "shown": made},
         # Back to the resume shown (a link clicked in it), though the run has a letter too
@@ -607,6 +624,7 @@ def test_the_tailor_page_shows_its_result_again_after_a_link_in_the_preview(tmp_
         "no run": {"search": "?run=x", "state": None, "runs": {}},
         "offline": {"search": "?run=7", "state": None, "runs": {"/api/runs/7": "offline"}},
     }
+    cases = {name: {**case, "admin": admin} for name, case in cases.items()}
     (tmp_path / "cases.json").write_text(json.dumps(cases), encoding="utf-8")
     (tmp_path / "tailor.js").write_text(TAILOR_HARNESS, encoding="utf-8")
     done = subprocess.run(["node", str(tmp_path / "tailor.js"), str(TAILOR_PAGE), str(tmp_path / "cases.json")],
@@ -616,7 +634,7 @@ def test_the_tailor_page_shows_its_result_again_after_a_link_in_the_preview(tmp_
     resume_only = ["/api/runs/7/resume.pdf?download=1", "add-cover"]
     both = ["/api/runs/7/resume.pdf?download=1", "/api/runs/7/cover.pdf?download=1"]
 
-    made_job = {key: made[key] for key in ("jd", "profileId", "spelling", "company")}
+    made_job = {key: made[key] for key in ("jd", "profileId", "spelling", "company", "links")}
     assert seen["made"]["before"] == {
         "urls": ["/tailor?run=7"], "state": {"run": 7, "view": "resume", **made_job}, "result": True, "empty": False,
         "preview": "/api/runs/7/resume.pdf", "downloads": resume_only, "current": {"run": 7, **made_job}, "eu": False,
@@ -633,7 +651,8 @@ def test_the_tailor_page_shows_its_result_again_after_a_link_in_the_preview(tmp_
     # the address alone (typed, or kept by another browser): shown, but never taken for the job now in the boxes
     alone = seen["address only"]["before"]
     assert alone["result"] and alone["downloads"] == both and alone["preview"] == "/api/runs/7/cover.pdf"
-    assert alone["current"] == {"run": 7, "jd": None, "profileId": None, "spelling": "us", "company": None}
+    assert alone["current"] == {"run": 7, "jd": None, "profileId": None, "spelling": "us", "company": None,
+                                "links": None}
     # no run to show: the address drops it, unless the server could not be reached (a reload tries again)
     for name in ("gone", "failed", "no run", "offline"):
         shown = seen[name]["before"]
@@ -647,7 +666,7 @@ def test_an_uploaded_github_address_is_clickable_in_the_tailored_files(client):
     header = "Taylor Quinn\nAustin, TX | taylor@example.com | (555) 010-4477 | github.com/taylorquinn\n\n"
     text = header + "EXPERIENCE\nNorthwind Labs | Remote\nMar 2022 - Present\n\nEDUCATION\nState University\n"
     entry = save_profile(client, text=text)
-    assert entry["profile"]["contact"]["website"] == "github.com/taylorquinn"
+    assert (entry["profile"]["contact"]["github"], entry["profile"]["contact"]["website"]) == (GH, "")
     run = tailor_request(client)
     assert run.status_code == 200, run.text
     run_id = run.json()["run_id"]

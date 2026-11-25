@@ -13,12 +13,16 @@ from __future__ import annotations
 import re
 from typing import Literal
 
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 from pydantic.json_schema import SkipJsonSchema
 
 # An email address as the app reads one from a resume (app/parsing/heuristic.py) and links one in its files
 # (app/render/pdf.py email_link)
 EMAIL_RE = re.compile(r"[\w.+-]+@[\w-]+(?:\.[\w-]+)+")
+# A GitHub or GitLab address as a person writes their own: the site, with or without https:// and www., then a path
+# ('github.com/taylorquinn', 'https://www.gitlab.com/tquinn/'). Contact keeps one as `github`, never as the website,
+# and so does the rules reader (app/parsing/heuristic.py).
+CODE_SITE = re.compile(r"(?:https?://)?(?:www\.)?(?:github|gitlab)\.com/\S+", re.IGNORECASE)
 
 
 # ---------------------------------------------------------------- fixed facts (from the base resume)
@@ -27,7 +31,16 @@ class Contact(BaseModel):
     phone: str = ""
     linkedin: str = ""
     location: str = ""
-    website: str = ""
+    website: str = ""  # the person's own site other than LinkedIn and GitHub: a portfolio, a blog ('taylorquinn.dev')
+    github: str = ""  # their GitHub or GitLab address; "" in profiles saved before, which kept it as the website
+
+    @model_validator(mode="after")
+    def _github_apart(self) -> Contact:
+        """A GitHub or GitLab address kept as the website moves to `github` while that is empty: profiles and runs
+        saved before held it there ('github.com/taylorquinn'), so they show it as GitHub and print the same text."""
+        if not self.github.strip() and CODE_SITE.fullmatch(self.website.strip()):
+            self.github, self.website = self.website, ""
+        return self
 
 
 MAX_PROJECT_CHARS = 4000  # one employer's project notes (Profile page), sources included: the model reads fewer

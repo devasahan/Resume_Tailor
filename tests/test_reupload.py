@@ -36,7 +36,7 @@ from app.schemas import (
 
 NAME = "Taylor Quinn"
 CONTACT = Contact(email="taylor.quinn@example.com", phone="(555) 010-4477", linkedin="linkedin.com/in/taylorquinn",
-                  location="Austin, TX", website="taylorquinn.dev")
+                  location="Austin, TX", github="github.com/taylorquinn", website="taylorquinn.dev")
 COMPANIES = [
     Company(name="Northwind Labs", start="Mar 2022", end="Present", mode="Remote", location="Austin, TX"),
     Company(name="Bluefin Commerce", start="Jun 2019", end="Feb 2022", mode="Onsite", location="Dallas, TX"),
@@ -69,7 +69,7 @@ def new_design(gap: str = "   ", wrapped_contact: bool = False, long_break: str 
     """The text of a resume made since the restyle. `gap` is what extraction leaves of the filler before the dates (one
     space or several); the second job's line is too long and breaks before the company or before the place."""
     contact = ["Austin, TX · (555) 010-4477 · taylor.quinn@example.com",
-               "linkedin.com/in/taylorquinn · taylorquinn.dev"]
+               "linkedin.com/in/taylorquinn · github.com/taylorquinn · taylorquinn.dev"]
     second = {
         "company": [f"Principal Data Platform Engineer{gap}Jun 2019 – Feb 2022",
                     "Bluefin Commerce · Dallas, TX · Onsite"],
@@ -106,7 +106,8 @@ def old_design(stacked: bool = False) -> str:
         rows = [f"{company}{place} {dates}", title] if stacked else [f"{company} | {title}{place} {dates}"]
         experience += [*rows, bullet]
     lines = [
-        *TOP, "Austin, TX | (555) 010-4477 | taylor.quinn@example.com | linkedin.com/in/taylorquinn | taylorquinn.dev",
+        *TOP, ("Austin, TX | (555) 010-4477 | taylor.quinn@example.com | linkedin.com/in/taylorquinn | "
+               "github.com/taylorquinn | taylorquinn.dev"),
         *(line.format(gap=" ") for line in MIDDLE), *experience,
         "EDUCATION", "B.S., Computer Science | State University 2010 - 2014", "Lakeside Community College",
         "Dean's list",
@@ -122,9 +123,7 @@ def old_design(stacked: bool = False) -> str:
 def assert_reads_back(text: str) -> None:
     profile = parse_resume_text(text)
     assert profile.name == NAME
-    assert (profile.contact.email, profile.contact.phone, profile.contact.linkedin, profile.contact.location,
-            profile.contact.website) == (CONTACT.email, CONTACT.phone, CONTACT.linkedin, CONTACT.location,
-                                         CONTACT.website)
+    assert profile.contact.model_dump() == CONTACT.model_dump()  # GitHub and the website too, each in its own field
     assert [c.model_dump() for c in profile.companies] == [c.model_dump() for c in COMPANIES]
     places = {value for company in profile.companies for value in (company.name, company.location)}
     assert not places & set(TITLES)  # a job title is never read as an employer or a place
@@ -177,11 +176,8 @@ def app_made_resume() -> Resume:
 
 def assert_file_reads_back(text: str, resume: Resume) -> None:
     profile = parse_resume_text(text)
-    contact = resume.profile.contact
     assert profile.name == NAME
-    assert (profile.contact.email, profile.contact.phone, profile.contact.linkedin, profile.contact.location,
-            profile.contact.website) == (contact.email, contact.phone, contact.linkedin, contact.location,
-                                         contact.website)
+    assert profile.contact.model_dump() == resume.profile.contact.model_dump()  # with all three links
     assert [c.model_dump() for c in profile.companies] == [c.model_dump() for c in COMPANIES]
     titles = {e.job_title for e in resume.experience}
     assert not {value for c in profile.companies for value in (c.name, c.location)} & titles

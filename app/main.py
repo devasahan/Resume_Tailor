@@ -67,6 +67,7 @@ from .render.pdf import (
     recent_resume_pdf,
     remember_resume_pdf,
     render_resume_pdf,
+    web_link,
 )
 from .schemas import (
     MAX_CERTIFICATIONS,
@@ -109,6 +110,12 @@ class JobFactsRequest(BaseModel):
 
 FACTS_CACHE_SIZE = 200  # answers kept by job-post text, so pasting the same post again costs nothing
 
+# The contact's links: the Profile page's Links box edits them and the Tailor page's tick boxes choose which ones a
+# resume prints (the admin's only, for now), by these names, in the order they are printed
+LINK_KINDS = ("linkedin", "github", "website")
+LINK_NAMES = {"linkedin": "LinkedIn", "github": "GitHub", "website": "Website"}
+MAX_LINK_CHARS = 300  # one link typed in the Links box (the page checks the same)
+
 
 class TailorRequest(BaseModel):
     jd: str = Field(min_length=40, max_length=20000)
@@ -121,6 +128,9 @@ class TailorRequest(BaseModel):
     hiring_manager: str = Field(default="", max_length=120)
     spelling: Literal["us", "eu"] = "us"  # the US style / EU style (British spelling) buttons
     job_link: str = Field(default="", max_length=2 * 2000)  # the job post's address (checked_job_link); optional here
+    # The admin's tick boxes (for now): the saved links the resume and its letter print, the others are left off
+    # (chosen_links). None, and anything another account sends: every saved link, as before.
+    links: list[Literal["linkedin", "github", "website"]] | None = Field(default=None, max_length=len(LINK_KINDS))
 
 
 class EditRequest(BaseModel):
@@ -169,6 +179,21 @@ class EducationList(BaseModel):
     # it changed since (another tab saved it), nothing is saved, so a stale tab never undoes another tab's save
     entries: list[EducationEntry] = Field(max_length=MAX_EDUCATION)
     loaded: list[Education] = Field(max_length=MAX_EDUCATION)
+
+
+class SavedLinks(BaseModel):
+    linkedin: str = ""
+    github: str = ""
+    website: str = ""
+
+
+class LinkList(BaseModel):
+    # each link as typed in the Profile page's Links box ("" clears it; checked_link), and all three as the page loaded
+    # them: if any changed since (another tab saved them), nothing is saved, so a stale tab never undoes another's save
+    linkedin: str = Field("", max_length=2 * MAX_LINK_CHARS)
+    github: str = Field("", max_length=2 * MAX_LINK_CHARS)
+    website: str = Field("", max_length=2 * MAX_LINK_CHARS)
+    loaded: SavedLinks
 
 
 class StaleList(Exception):
@@ -328,6 +353,44 @@ def checked_job_link(text: str) -> str:
     return parts.scheme + link[len(parts.scheme):]
 
 
+LINK_RULES = {  # what the Links box says of a value that is no address of its site
+    "linkedin": "The LinkedIn box needs your LinkedIn address, like linkedin.com/in/your-name.",
+    "github": "The GitHub box needs your GitHub address, like github.com/your-name.",
+    "website": "The Website box needs the address of your own site, like your-name.dev.",
+}
+OTHER_SITE = ("The Website box is for another site of yours, like a portfolio: put your {name} address in the {name} "
+              "box.")
+
+
+def checked_link(kind: str, text: str) -> str:
+    """A link typed in the Profile page's Links box ('linkedin', 'github' or 'website'), as it is kept: trimmed, as
+    typed; "" when empty. Refused in plain words (PlainError 422): anything longer than MAX_LINK_CHARS, anything the
+    files could not link (pdf.web_link: another scheme such as javascript:, spaces, quotes, angle brackets, no host name
+    with a dot), and an address on another box's site. LinkedIn's is a page on linkedin.com (with or without www. or a
+    country: 'uk.linkedin.com/in/taylorquinn'), GitHub's a page on github.com or gitlab.com ('github.com/taylorquinn'),
+    and the website any other site ('taylorquinn.dev', 'taylorquinn.github.io')."""
+    value = text.strip()
+    if not value:
+        return ""
+    name = LINK_NAMES[kind]
+    if len(value) > MAX_LINK_CHARS:
+        raise PlainError(422, f"The {name} box has {len(value):,} characters: a link can have up to {MAX_LINK_CHARS}.")
+    target = web_link(value)
+    parts = urlsplit(target) if target else None
+    host = (parts.hostname or "").removeprefix("www.") if parts else ""
+    page = bool(parts and parts.path.strip("/"))  # a page of the site, not its home page ('github.com/' is none)
+    on_linkedin = host == "linkedin.com" or host.endswith(".linkedin.com")
+    on_code_site = host in ("github.com", "gitlab.com")
+    if kind == "website" and on_linkedin:
+        raise PlainError(422, OTHER_SITE.format(name="LinkedIn"))
+    if kind == "website" and on_code_site:
+        raise PlainError(422, OTHER_SITE.format(name="GitHub"))
+    wanted = {"linkedin": on_linkedin and page, "github": on_code_site and page, "website": bool(target)}[kind]
+    if not wanted:
+        raise PlainError(422, LINK_RULES[kind])
+    return value
+
+
 def profile_problem(profile: Profile) -> str | None:
     """Why a profile cannot be used for tailoring, or None."""
     if not profile.name.strip():
@@ -472,6 +535,37 @@ def carry_education(profile: Profile, earlier: list[Profile]) -> list[str]:
             if (edu.location, edu.degree, edu.field) != before:
                 kept.append(edu.school)
     return list(dict.fromkeys(kept))
+
+
+KEPT_LINKS = "Links kept from your earlier upload: "  # an upload note (the Links box is the admin's only, for now)
+
+
+def carry_links(profile: Profile, earlier: list[Profile]) -> list[str]:
+    """A resume uploaded again keeps the links typed in the Profile page's Links box: a LinkedIn, GitHub or website
+    address the new file leaves out comes from the newest earlier upload of the same person (the same name), so a link
+    cleared there stays cleared, and another person's resume never gets one. What the new file says wins. Returns the
+    links given ('GitHub', 'Website')."""
+    person = _same_name(profile.name)
+    source = next((old for old in earlier if _same_name(old.name) == person), None)  # newest first
+    if source is None:
+        return []
+    kept: list[str] = []
+    for kind in LINK_KINDS:
+        if not getattr(profile.contact, kind).strip() and getattr(source.contact, kind).strip():
+            setattr(profile.contact, kind, getattr(source.contact, kind))
+            kept.append(LINK_NAMES[kind])
+    return kept
+
+
+def chosen_links(profile: Profile, links: list[str]) -> Profile:
+    """A copy of the profile whose contact keeps only these links ('github'), the Tailor page's ticks: the others are
+    blank, so the page plan, the resume, its letter and their files (PDF and Word) leave them off. The saved resume is
+    never changed."""
+    chosen = profile.model_copy(deep=True)
+    for kind in LINK_KINDS:
+        if kind not in links:
+            setattr(chosen.contact, kind, "")
+    return chosen
 
 
 def resume_entry(entry: dict, registry: Registry, admin: bool) -> dict:
@@ -1231,8 +1325,11 @@ def create_app(db: Database | None = None, registry: Registry | None = None, rou
         kept = carry_project_notes(profile, earlier)
         profile.education = profile.education[:MAX_EDUCATION]  # as many as the Education box saves
         carry_education(profile, earlier)
+        links = carry_links(profile, earlier) if user.is_admin else []  # the Links box is the admin's only, for now
         if kept:
             notes.append(KEPT_NOTES + ", ".join(kept) + ".")
+        if links:
+            notes.append(KEPT_LINKS + ", ".join(links) + ".")
         profile_id = db.save_profile(profile, user_id=user.id, filename=filename, method=method, notes=notes)
         db.purge(db.get_settings()["retention_days"])
         entry = db.profile_entry(profile_id, user_id=user.id)
@@ -1325,6 +1422,31 @@ def create_app(db: Database | None = None, registry: Registry | None = None, rou
         assert entry is not None
         return {"resume": resume_entry(entry, registry, user.is_admin)}
 
+    @app.put("/api/resumes/{profile_id}/links")
+    def api_resume_links(profile_id: int, body: LinkList, user: Annotated[auth.User, Depends(admin_user)]):
+        """The Profile page's Links box, the admin's only for now (other accounts get 403): LinkedIn, GitHub and the
+        website, typed, changed or cleared. Each is empty or an address of its site that the files can link
+        (checked_link), kept trimmed as typed. Every new resume and cover letter prints them, and the Tailor page's
+        tick boxes choose which."""
+        links = {kind: checked_link(kind, getattr(body, kind)) for kind in LINK_KINDS}
+
+        def replace(profile: Profile) -> None:
+            if {kind: getattr(profile.contact, kind) for kind in LINK_KINDS} != body.loaded.model_dump():
+                raise StaleList
+            for kind, value in links.items():
+                setattr(profile.contact, kind, value)
+
+        try:
+            changed = db.change_profile(profile_id, user_id=user.id, change=replace)
+        except StaleList:
+            raise PlainError(409, "The links of this resume were changed in another tab. Reload this page and save "
+                                  "again.") from None
+        if changed is None:
+            raise HTTPException(404, "Resume not found.")
+        entry = db.profile_entry(profile_id, user_id=user.id)
+        assert entry is not None
+        return {"resume": resume_entry(entry, registry, user.is_admin)}
+
     @app.delete("/api/resumes/{profile_id}")
     def api_delete_resume(profile_id: int, user: auth.User = Depends(current_user)):
         if not db.delete_profile(profile_id, user_id=user.id):
@@ -1370,6 +1492,8 @@ def create_app(db: Database | None = None, registry: Registry | None = None, rou
             if not found:
                 raise HTTPException(400, "Upload a resume first (Profile page).")
             profile_id, profile = found
+        if body.links is not None and user.is_admin:  # the admin's tick boxes, for now: the rest are left off
+            profile = chosen_links(profile, body.links)
         with router.keep_settings():  # one reading of the Settings, for these checks and the run they start
             compare = body.compare and user.is_admin  # users never pick a model: the admin's Settings decide
             model_id = (body.model if user.is_admin else None) or router.default_model("resume")

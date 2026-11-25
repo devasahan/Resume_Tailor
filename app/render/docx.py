@@ -2,8 +2,8 @@
 sizes, colours, gaps and order, from the same helpers. Plain paragraphs, tab stops and the built-in bullet style: no
 tables or text boxes. Word paginates the resume itself; keep-with-next and keep-together ask it to break pages the way
 the PDF does. SemiBold and Bold text is bold here, Medium text regular: Word knows bold or not. The contact line's
-email, LinkedIn and website are real hyperlinks, in the line's gray (no blue underline), as they are links on the
-PDF."""
+email, LinkedIn, GitHub and website are real hyperlinks, in the line's gray (no blue underline), as they are links on
+the PDF."""
 from __future__ import annotations
 
 import math
@@ -192,7 +192,7 @@ def _bottom_border(paragraph, space: float) -> None:
 
 def _header(doc, name: str, headline: str, contact: Contact, body: float, width: float):
     """The name, the title line and the contact line, centred, as on the PDF (draw_header); returns the last of them.
-    The contact line's email, LinkedIn and website are hyperlinks, in the line's own look (contact_runs)."""
+    The contact line's email, LinkedIn, GitHub and website are hyperlinks, in the line's own look (contact_runs)."""
     def centred(lines: list[list[Run]], size: float, line: float, before: float):
         """One paragraph of these lines, each after a line break."""
         paragraph = doc.add_paragraph()

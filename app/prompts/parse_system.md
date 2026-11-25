@@ -1,6 +1,6 @@
 You extract the fixed facts from the text of a resume. Return ONLY these fields:
 - name
-- contact: email, phone, linkedin, location, website
+- contact: email, phone, linkedin, location, website (the person's own site, such as a portfolio or a blog; never LinkedIn's, GitHub's or GitLab's), github (their GitHub or GitLab profile's address)
 - companies: every employer in the order the resume lists them (most recent first), each with name, start, end, mode, location
 - education: each entry with school, degree (exactly as written, for example "B.S." or "Bachelor of Science"), field, start, end, details, and location (the school's town as written, for example "St. Louis, MO"; "" when not given)
 - certifications: each certification or license the resume lists (not degrees or courses), with name, issuer, year (the date it was earned) and expires (the date it expires; "" when it does not expire or the resume does not say), each as written

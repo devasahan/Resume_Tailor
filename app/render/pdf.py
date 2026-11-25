@@ -2,8 +2,8 @@
 
 Pure Python: no system libraries (no Pango/Cairo/GTK), so the file is the same on Windows, macOS and Linux. One bundled
 font family (Inter, in four weights), single column, real text, no tables, images or icons: the layout ATS parsers read
-best. The contact line's email, LinkedIn and website are clickable: invisible link annotations over their text, so the
-page is drawn exactly as without them.
+best. The contact line's email, LinkedIn, GitHub and website are clickable: invisible link annotations over their text,
+so the page is drawn exactly as without them.
 
 The look is the owner's design "standard" (a US Letter page drawn at 816 x 1056 CSS px): a centred header, small spaced
 capitals in navy for the section headings with a thin gray rule beside them, the job title first on each job line,
@@ -178,12 +178,13 @@ def email_link(email: str) -> str:
 
 
 def web_link(url: str) -> str:
-    """The address a LinkedIn or website value opens: the value as written, its scheme in small letters when it starts
-    with http:// or https:// (a site may have no https), else with 'https://' before it. Never the shorter form
+    """The address a LinkedIn, GitHub or website value opens: the value as written, its scheme in small letters when it
+    starts with http:// or https:// (a site may have no https), else with 'https://' before it. Never the shorter form
     printed (display_url): 'www.' and a last '/' stay, as a site may answer only on www. The address holds ASCII only
     (_ascii). "" for anything that is no web address a browser can open, which stays plain text: a value with a
     space, quotes or angle brackets, another scheme (javascript:, data:, file:, mailto:) or no host name with a dot,
-    'www.' not counted ('N/A', 'www.localhost')."""
+    'www.' not counted ('N/A', 'www.localhost'). The Profile page's Links box saves only a value this links
+    (app/main.py checked_link)."""
     value = url.strip()
     if not _linkable(value):
         return ""
@@ -204,17 +205,18 @@ def web_link(url: str) -> str:
 
 def contact_items(contact: Contact) -> list[tuple[str, str]]:
     """The contact line's items in the usual resume order (contact_parts), each with the address it links to: the
-    email, LinkedIn and the website link when their value is safe to (email_link, web_link); the place and the phone
-    never do ("")."""
+    email, LinkedIn, GitHub and the website link when their value is safe to (email_link, web_link); the place and the
+    phone never do ("")."""
     items = [(contact.location, ""), (contact.phone, ""), (contact.email, email_link(contact.email)),
              (display_url(contact.linkedin), web_link(contact.linkedin)),
+             (display_url(contact.github), web_link(contact.github)),
              (display_url(contact.website), web_link(contact.website))]
     return [(text.strip(), link) for text, link in items if text and text.strip()]
 
 
 def contact_parts(contact: Contact) -> list[str]:
-    """The usual resume order, whatever order the base resume used: City, State, Phone, Email, LinkedIn,
-    Portfolio/GitHub. Missing parts are left out."""
+    """The usual resume order, whatever order the base resume used: City, State, Phone, Email, LinkedIn, GitHub,
+    Portfolio. Missing parts are left out."""
     return [text for text, _link in contact_items(contact)]
 
 
@@ -746,8 +748,8 @@ def contact_lines(contact: Contact, size: float, width: float) -> list[str]:
 
 def contact_runs(contact: Contact, size: float, width: float) -> list[list[Run]]:
     """The contact lines (contact_lines) as runs in the muted colour, as the PDF and the Word file draw them: an item
-    with a link (the email, LinkedIn, the website: contact_items) is a run of its own that carries its address, and
-    the text between two such items one run."""
+    with a link (the email, LinkedIn, GitHub, the website: contact_items) is a run of its own that carries its address,
+    and the text between two such items one run."""
     lines: list[list[Run]] = []
     for row in _contact_rows(contact, size, width):
         runs: list[Run] = []
@@ -770,7 +772,7 @@ def contact_runs(contact: Contact, size: float, width: float) -> list[list[Run]]
 def draw_header(sheet: Sheet, name: str, headline: str, contact: Contact, body: float) -> None:
     """The name, the title line and the contact line, centred, in sizes taken from `body`. The resume draws it at its
     own size step; the cover letter at the resume's first step, so the two look like one set. The contact line's
-    email, LinkedIn and website are clickable (contact_runs): links over their text, which look as they did."""
+    email, LinkedIn, GitHub and website are clickable (contact_runs): links over their text, which look as they did."""
     name_size = fit_size(name, BOLD, NAME_SIZE * body, sheet.width, tracking=NAME_TRACKING)
     sheet.para([Run(name, weight=BOLD, color=INK, tracking=NAME_TRACKING)], size=name_size, align="C",
                line=NAME_LINE)

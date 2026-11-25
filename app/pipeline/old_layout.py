@@ -217,9 +217,10 @@ def display_url(url: str) -> str:
 
 
 def contact_line(contact: Contact) -> str:
-    """The old contact line: City, State | Phone | Email | LinkedIn | Portfolio, leaving out what is missing."""
+    """The old contact line: City, State | Phone | Email | LinkedIn | GitHub | Portfolio, leaving out what is missing.
+    Runs saved before GitHub had a field kept it as the website, and print the same text this way (it was last)."""
     parts = [contact.location, contact.phone, contact.email, display_url(contact.linkedin),
-             display_url(contact.website)]
+             display_url(contact.github), display_url(contact.website)]
     return " | ".join(part.strip() for part in parts if part and part.strip())
 
 

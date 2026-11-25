@@ -381,6 +381,10 @@ def test_contact_line_uses_the_usual_resume_order_whatever_the_input_order():
                       email="jordan@example.com", phone="(555) 010-2030", location="Austin, TX")
     assert contact_line(contact) == (
         "Austin, TX · (555) 010-2030 · jordan@example.com · linkedin.com/in/jrivera · github.com/jrivera")
+    contact = Contact(website="https://www.taylorquinn.dev/", github="gitlab.com/tquinn", email="taylor@example.com",
+                      linkedin="linkedin.com/in/taylorquinn", phone="(555) 010-4477", location="Austin, TX")
+    assert contact_line(contact) == ("Austin, TX · (555) 010-4477 · taylor@example.com · linkedin.com/in/taylorquinn"
+                                     " · gitlab.com/tquinn · taylorquinn.dev")  # GitHub, then the website
     assert contact_line(Contact(email="jordan@example.com", location="Austin, TX", phone="  ")) == (
         "Austin, TX · jordan@example.com")  # missing parts are left out
 

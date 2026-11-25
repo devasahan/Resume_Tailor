@@ -25,6 +25,11 @@
       <label class="company-label" for="job-link"><strong>Job link</strong> <span class="req">required</span> <span class="small muted">the address of the job post's page</span></label>
       <input id="job-link" type="text" inputmode="url" required aria-required="true" autocomplete="off" autocapitalize="off" spellcheck="false" placeholder="https://... (copy it from the job post's address bar)">
       <p class="small muted company-note" id="job-link-note" aria-live="polite"></p>
+      <fieldset class="links hidden" id="links">
+        <legend><strong>Your links</strong>
+          <span class="small muted">only ticked ones are printed on this resume and its cover letter</span></legend>
+        <div class="link-rows" id="link-rows"></div>
+      </fieldset>
     </section>
 
     <section class="panel">
@@ -85,7 +90,7 @@
 {% endblock %}
 {% block scripts %}
 <script>
-let resumes = [], current = null;  // current = { run, jd, profileId, spelling, company }
+let resumes = [], current = null;  // current = { run, jd, profileId, spelling, company, links }
 let working = false, letterComing = false, ticking = null;
 let timed = null;  // { runId, pageMs }: the run this page just tailored, and how long the page waited for it
 const NO_LETTER = 'Your resume is ready. The cover letter could not be written this time; press Add cover letter to try again.';
@@ -101,7 +106,7 @@ function chosenId() { return Number($('#resume').value) || null; }
 function busy(on, text = '') {
   working = on;
   for (const button of [$('#create'), $('#resume-only'), $('#add-cover'), $('#rewrite-cover'), $('#spell-us'),
-    $('#spell-eu'), ...$$('#cert-rows input')]) {
+    $('#spell-eu'), ...$$('#cert-rows input'), ...$$('#link-rows input')]) {
     if (button) button.disabled = on || !resumes.length;
   }
   if ($('#status').textContent !== text) $('#status').textContent = text;  // a live region: only real changes are read out
@@ -143,6 +148,52 @@ function resumeNote() {
     el('a', { href: '/profile', text: 'Manage resumes' }));
 }
 
+// The admin's tick boxes (for now): one for each link the chosen resume has saved (Profile page), as the files print
+// it. Only ticked links are printed on the resume and its cover letter; the choice goes with the request (chosenLinks),
+// so to change it after tailoring, tailor again. The boxes remember the last choice in this browser, per account: a
+// link unticked stays unticked for its address, so a link newly saved starts ticked, as every link does the first time.
+const LINKS = [['linkedin', 'LinkedIn'], ['github', 'GitHub'], ['website', 'Website']];
+const MAX_UNTICKED = 30;  // addresses remembered as unticked, the newest first
+// The address as the files print it (app/render/pdf.py display_url): 'linkedin.com/in/taylorquinn'
+const shownLink = value => value.trim().replace(/^https?:\/\//i, '').replace(/^www\./i, '').replace(/\/+$/, '');
+const linkKey = (kind, value) => `${kind} ${shownLink(value).toLowerCase()}`;
+function untickedLinks() {
+  try {
+    const keys = JSON.parse(recallValue('untickedLinks') || '[]');
+    return Array.isArray(keys) ? keys.filter(key => typeof key === 'string') : [];
+  } catch (err) { return []; }
+}
+function showLinks() {
+  const r = ME.admin ? resumes.find(x => x.id === chosenId()) : null;
+  const contact = (r && r.profile.contact) || {};
+  const off = new Set(untickedLinks());
+  const rows = LINKS.filter(([kind]) => (contact[kind] || '').trim()).map(([kind, name]) => {
+    const key = linkKey(kind, contact[kind]);
+    const box = el('input', { type: 'checkbox', id: `link-${kind}`, 'data-link': kind, 'data-key': key,
+      checked: !off.has(key), disabled: working });
+    box.addEventListener('change', rememberLinks);
+    const named = el('span', { class: 'link-kind', text: name });
+    const shown = el('span', { class: 'link-value', text: shownLink(contact[kind]) });
+    return el('label', { class: 'link-choice', for: `link-${kind}` }, box, named, shown);
+  });
+  $('#links').classList.toggle('hidden', !rows.length);
+  $('#link-rows').replaceChildren(...rows);
+}
+function rememberLinks() {  // the boxes unticked now, then the others remembered before (another resume's)
+  const boxes = $$('#link-rows input');
+  const shown = new Set(boxes.map(box => box.dataset.key));
+  const off = boxes.filter(box => !box.checked).map(box => box.dataset.key);
+  rememberValue('untickedLinks', JSON.stringify([...off, ...untickedLinks().filter(key => !shown.has(key))]
+    .slice(0, MAX_UNTICKED)));
+}
+// The links the next resume prints, as the request names them ('linkedin', 'github', 'website'): the ticked ones, or
+// null when there are no boxes (another account, or a resume with no saved link): then every saved link is printed
+function chosenLinks() {
+  const boxes = $$('#link-rows input');
+  return boxes.length ? boxes.filter(box => box.checked).map(box => box.dataset.link) : null;
+}
+const sameLinks = (a, b) => JSON.stringify(a ?? null) === JSON.stringify(b ?? null);
+
 function download(href, text) {
   return el('a', { class: 'btn primary', href }, el('span', { class: 'icon i-download', 'aria-hidden': 'true' }), text);
 }
@@ -169,11 +220,12 @@ function showResult(run, view = 'resume') {
 }
 
 // The page's address names the run on screen ('/tailor?run=7'), and its history entry keeps the preview shown and
-// what the run was made from, so the result comes back as it was after a reload or Back (restoreShown). Chrome opens a
-// web link clicked in the preview (LinkedIn, the website) in this tab, and the page then loads afresh.
+// what the run was made from (the job, the base resume, the style, the company and the links ticked), so the result
+// comes back as it was after a reload or Back (restoreShown). Chrome opens a web link clicked in the preview
+// (LinkedIn, GitHub, the website) in this tab, and the page then loads afresh.
 function keepShown(view) {
-  const { run, jd, profileId, spelling: style, company } = current;
-  history.replaceState({ run: run.run_id, view, jd, profileId, spelling: style, company }, '',
+  const { run, jd, profileId, spelling: style, company, links } = current;
+  history.replaceState({ run: run.run_id, view, jd, profileId, spelling: style, company, links }, '',
     `/tailor?run=${run.run_id}`);
 }
 
@@ -191,7 +243,8 @@ async function restoreShown() {
   if (!run || run.status !== 'ok') { history.replaceState(null, '', '/tailor'); return; }
   const kept = history.state && history.state.run === id ? history.state : {};
   chooseSpelling(run.spelling === 'eu' ? 'eu' : 'us');
-  current = { run, jd: kept.jd ?? null, profileId: kept.profileId ?? null, spelling, company: kept.company ?? null };
+  current = { run, jd: kept.jd ?? null, profileId: kept.profileId ?? null, spelling, company: kept.company ?? null,
+    links: kept.links ?? null };
   showResult(run, kept.view === 'resume' ? 'resume' : 'cover');
 }
 
@@ -293,9 +346,10 @@ function clearResult() {  // no usable result: do not leave the previous one's d
 
 // A new resume, with its cover letter written in the same job when `withLetter` (one wait, one run).
 async function tailorNow(jd, withLetter, company, link) {
-  const profileId = chosenId();
+  const profileId = chosenId(), links = chosenLinks();
   const began = Date.now();
-  const body = { jd, profile_id: profileId, spelling, company_name: company, job_link: link, ...(withLetter ? { cover_letter: true } : {}) };
+  const body = { jd, profile_id: profileId, spelling, company_name: company, job_link: link,
+    ...(withLetter ? { cover_letter: true } : {}), ...(links ? { links } : {}) };
   let run;
   try {
     run = await finished(await api('/api/tailor', { method: 'POST', body }),
@@ -306,7 +360,7 @@ async function tailorNow(jd, withLetter, company, link) {
     throw new Error(run.error || 'Tailoring failed.');
   }
   timed = { runId: run.run_id, pageMs: Date.now() - began };
-  current = { run, jd, profileId, spelling, company };
+  current = { run, jd, profileId, spelling, company, links };
   $('#cert-note').replaceChildren();  // a note about the previous resume's ticks
   return run;
 }
@@ -327,7 +381,8 @@ async function create(withLetter, keepResume = false) {
   if (!link) return;
   let company = $('#company').value.trim();
   const reuse = keepResume && current && current.jd === jd && current.profileId === chosenId()
-    && current.spelling === spelling && current.company === company;  // a new style or company: made again
+    && current.spelling === spelling && current.company === company  // a new style or company: made again
+    && sameLinks(current.links, chosenLinks());  // other links ticked: made again too
   if (!reuse) {
     const found = await companyFor(jd);
     if (found.typed) {  // typed while the page looked for the name: the person checks the boxes first
@@ -571,7 +626,7 @@ $('#resume-only').addEventListener('click', () => create(false));
 $('#spell-us').addEventListener('click', () => chooseSpelling('us'));
 $('#spell-eu').addEventListener('click', () => chooseSpelling('eu'));
 $('#rewrite-cover').addEventListener('click', () => create(true, true));  // a new letter for the same resume
-$('#resume').addEventListener('change', () => { remember(chosenId()); resumeNote(); });
+$('#resume').addEventListener('change', () => { remember(chosenId()); resumeNote(); showLinks(); });
 $('#show-resume').addEventListener('click', () => preview('resume'));
 $('#show-cover').addEventListener('click', () => preview('cover'));
 
@@ -601,6 +656,7 @@ async function init() {
     text: `${x.profile.name} - ${x.filename || 'saved profile'} (${new Date(x.created_at).toLocaleDateString()})` })));
   if (pick) remember(pick.id);
   resumeNote();
+  showLinks();  // from the resumes just read: nothing more is asked
   busy(false);
   await restoreShown();
   if (ME.admin) await modelsNote();

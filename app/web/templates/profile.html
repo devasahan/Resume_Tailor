@@ -34,14 +34,15 @@ function when(iso) {
   return isNaN(date) ? iso : date.toLocaleString([], { dateStyle: 'medium', timeStyle: 'short' });
 }
 
-// The resume card's contact line: every contact detail that was read, the website (GitHub or portfolio) too
+// The resume card's contact line: every contact detail that was read, GitHub and the website (a portfolio) too
 function contactText(c) {
-  return [c.email, c.phone, c.linkedin, c.website, c.location].filter(Boolean).join(' | ');
+  return [c.email, c.phone, c.linkedin, c.github, c.website, c.location].filter(Boolean).join(' | ');
 }
 
 function resumeCard(r) {
   const p = r.profile, c = p.contact || {};
   const contact = contactText(c);
+  const line = el('div', { class: 'small', text: contact, hidden: !contact });  // the Links box changes it on Save
   const remove = async () => {
     if (!confirm(`Delete ${p.name} (${r.filename || 'saved profile'})? Resumes already tailored from it can still be downloaded.`)) return;
     try { await api(`/api/resumes/${r.id}`, { method: 'DELETE' }); await load(); }
@@ -55,7 +56,7 @@ function resumeCard(r) {
       el('div', { class: 'row' },
         el('a', { class: 'btn small primary', href: `/tailor?resume=${r.id}`, text: 'Tailor with this' }),
         el('button', { class: 'small danger', type: 'button', onclick: remove, text: 'Delete' }))),
-    contact ? el('div', { class: 'small', text: contact }) : null,
+    line,
     el('table', { class: 'jobs' }, el('tbody', {}, p.companies.map(job => el('tr', {},
       el('td', { text: job.name }),
       el('td', { class: 'muted', text: `${job.start || '?'} - ${job.end || 'Present'}` }),
@@ -63,10 +64,68 @@ function resumeCard(r) {
     p.education.length ? el('div', { class: 'small' }, el('strong', { text: 'Education: ' }),
       p.education.map(e => [degreeText(e), e.school, e.location, [e.start, e.end].filter(Boolean).join(' - ')]
         .filter(Boolean).join(' | ')).join('; ')) : null,
+    linksBox(r, line),
     projectsBox(r),
     educationBox(r),
     certificationsBox(r),
     r.warnings.length ? notice('warn', 'Check:', r.warnings) : null);
+}
+
+// The person's links as new resumes and cover letters print them, each a link (the admin's only, for now): LinkedIn,
+// GitHub and the website. What the upload read is filled in; each can be typed, changed or cleared. The Tailor page
+// has a tick box for each saved link, so a resume prints only the ones it needs.
+const LINK_FIELDS = [['linkedin', 'LinkedIn', 'linkedin.com/in/your-name'],
+  ['github', 'GitHub', 'github.com/your-name'], ['website', 'Website', 'your-name.dev']];
+const MAX_LINK_CHARS = 300;  // as app/main.py; checked on Save, so what a reader stored gets a plain message
+const linksOf = c => Object.fromEntries(LINK_FIELDS.map(([key]) => [key, (c && c[key]) || '']));
+function linksBox(r, line) {
+  if (!ME.admin) return null;
+  let loaded = linksOf(r.profile.contact);  // as shown: the save is refused if any changed since (another tab saved)
+  const inputs = Object.fromEntries(LINK_FIELDS.map(([key, name, example]) => {
+    const input = el('input', { type: 'text', inputmode: 'url', autocomplete: 'off', autocapitalize: 'off',
+      spellcheck: 'false', maxlength: MAX_LINK_CHARS, placeholder: example,
+      'aria-label': `${name}: ${r.profile.name}` });
+    input.value = input.dataset.saved = loaded[key];
+    return [key, input];
+  }));
+  const summary = el('summary');
+  const count = () => {
+    summary.textContent = `Links (${LINK_FIELDS.filter(([key]) => loaded[key]).length} of ${LINK_FIELDS.length})`;
+  };
+  count();
+  const status = el('span', { class: 'small muted' });
+  const save = el('button', { type: 'button', class: 'small primary', text: 'Save links' });
+  save.addEventListener('click', async () => {
+    const typed = Object.fromEntries(LINK_FIELDS.map(([key]) => [key, inputs[key].value.trim()]));
+    const long = LINK_FIELDS.filter(([key]) => typed[key].length > MAX_LINK_CHARS)
+      .map(([key, name]) => `the ${name} box has ${typed[key].length.toLocaleString('en-US')} characters`);
+    if (long.length) {
+      const which = long.join(' and ');
+      status.textContent = `${which[0].toUpperCase()}${which.slice(1)}, and a link can have up to ${MAX_LINK_CHARS}. `
+        + `Shorten ${long.length === 1 ? 'it' : 'them'}, then press Save links again.`;
+      return;
+    }
+    save.disabled = true;
+    status.textContent = 'Saving…';
+    try {
+      const data = await api(`/api/resumes/${r.id}/links`, { method: 'PUT', body: { ...typed, loaded } });
+      const saved = data.resume.profile.contact;
+      loaded = linksOf(saved);
+      LINK_FIELDS.forEach(([key]) => { inputs[key].value = inputs[key].dataset.saved = loaded[key]; });
+      count();
+      line.textContent = contactText(saved);
+      line.hidden = !line.textContent;
+      status.textContent = 'Saved. New resumes and cover letters print the ones you tick on the Tailor page.';
+    } catch (err) { status.textContent = err.message; }
+    finally { save.disabled = false; }
+  });
+  return el('details', { class: 'link-list', 'data-resume': r.id }, summary,
+    el('p', { class: 'small muted', text: 'Your LinkedIn, GitHub and website, as new resumes and cover letters print '
+      + 'them, each a link. What the upload read is filled in: type, change or clear any of them. LinkedIn takes a '
+      + 'linkedin.com address, GitHub a github.com or gitlab.com one, and Website any other site of yours.' }),
+    el('div', { class: 'link-fields' }, LINK_FIELDS.map(([key, name]) =>
+      el('label', {}, el('span', { text: name }), inputs[key]))),
+    el('div', { class: 'row' }, save, status));
 }
 
 // A certification's dates as printed: 'Mar 2023 - Mar 2026', 'Feb 2020', 'Expires Mar 2026'
@@ -255,7 +314,7 @@ function educationBox(r) {
 }
 
 async function load() {
-  const unsaved = {};  // text typed in a certifications or projects box but not saved yet survives a redraw
+  const unsaved = {};  // text typed in a box (certifications, projects, education, links) and not saved stays
   for (const box of $$('.cert-list')) {
     const area = $('textarea', box);
     if (area.value !== area.dataset.saved) unsaved[box.dataset.resume] = { value: area.value, open: box.open };
@@ -267,6 +326,10 @@ async function load() {
   for (const box of $$('.education-list')) {
     const typed = $$('input', box).map(input => (input.value !== input.dataset.saved ? input.value : null));
     if (typed.some(value => value !== null)) unsaved[`education ${box.dataset.resume}`] = { typed, open: box.open };
+  }
+  for (const box of $$('.link-list')) {
+    const typed = $$('input', box).map(input => (input.value !== input.dataset.saved ? input.value : null));
+    if (typed.some(value => value !== null)) unsaved[`links ${box.dataset.resume}`] = { typed, open: box.open };
   }
   resumes = (await api('/api/resumes')).resumes;
   $('#count').textContent = resumes.length ? `(${resumes.length})` : '';
@@ -288,6 +351,15 @@ async function load() {
     if (!kept) continue;
     const inputs = $$('input', box);
     if (inputs.length === kept.typed.length) kept.typed.forEach((value, i) => { if (value !== null) inputs[i].value = value; });
+    box.open = kept.open;
+  }
+  for (const box of $$('.link-list')) {
+    const kept = unsaved[`links ${box.dataset.resume}`];
+    if (!kept) continue;
+    const inputs = $$('input', box);
+    if (inputs.length === kept.typed.length) {
+      kept.typed.forEach((value, i) => { if (value !== null) inputs[i].value = value; });
+    }
     box.open = kept.open;
   }
 }
