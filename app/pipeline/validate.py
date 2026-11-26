@@ -2968,8 +2968,10 @@ def _without_level(role: str) -> str:
 def _role_core(title: str) -> str:
     """A title's short, common name: what follows a '|' or a spaced dash goes, and so do brackets, the part after a
     comma and the level ('Staff Data Engineer, Analytics Infrastructure' -> 'Data Engineer'). A bare role noun
-    takes its function from after the comma ('Manager, Customer Success' -> 'Customer Success Manager')."""
-    text = re.sub(r"\s*\([^)]*\)", "", _AFTER_ROLE.sub("", title or ""))
+    takes its function from after the comma ('Manager, Customer Success' -> 'Customer Success Manager'). The title is
+    read as clean_text writes the resume's own titles, so an en or em dash is a dash too ('Senior AI Developer –
+    Remote' -> 'AI Developer')."""
+    text = re.sub(r"\s*\([^)]*\)", "", _AFTER_ROLE.sub("", (title or "").translate(_PUNCT_MAP)))
     role, _comma, rest = text.partition(",")
     role, rest = _without_level(role), _without_level(rest)
     if len(role.split()) == 1 and rest:
@@ -3123,16 +3125,36 @@ _USUAL_OPENING = re.compile(
 _KEPT_NOUN = re.compile(rf"^\s*(?:{_LEVEL_WORD}\s+)*{_ENGINEER_FIELDS}\s+developer(?!\w){_NOT_COMPOUND}", re.IGNORECASE)
 # The person's own role later in the summary: after a word that makes it theirs and 'a' or 'an' ('as a', 'was a',
 # 'previously a', 'promoted to a'), and before punctuation, the end, a level or a word that goes on about the person
-# ('as a senior AI developer at Northwind'); never someone else's role or a product ('Mentored a data developer at
-# Bluefin', 'Built an AI developer with LangGraph'), nor 'an AI developer platform', nor 'as an AI developer and data
-# platform lead' ('and' may start another noun). 'to', 'into' and 'from' alone also bring in other people's roles and
-# products ('Handed the project to a data developer'), so only 'promoted to' counts
+# ('as a senior AI developer at Northwind'); not someone else's role or a product named without such a word
+# ('Mentored a data developer at Bluefin', 'Built an AI developer with LangGraph'), nor one whose cue word has a subject
+# of its own (_OTHER_SUBJECT: 'an intern who is now a data developer'), nor 'an AI developer platform', nor 'as an AI
+# developer and data platform lead' ('and' may start another noun). A cue word alone can still bring in another
+# person's role or a product ('Hired Priya, currently an ML developer', 'Deployed Copilot as an AI developer'). 'to',
+# 'into' and 'from' alone also bring in other people's roles and products ('Handed the project to a data developer'),
+# so only 'promoted to' counts
 _OWN_ROLE_CUE = (r"(?:as|is|was|been|being|become|becomes|became|becoming|now|currently|recently|previously|formerly"
                  r"|promoted\s+to)")
 _USUAL_MENTION = re.compile(
     rf"(?<![\w-])(?P<before>{_OWN_ROLE_CUE}\s+an?\s+(?:{_LEVEL_WORD}\s+)*{_ENGINEER_FIELDS}\s+){_UNUSUAL_NOUN}"
     rf"(?={_TITLE_LEVEL_AFTER}(?:\s*(?:[,.;:!?)]|$)|\s+(?:with|who|at|in|for|since|from|on|across|of|by)\b))",
     re.IGNORECASE)
+# A subject of its own right before the cue word, with only 'is', 'has', 'now' or a like word between, so the role
+# is someone else's or a product's: 'who' after a comma or after a person named with 'a', 'an' or 'the' ('Trained an
+# intern who is now a data developer', 'Coached Lee, who became a lead AI developer'), 'whom', 'whose' and a noun ('a
+# team whose lead is now an AI developer'), 'which' or 'that' ('Contoso, which is an AI developer'), or 'one' or 'each'
+# that starts a clause ('one of whom became a data developer', 'Hired 4 engineers; one is now a lead AI developer').
+# Before 'as' the subject needs 'works', 'acts' or 'serves' ('an agent that works as an AI developer'): '3 of which as
+# an AI developer' and 'one of them as a data developer' are the person's years. Words between the subject and the cue
+# make it the person's own work ('a career that began as a data developer'), and a 'who' after the first words of the
+# summary or of a sentence, or after 'as', is the person ('A builder who was a data developer', 'as a lead who was a
+# data developer')
+_OTHER_SUBJECT = re.compile(
+    r"(?:(?<=\s)(?<![.!?;]\s)(?<!\bas\s)(?:an?|the)\s+(?:[\w-]+\s+){0,2}?[\w-]+\s+who|,\s*who"
+    r"|(?<![\w-])(?:whom|whose\s+[\w-]+|which|that)"
+    r"|[,;:.!?]\s*(?:one|each)(?:\s+of\s+(?:whom|them|which|these|those))?)"
+    r"\s+(?:(?:is|are|was|were|has|have|had|been|now|currently|recently|later|then|since|also|still|soon|just"
+    r"|already|eventually|went\s+on\s+to)\s+)*(?:(?P<verb>works?|worked|acts?|acted|serves?|served|functions?"
+    r"|functioned|operates?|operated)\s+)?$", re.IGNORECASE)
 
 
 def _engineer(match: re.Match) -> str:
@@ -3140,6 +3162,16 @@ def _engineer(match: re.Match) -> str:
     -> 'ENGINEER')."""
     noun = match.group("noun")
     return match.group("before") + ("ENGINEER" if noun.isupper() else "Engineer" if noun[0].isupper() else "engineer")
+
+
+def _own_mention(match: re.Match) -> str:
+    """'Engineer' for a later mention of the person's own role (_USUAL_MENTION, _engineer), unless its cue word has a
+    subject of its own (_OTHER_SUBJECT). It reads at most 120 characters back, so a summary is read in linear time; the
+    summary's start reads as a sentence's ('A builder who was a data developer')."""
+    start = max(0, match.start() - 120)
+    found = _OTHER_SUBJECT.search(("" if start else ". ") + match.string[start:match.start()])
+    other = found is not None and (found.group("verb") or match.group("before").split(None, 1)[0].lower() != "as")
+    return match.group(0) if other else _engineer(match)
 
 
 def usual_title(role: str) -> str:
@@ -3156,18 +3188,22 @@ def _usual_nouns(resume: Resume) -> None:
     """A role of a field whose usual title says Engineer takes that noun (usual_title) in the job titles and the
     summary: a job title that is such a role ('Senior AI Developer' -> 'Senior AI Engineer', 'AI Developer, Platform' ->
     'AI Engineer, Platform'), a current title that is one as same_title shows it ('Senior Developer, AI' -> 'Senior AI
-    Engineer'), the summary's first words unless the current title keeps the noun ('A senior AI developer with ...' ->
-    'A senior AI engineer with ...', which same_title then makes the exact title) and the person's own role named later
-    in the summary ('as a senior AI developer at Northwind' -> 'as a senior AI engineer at Northwind'). A phrase that
-    names no role stays ('AI developer tools', 'an AI developer platform', 'AI Developer Advocate'), and so do someone
-    else's role ('Mentored a data developer'), the bullets and the skills. Changes the resume in place."""
+    Engineer', 'Lead, AI Developer' -> 'AI Engineer Lead'), the summary's first words unless the current title keeps
+    the noun ('A senior AI developer with ...' -> 'A senior AI engineer with ...', which same_title then makes the exact
+    title) and the person's own role named later in the summary ('as a senior AI developer at Northwind' -> 'as a
+    senior AI engineer at Northwind'). A phrase that names no role stays ('AI developer tools', 'an AI developer
+    platform', 'AI Developer Advocate'), and so do someone else's role ('Mentored a data developer', 'an intern who is
+    now a data developer'; one that only a cue word brings in still changes: _OWN_ROLE_CUE), the bullets and the
+    skills. Changes the resume in place."""
     for exp in resume.experience:
         exp.job_title = _USUAL_JOB_TITLE.sub(_engineer, exp.job_title, count=1)
     job = current_job(resume)
     if job is not None:  # the current title as same_title will show it: 'Senior Developer, AI' -> 'Senior AI Developer'
         written = job.job_title.strip()
         core = _title_core(written)
-        usual = usual_title(core)
+        # the job-title rule on that title, as the rewrite pass's draft reads it, so both drafts agree: 'Lead, AI
+        # Developer' -> 'AI Engineer Lead' (usual_title takes no trailing 'Lead', nor a part after '/', ':' or '·')
+        usual = _USUAL_JOB_TITLE.sub(_engineer, core, count=1)
         if usual != core:  # 'Senior AI Engineer' now, and so is a summary that opens with the title as written
             resume.summary = _written_opening(written, usual, resume.summary)
             job.job_title = usual
@@ -3175,7 +3211,7 @@ def _usual_nouns(resume: Resume) -> None:
     # summary's first words and that title read the same (same_title)
     if job is None or not _KEPT_NOUN.match(_title_core(job.job_title)):
         resume.summary = _USUAL_OPENING.sub(_engineer, resume.summary, count=1)
-    resume.summary = _USUAL_MENTION.sub(_engineer, resume.summary)
+    resume.summary = _USUAL_MENTION.sub(_own_mention, resume.summary)
 
 
 # A broad field is part of a common title, never a specialty: 'AI Platform Engineer', 'Data Platform Engineer' and
@@ -3198,6 +3234,8 @@ _DEVELOPER_USUAL = re.compile(
     r"|front[\s-]?end|back[\s-]?end|full[\s-]?stack|mobile|ios|android|embedded)(?![\w-])", re.IGNORECASE)
 # A title that ends on its Developer, and what comes before it ('Applied AI ' + 'Developer')
 _LAST_NOUN = re.compile(rf"(?P<before>.+\s){_UNUSUAL_NOUN}", re.IGNORECASE)
+# A draft's words that end on that noun, however they are joined ('Applied AI-' + 'Developer')
+_ENDS_ON_NOUN = re.compile(rf"(?P<before>.*){_UNUSUAL_NOUN}", re.IGNORECASE | re.DOTALL)
 # A field whose usual title says Engineer, anywhere in a text ('AI' in 'Applied AI')
 _ANY_ENGINEER_FIELD = re.compile(rf"(?<![\w-]){_ENGINEER_FIELD}", re.IGNORECASE)
 
@@ -3216,10 +3254,18 @@ def _role_words(title: str) -> list[str]:
     return [word for word in re.split(r"[\s/]+", title) if word and word.lower() not in ("and", "&")]
 
 
+# A role noun as a word of its own, as _role_words splits a title ('AI/ML Engineer'), never one that only starts a
+# longer noun ('AI Developer Advocate', 'Developer Relations Manager'), read as _NOT_COMPOUND reads the summary: an
+# 'and', '&' or '/' after the noun goes on with another role ('AI Developer and Evangelist')
+_ROLE_NOUN = re.compile(rf"(?<![^\s/])(?:engineer|developer|programmer)(?![^\s/]){_NOT_COMPOUND}", re.IGNORECASE)
+
+
 def _role_noun(title: str) -> str:
     """A title's last role noun, in lower case: 'developer' for 'AI Developer Intern', 'engineer' for 'AI/ML
-    Engineer', '' for 'Business Analyst'."""
-    return next((word.lower() for word in reversed(_role_words(title)) if word.lower() in _ROLE_NOUNS), "")
+    Engineer', '' for 'Business Analyst', and for 'AI Developer Advocate' or 'Developer Relations Manager', whose
+    'Developer' only starts a longer noun (_DEVELOPER_COMPOUNDS)."""
+    nouns = _ROLE_NOUN.findall(title)
+    return nouns[-1].lower() if nouns else ""
 
 
 def _extra_words(special: str, common: str) -> list[str]:
@@ -3232,23 +3278,38 @@ def _extra_words(special: str, common: str) -> list[str]:
     return [word for word in _role_words(special) if spelling.us_word(word) not in kept]
 
 
+# A title's parts: what a '|', a bracket, a middle dot, a bullet or a spaced dash sets apart ('Cloud Developer
+# (Salesforce Commerce Cloud) | Remote': 'Cloud Developer', 'Salesforce Commerce Cloud' and 'Remote'); a comma or a '/'
+# never ends a part ('Salesforce, Commerce Cloud' is one)
+_TITLE_PARTS = re.compile(r"[()\[\]|·•]|\s[-–—]\s")
+
+
+def _developer_products(text: str) -> set[str]:
+    """The products and fields where Developer is the usual noun (_DEVELOPER_USUAL) that a text names, never a broad
+    field: {'powerplatform'} for 'Power Platform Developer', none for 'Front End Developer' or 'Software Developer'."""
+    return {re.sub(r"[\s-]+", "", found.group(0)).lower() for found in _DEVELOPER_USUAL.finditer(text)} - _BROAD_FIELDS
+
+
 def _developer_kept(posting: str, special: str, general: str) -> bool:
-    """Whether the model's common title keeps Developer for a word that the posting's title has but its short title
-    (_role_core) leaves out: 'Salesforce Developer' for 'Platform Developer (Salesforce)', 'Platform Developer -
-    ServiceNow' or 'Platform Developer, Salesforce' is a Salesforce or ServiceNow developer's title, where Developer is
-    the usual noun; also for a product or field where Developer is the usual noun (_DEVELOPER_USUAL) that the posting's
-    title does not name ('Salesforce Platform Developer' for 'Platform Developer II', 'ETL Developer' for 'Data
-    Developer'). A broad field the model adds never counts ('Software Developer' for 'Senior AI Developer'), nor does
-    another word ('Python Developer' or 'AI Application Developer' for 'Senior AI Developer': 'AI Engineer')."""
+    """Whether the model's common title keeps Developer: it names a product or field where Developer is the usual noun
+    (_developer_products: 'Salesforce Developer' for 'Platform Developer (Salesforce)', 'Salesforce Platform Developer'
+    for 'Platform Developer II', 'ETL Developer' for 'Data Developer'), or its other words are in a part of the
+    posting's title that names one ('Commerce Cloud Developer' for 'Cloud Developer (Salesforce Commerce Cloud)', 'ITSM
+    Developer' for 'Platform Developer - ServiceNow ITSM'). A broad field the model adds never counts ('Software
+    Developer' for 'Senior AI Developer'), nor does another word, also when the posting's title names it in a part of
+    its own ('Python Developer' for 'Senior AI Developer', 'Senior AI Developer (Python)' or 'Senior AI Developer |
+    Python | SQL', and 'AI Application Developer' for 'Senior AI Developer': 'AI Engineer')."""
     if not re.search(r"(?:developer|programmer)$", general, re.IGNORECASE) or usual_title(general) != general:
         return False
     added = {spelling.us_word(word) for word in re.findall(r"\w+", " ".join(_extra_words(general, special)))}
     added -= _BROAD_FIELDS
     if not added:
         return False
-    # a product of the model's title, never a broad field ('Power Platform' counts, 'Front End' or 'Software' does not)
-    products = {re.sub(r"[\s-]+", "", found.group(0)).lower() for found in _DEVELOPER_USUAL.finditer(general)}
-    return added <= {spelling.us_word(word) for word in re.findall(r"\w+", posting)} or bool(products - _BROAD_FIELDS)
+    # the words of each part of the posting's title that names such a product ('Salesforce Commerce Cloud'), never a
+    # skill in a part of its own ('Python' in 'Senior AI Developer (Python)')
+    beside = {spelling.us_word(word) for part in _TITLE_PARTS.split(posting) if _developer_products(part)
+              for word in re.findall(r"\w+", part)}
+    return added <= beside or bool(_developer_products(general))
 
 
 def common_title(analysis: JDAnalysis | None) -> tuple[str, str]:
@@ -3258,19 +3319,21 @@ def common_title(analysis: JDAnalysis | None) -> tuple[str, str]:
     the noun set it apart from the model's ('AI Platform Engineer' stays, whatever the model offers instead). The
     model's common title (`general_role`) counts only when a niche specialty's words set the posting's apart ('Voice');
     otherwise the posting's own field wins, with the usual noun ('AI Platform Developer' -> 'AI Platform Engineer', also
-    when the model says 'AI Developer'), unless the model keeps Developer for a word the short title left out
-    (_developer_kept: 'Platform Developer (Salesforce)' stays). When only the noun or broad fields set the model's
+    when the model says 'AI Developer'), unless the model keeps Developer for a product where it is the usual noun
+    (_developer_kept: 'Platform Developer (Salesforce)' with 'Salesforce Developer' stays; 'Senior AI Developer
+    (Python)' with 'Python Developer' does not). When only the noun or broad fields set the model's
     Engineer title apart, Engineer goes on the posting's own words if they name a field whose usual title says Engineer
     and Developer is not their usual noun ('Applied AI Developer' with 'Applied AI Engineer' -> 'Applied AI Engineer';
     'AI Software Developer' stays). An empty `general_role` (an older run's), or one longer than four words, counts as
-    the posting's title."""
+    the posting's title, whatever that title's own length ('Machine Learning / AI Developer' -> 'Machine Learning / AI
+    Engineer')."""
     if analysis is None:
         return "", ""
     special = _role_core(analysis.target_role)
     general = _role_core(analysis.general_role)
     if not general or len(general.split()) > 4:  # an older run's, or an answer too long to be a title
         general = special
-    if not special or len(general.split()) > 4:
+    if not special:
         return "", ""
     niche = (spelling.us_text(special) != spelling.us_text(general)
              and not all(spelling.us_word(word) in _BROAD_FIELDS for word in _extra_words(special, general)))
@@ -3312,10 +3375,15 @@ def _article_for(word: str) -> str:
 def general_role_fixes(resume: Resume, analysis: JDAnalysis | None) -> None:
     """A special posting title is never copied: the headline is the most similar common title, and the summary and
     the job titles say it instead ('Voice AI Engineer' -> 'AI Engineer', 'a Senior Voice AI Engineer' -> 'a Senior AI
-    Engineer'), and so does a current title that names the specialty in another form (_common_current_title). The
-    specialty belongs in the bullets. A role of a field whose usual title says Engineer takes that noun in the job
-    titles and the summary (_usual_nouns: 'Senior AI Developer' -> 'Senior AI Engineer'), never in a phrase that names
-    no role ('AI developer tools'), and only for a post whose own noun became Engineer: a 'Voice AI Engineer' post
+    Engineer'), and so does a current title that names the specialty in another form (_common_current_title). When
+    only the noun sets the common title apart, only the draft's noun changes, in the draft's letter case whatever the
+    posting's ('Senior Applied AI Developer' -> 'Senior Applied AI Engineer' for a 'SENIOR APPLIED AI DEVELOPER'
+    post). The specialty belongs in the bullets. A role of a field whose usual title says Engineer takes that noun in
+    the job titles and the summary (_usual_nouns: 'Senior AI Developer' -> 'Senior AI Engineer'), never in a phrase
+    that names no role ('AI developer tools'), and only for a post whose own noun became Engineer or whose own title is
+    such a role, also with a part after it ('Senior AI Developer: LLM Apps'), whatever common title the model gives
+    unless it keeps Developer for a product (_developer_kept: 'Platform Developer: Salesforce' with 'Salesforce
+    Developer'): a 'Voice AI Engineer' post, or an 'AI Developer Advocate' one whose noun is Advocate (_role_noun),
     leaves an older 'Data Developer' as it is, as an 'AI Engineer' post does. Changes the resume in place."""
     special, common = common_title(analysis)
     if not special:
@@ -3327,8 +3395,15 @@ def general_role_fixes(resume: Resume, analysis: JDAnalysis | None) -> None:
         # 'Voice AI developer tools' names no role
         compound = _NOT_COMPOUND if special.split()[-1].lower() in ("developer", "programmer") else ""
         pattern = re.compile(rf"(?<![\w-])(?:(?P<article>an?)\s+)?{words}(?![\w-]){compound}", re.IGNORECASE)
+        # only the noun sets the common title apart ('Applied AI Developer' -> 'Applied AI Engineer', common_title):
+        # the draft's words keep their own letter case, never the posting's ('SENIOR APPLIED AI DEVELOPER')
+        noun = _LAST_NOUN.fullmatch(special)
+        noun_only = bool(noun) and spelling.us_text(_engineer(noun)) == spelling.us_text(common)
 
         def swap(match: re.Match) -> str:
+            own = _ENDS_ON_NOUN.fullmatch(match.group(0)) if noun_only else None
+            if own:  # 'Senior Applied AI Developer' -> 'Senior Applied AI Engineer' for any posting's letter case
+                return _engineer(own)
             article = match.group("article")
             if not article:
                 return common
@@ -3338,7 +3413,12 @@ def general_role_fixes(resume: Resume, analysis: JDAnalysis | None) -> None:
         resume.summary = pattern.sub(swap, resume.summary)
         for exp in resume.experience:
             exp.job_title = pattern.sub(swap, exp.job_title)
-    if _role_noun(special) in ("developer", "programmer") and _role_noun(common) == "engineer":
+    # the post's own role as a job title reads it, also before a part its short title keeps ('AI Developer: LLM Apps',
+    # 'AI Developer / Tech Lead', 'AI Developer Lead'), unless the model's common title keeps Developer for a product
+    # (_developer_kept: 'Platform Developer: Salesforce' with 'Salesforce Developer')
+    own = _USUAL_JOB_TITLE.match(special)
+    if ((_role_noun(special) in ("developer", "programmer") and _role_noun(common) == "engineer")
+            or (own and not _developer_kept(analysis.target_role, own.group(0), _role_core(analysis.general_role)))):
         _usual_nouns(resume)  # 'AI Developer Intern' -> 'AI Engineer Intern' too; never for a 'Voice AI Engineer' post
     _common_current_title(resume, analysis, common)
 
