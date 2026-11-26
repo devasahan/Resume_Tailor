@@ -15,6 +15,13 @@ from app.llm.fake_client import FakeClient
 from app.pipeline import languages, validate
 from app.pipeline.tailor import run_tailor
 from app.prompts import PROMPT_VERSION, tailor_system
+from app.schemas import (
+    ExperienceOut,
+    SkillGroup,
+    TailoredSections,
+    TailorOutput,
+    TailorRevision,
+)
 
 from .test_title_and_language import BIZDEV_POST, posting
 from .test_validate import make_output
@@ -126,6 +133,12 @@ def test_the_noun_keeps_the_letter_case_it_had():
      ""),
     ("Senior Applied AI Platform Developer", "Applied AI Engineer",
      ("Applied AI Platform Developer", "Applied AI Platform Engineer"), ""),
+    # a narrower Engineer title, or a Developer title of no product where Developer is usual, changes nothing
+    ("Senior AI Developer", "LLM Engineer", ("AI Developer", "AI Engineer"), ""),
+    ("Senior AI Developer", "Generative AI Engineer", ("AI Developer", "AI Engineer"), ""),
+    ("Senior AI Developer", "LLM Developer", ("AI Developer", "AI Engineer"), ""),
+    ("Senior AI Developer", "Python Developer", ("AI Developer", "AI Engineer"), ""),
+    ("Senior AI Developer", "AI Application Developer", ("AI Developer", "AI Engineer"), ""),
     # a niche specialty still goes, and the noun becomes the usual one
     ("Senior Voice AI Developer", "AI Developer", ("Voice AI Developer", "AI Engineer"), "Voice"),
     ("Senior Voice AI Developer", "AI Engineer", ("Voice AI Developer", "AI Engineer"), "Voice"),
@@ -164,6 +177,19 @@ def test_a_developer_post_of_an_engineer_field_has_the_usual_common_title(target
     ("Platform Developer - ServiceNow", "ServiceNow Developer"),
     ("Platform Developer, Salesforce", "Salesforce Developer"),
     ("Platform Developer II (Salesforce)", "Salesforce Platform Developer"),
+    ("Senior Platform Developer - Salesforce", "Salesforce Developer"),
+    ("Senior Cloud Developer (Salesforce Commerce Cloud)", "Commerce Cloud Developer"),
+    ("Data Developer (Power BI)", "BI Developer"),
+    # a product where Developer is the usual noun, which the model names though the post's title does not
+    ("Platform Developer II", "Salesforce Platform Developer"),
+    ("Senior Platform Developer", "Power Platform Developer"),
+    ("Senior Data Developer", "ETL Developer"),
+    # a field written apart is the same field: 'Front End' is 'Frontend', a field where Developer is usual
+    ("Senior Front End Developer", "Frontend Engineer"),
+    ("Senior Back End Developer", "Backend Engineer"),
+    ("Senior Front End Developer", "Frontend Developer"),
+    ("Senior Front End Developer", "Software Engineer"),
+    ("Senior Front End Engineer", "Frontend Developer"),
     # where Developer is the usual noun, the model's Engineer changes nothing
     ("AI Software Developer", "AI Software Engineer"),
     ("Full Stack AI Developer", "Full Stack AI Engineer"),
@@ -212,14 +238,38 @@ def test_a_senior_ai_developer_post_reads_senior_ai_engineer_in_the_three_places
     ("A senior AI developer with 9+ years of Python work.", "Senior AI Engineer with 9+ years of Python work."),
     ("AI Developer with 9+ years of Python work.", "Senior AI Engineer with 9+ years of Python work."),
     ("Senior AI developer, 9+ years into Python work.", "Senior AI Engineer, 9+ years into Python work."),
-    # later in the summary, a role the person held: after 'a' or 'an', before punctuation or a small word
+    ("Senior AI developer and data engineer with 9+ years of Python work.",  # 'and' starts another role
+     "Senior AI Engineer and data engineer with 9+ years of Python work."),
+    # later in the summary, a role the person held: after 'as', 'was', 'now' or a like word and 'a' or 'an', before
+    # punctuation or a small word
     ("Python work for 9+ years, the last 3 as an AI/ML developer at Northwind Labs.",
      "Python work for 9+ years, the last 3 as an AI/ML engineer at Northwind Labs."),
     ("Python work for 9+ years. Started as a data developer.", "Python work for 9+ years. Started as a data engineer."),
     ("Python work for 9+ years as a senior AI developer who ships weekly.",
      "Python work for 9+ years as a senior AI engineer who ships weekly."),
+    ("Python work for 9+ years; previously a data developer at Fabrikam.",
+     "Python work for 9+ years; previously a data engineer at Fabrikam."),
+    ("Python work for 9+ years; has been a data developer since 2017.",
+     "Python work for 9+ years; has been a data engineer since 2017."),
+    ("Python work for 9+ years, now a senior AI developer at Northwind Labs.",
+     "Python work for 9+ years, now a senior AI engineer at Northwind Labs."),
+    ("Python work for 9+ years. Promoted to a lead AI developer in 2023.",
+     "Python work for 9+ years. Promoted to a lead AI engineer in 2023."),
+    # someone else's role, or a product, stays
+    ("Mentored a data developer at Bluefin Commerce.", "Mentored a data developer at Bluefin Commerce."),
+    ("Mentored a data developer who joined in 2024.", "Mentored a data developer who joined in 2024."),
+    ("Hired an ML developer in 2024.", "Hired an ML developer in 2024."),
+    ("Hired an AI developer at Contoso.", "Hired an AI developer at Contoso."),
+    ("Paired with an AI developer at Contoso on the eval suite.",
+     "Paired with an AI developer at Contoso on the eval suite."),
+    ("Built an AI developer with LangGraph that reviews pull requests.",
+     "Built an AI developer with LangGraph that reviews pull requests."),
+    ("Shipped an AI developer for 40 teams.", "Shipped an AI developer for 40 teams."),
     # phrases that are not a title stay
     ("AI developer tools lead with 9+ years of Python work.", "AI developer tools lead with 9+ years of Python work."),
+    ("AI developer infrastructure lead for 9+ years.", "AI developer infrastructure lead for 9+ years."),
+    ("AI developer enablement lead for 9+ years.", "AI developer enablement lead for 9+ years."),
+    ("AI developer programme lead for 9+ years.", "AI developer programme lead for 9+ years."),  # a British draft
     ("AI Developer Advocate with 9+ years of Python work.", "AI Developer Advocate with 9+ years of Python work."),
     ("AI developer experience work for 9+ years.", "AI developer experience work for 9+ years."),
     ("Built an AI developer platform for 40 teams.", "Built an AI developer platform for 40 teams."),
@@ -247,6 +297,7 @@ def test_the_summary_takes_the_usual_noun_only_where_it_names_a_role(profile, su
     ("AI Developer and Team Lead", "AI Engineer and Team Lead"),
     ("AI Developer: LLM Apps", "AI Engineer: LLM Apps"),
     ("AI Developer [Contract]", "AI Engineer [Contract]"),
+    ("AI Developer · LLM", "AI Engineer · LLM"),
     ("AI Developer Lead", "AI Engineer Lead"),
     ("AI Developer Apprentice", "AI Engineer Apprentice"),
     ("AI Developer/Engineer", "AI Developer/Engineer"),  # never 'AI Engineer/Engineer'
@@ -282,6 +333,15 @@ def test_a_niche_developer_post_takes_the_common_title_and_the_usual_noun(profil
     assert notes == [] and validate.specialty_problems(resume, analysis) == ["summary"]
 
 
+@pytest.mark.parametrize("spelled", ["program", "programme"])
+def test_a_developer_programme_is_no_role_in_either_spelling(profile, spelled):
+    """The title steps run before the spelling step, so a British draft's 'programme' is what they read."""
+    summary = f"Senior AI Engineer with 9+ years. Ran a Voice AI developer {spelled} for 40 partners."
+    resume, notes = drafted(profile, posting("Senior Voice AI Developer", "AI Engineer"), summary,
+                            ["Senior AI Engineer", "AI Engineer", "Software Engineer"], headline="Senior AI Engineer")
+    assert resume.summary == summary and notes == []
+
+
 def test_a_niche_developer_titles_variant_takes_the_common_title_too(profile):
     analysis = posting("Senior Voice AI Developer", "AI Developer")
     resume, notes = drafted(profile, analysis, ("Senior Voice and Conversational AI Developer with 6+ years of speech "
@@ -313,6 +373,58 @@ def test_a_current_title_with_a_second_part_takes_the_usual_noun_under_the_name(
                             [current, "AI Developer", "Software Developer"], headline="Senior AI Developer")
     assert resume.headline == resume.experience[0].job_title == expected
     assert resume.summary == "Senior AI Engineer with 9+ years." and notes == []
+
+
+def built_twice(profile, analysis, current, opening):
+    """build()'s title steps on a draft whose current job is `current` and whose summary opens with `opening`, then
+    again on the rewrite pass's draft of that resume (apply_revision with no change)."""
+    out = TailorOutput(jd_analysis=analysis, sections=TailoredSections(
+        headline=current, summary=opening + " with 9+ years of Python work at Northwind Labs.",
+        skills=[SkillGroup(category="Core", skills=["Python"])],
+        experience=[ExperienceOut(company_index=i, job_title=title, bullets=["Built the Python service."])
+                    for i, title in enumerate([current, "AI Developer", "Software Developer"])]))
+
+    def steps(draft):
+        resume = validate.build_resume(profile, draft)
+        validate.short_role_headline(resume)  # build()'s order
+        validate.general_role_fixes(resume, analysis)
+        validate.fix_title_regressions(resume)
+        validate.role_level_fixes(resume, analysis)
+        validate.same_title(resume)
+        return resume
+
+    first = steps(out)
+    return first, steps(validate.apply_revision(out, first, TailorRevision()))
+
+
+@pytest.mark.parametrize("current", [
+    "Senior AI Developer Lead", "Senior AI Developer / Tech Lead", "Senior AI Developer and Team Lead",
+    "Senior AI Developer · LLM",
+    # keeps Developer as its title does
+    "Senior AI Developer Consultant", "Senior AI Developer-LLM Apps",
+])
+def test_a_current_title_with_more_after_the_role_keeps_one_title_in_the_three_places(profile, current):
+    first, again = built_twice(profile, posting("Senior AI Developer", "AI Developer"), current, current)
+    for resume in (first, again):
+        assert resume.headline == resume.experience[0].job_title
+        assert resume.summary.startswith(resume.headline + " with ")
+
+
+@pytest.mark.parametrize("post,general,current,opening,title", [
+    ("Senior Developer, AI Platform", "AI Platform Developer", "Senior Developer, AI Platform",
+     "Senior AI Platform Developer", "Senior AI Platform Engineer"),
+    ("Senior Developer, AI Platform", "AI Platform Developer", "Senior Developer, AI Platform",
+     "Senior Developer, AI Platform", "Senior AI Platform Engineer"),  # the summary opens with the title as written
+    ("Senior AI Developer", "AI Developer", "Senior Developer, AI", "Senior Developer, AI", "Senior AI Engineer"),
+    ("Machine Learning Developer II", "Machine Learning Developer", "Developer II, Machine Learning",
+     "Developer II, Machine Learning", "Machine Learning Engineer II"),
+])
+def test_a_comma_current_title_takes_the_usual_noun_in_the_three_places_on_the_first_draft(profile, post, general,
+                                                                                          current, opening, title):
+    first, again = built_twice(profile, posting(post, general), current, opening)
+    assert first.headline == first.experience[0].job_title == title
+    assert first.summary.startswith(title + " with ")
+    assert (again.headline, again.summary) == (first.headline, first.summary)  # the rewrite pass moves nothing
 
 
 @pytest.mark.parametrize("current", ["Senior Applied AI Engineer", "Senior Applied AI Developer"])
@@ -594,6 +706,9 @@ LONG_TEXTS = [
     "a " + "cyber security " * 3000 + "developer tools", "a " + "llm ops & " * 3000 + "developer x",
     ("a ai " + "ai " * 50 + "x ") * 200, "applied " * 3000 + "ai developer", "power" + " " * 5000 + "x",
     "a " * 5000 + "developer", "Platform Developer (" + "Salesforce " * 2000 + ")",
+    "previously " * 3000 + "a ai developer x", "promoted to " * 2000 + "a ai developer x",
+    ("was a " + "ai " * 20) * 200 + "developer x", "AI developer programme " * 1000, "front " * 3000 + "end developer",
+    "dev - " * 3000 + "ops developer", "Senior Developer, " + "AI " * 3000, "Power " * 3000 + "Platform Developer",
 ]
 
 
