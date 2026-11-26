@@ -952,7 +952,7 @@ def test_the_prompt_names_the_usual_noun_of_each_field():
     assert "whatever noun the posting uses" not in text
     assert '"Backend Engineer" for "Payments Backend Engineer", "AI Engineer" for "Senior AI Developer");' in text
     assert '(for a "Senior Voice AI Engineer" or a "Senior AI Developer" post: "Senior AI Engineer")' in text
-    assert PROMPT_VERSION == "v40"
+    assert PROMPT_VERSION == "v41"
 
 
 @pytest.mark.parametrize("target,general,usual", [
