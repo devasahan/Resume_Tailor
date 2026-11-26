@@ -35,10 +35,10 @@ AI_DEV_POST = (
     ("Senior AI Developer L5", "Senior AI Engineer L5"),
     ("AI Developer Level 2", "AI Engineer Level 2"),
     ("AI Developer Intern", "AI Engineer Intern"),
+    ("AI Developer Apprentice", "AI Engineer Apprentice"),
     ("Lead AI/ML Developer", "Lead AI/ML Engineer"),
     ("Sr. AI Developer", "Sr. AI Engineer"),
     ("Mid-Level AI Developer", "Mid-Level AI Engineer"),
-    ("AI Programmer", "AI Engineer"),
     ("Machine Learning Developer", "Machine Learning Engineer"),
     ("Machine-Learning Developer", "Machine-Learning Engineer"),
     ("Deep Learning Developer", "Deep Learning Engineer"),
@@ -72,6 +72,8 @@ def test_a_developer_title_of_an_engineer_field_takes_engineer(role, usual):
     "ETL Developer", "SQL Developer", "Database Developer", "Salesforce Developer", "Salesforce Platform Developer",
     ".NET Developer", "Java Developer", "Python Developer", "Business Developer", "Real Estate Developer",
     "Instructional Developer", "Curriculum Developer",
+    # Programmer, the usual noun at a game studio
+    "AI Programmer", "Senior AI Programmer", "Platform Programmer", "Infrastructure Programmer", "Data Programmer",
     # a field Developer is usual in, or a word that is no field, before the noun
     "AI Software Developer", "Full Stack AI Developer", "Senior Voice AI Developer",
     # no field at all, more than one person, or not a title
@@ -98,15 +100,36 @@ def test_the_noun_keeps_the_letter_case_it_had():
     ("Senior AI Developer", "Software Engineer", ("AI Developer", "AI Engineer"), ""),
     ("Senior AI Developer", "Software Developer", ("AI Developer", "AI Engineer"), ""),
     ("Senior AI Developer", "", ("AI Developer", "AI Engineer"), ""),  # the post's own title when the model gave none
+    # an answer too long to be a title counts as none: the post's own title
+    ("Senior AI Developer", "Artificial Intelligence / Machine Learning Engineer", ("AI Developer", "AI Engineer"), ""),
+    ("Senior AI Developer", "Generative AI and LLM Engineer", ("AI Developer", "AI Engineer"), ""),
+    ("Senior AI Developer", "Machine Learning / AI Developer", ("AI Developer", "AI Engineer"), ""),
+    # what the short title leaves out, or a word the post never says, sets no title apart
+    ("Senior AI Developer (Python)", "AI Engineer", ("AI Developer", "AI Engineer"), ""),
+    ("Senior AI Developer | Python | SQL", "AI Developer", ("AI Developer", "AI Engineer"), ""),
+    ("Senior AI Developer - Salesforce Einstein", "AI Engineer", ("AI Developer", "AI Engineer"), ""),
+    ("Senior AI Developer", "Chatbot Developer", ("AI Developer", "AI Engineer"), ""),
     ("AI Developer II", "AI Developer", ("AI Developer", "AI Engineer"), ""),
     ("Senior AI/ML Developer", "AI/ML Developer", ("AI/ML Developer", "AI/ML Engineer"), ""),
     ("Senior AI/ML Developer", "Machine Learning Engineer", ("AI/ML Developer", "AI/ML Engineer"), ""),
     ("AI Platform Developer", "AI Developer", ("AI Platform Developer", "AI Platform Engineer"), ""),
     ("Developer, AI Platform", "AI Developer", ("AI Platform Developer", "AI Platform Engineer"), ""),
     ("Data and AI Developer", "AI Developer", ("Data and AI Developer", "Data and AI Engineer"), ""),
+    # 'Big' and 'Cyber' start the fields 'Big Data' and 'Cyber Security': no specialty
+    ("Senior Big Data Developer", "Data Engineer", ("Big Data Developer", "Big Data Engineer"), ""),
+    ("Senior Cyber Security Developer", "Security Engineer", ("Cyber Security Developer", "Cyber Security Engineer"),
+     ""),
+    # the model's Engineer on the post's own words, when only the noun sets them apart
+    ("Senior Applied AI Developer", "Applied AI Engineer", ("Applied AI Developer", "Applied AI Engineer"), ""),
+    ("Senior Applied AI Developer", "applied ai engineer", ("Applied AI Developer", "Applied AI Engineer"), ""),
+    ("LLM Application Developer", "LLM Application Engineer", ("LLM Application Developer", "LLM Application Engineer"),
+     ""),
+    ("Senior Applied AI Platform Developer", "Applied AI Engineer",
+     ("Applied AI Platform Developer", "Applied AI Platform Engineer"), ""),
     # a niche specialty still goes, and the noun becomes the usual one
     ("Senior Voice AI Developer", "AI Developer", ("Voice AI Developer", "AI Engineer"), "Voice"),
     ("Senior Voice AI Developer", "AI Engineer", ("Voice AI Developer", "AI Engineer"), "Voice"),
+    ("Senior Generative AI Developer", "AI Engineer", ("Generative AI Developer", "AI Engineer"), "Generative"),
 ])
 def test_a_developer_post_of_an_engineer_field_has_the_usual_common_title(target, general, common, words):
     assert validate.common_title(posting(target, general)) == common
@@ -123,9 +146,29 @@ def test_a_developer_post_of_an_engineer_field_has_the_usual_common_title(target
     ("Senior iOS Developer", "iOS Engineer"),
     ("Senior Full Stack Developer", "Full Stack Developer"),
     ("Senior Full Stack Developer", "Full Stack Engineer"),
+    ("Senior Full Stack Developer", "Full Stack Web and Mobile Application Developer"),  # too long: the post's own
     ("Business Developer", "Business Developer"),
     ("Business Developer", ""),
     ("Senior AI Platform Engineer", "AI Platform Engineer"),
+    ("Senior Big Data Engineer", "Data Engineer"),
+    ("Senior Cyber Security Engineer", "Security Engineer"),
+    # a game studio's title, whatever the model offers: Programmer is the usual noun there
+    ("Senior AI Programmer", "Gameplay Programmer"),
+    ("Senior AI Programmer", "Game AI Programmer"),
+    ("Senior AI Programmer", "AI Programmer"),
+    ("Senior AI Programmer", "AI Engineer"),
+    ("Senior Applied AI Programmer", "Applied AI Engineer"),
+    ("Senior Platform Programmer", "Platform Programmer"),
+    # the product the short title leaves out, which the model's common title keeps with Developer
+    ("Platform Developer (Salesforce)", "Salesforce Developer"),
+    ("Platform Developer - ServiceNow", "ServiceNow Developer"),
+    ("Platform Developer, Salesforce", "Salesforce Developer"),
+    ("Platform Developer II (Salesforce)", "Salesforce Platform Developer"),
+    # where Developer is the usual noun, the model's Engineer changes nothing
+    ("AI Software Developer", "AI Software Engineer"),
+    ("Full Stack AI Developer", "Full Stack AI Engineer"),
+    ("Blockchain Developer", "Blockchain Engineer"),
+    ("Salesforce Data Cloud Developer", "Salesforce Data Cloud Engineer"),
 ])
 def test_a_post_whose_noun_is_already_the_usual_one_keeps_its_title(target, general):
     assert validate.common_title(posting(target, general)) == ("", "")
@@ -198,6 +241,19 @@ def test_the_summary_takes_the_usual_noun_only_where_it_names_a_role(profile, su
     ("AI Developer (Remote)", "AI Engineer (Remote)"),
     ("AI Developer | LLM Apps", "AI Engineer | LLM Apps"),
     ("AI Developer - Payments", "AI Engineer - Payments"),
+    ("Senior AI Developer / Tech Lead", "Senior AI Engineer / Tech Lead"),
+    ("AI Developer/Team Lead", "AI Engineer/Team Lead"),
+    ("AI Developer & Team Lead", "AI Engineer & Team Lead"),
+    ("AI Developer and Team Lead", "AI Engineer and Team Lead"),
+    ("AI Developer: LLM Apps", "AI Engineer: LLM Apps"),
+    ("AI Developer [Contract]", "AI Engineer [Contract]"),
+    ("AI Developer Lead", "AI Engineer Lead"),
+    ("AI Developer Apprentice", "AI Engineer Apprentice"),
+    ("AI Developer/Engineer", "AI Developer/Engineer"),  # never 'AI Engineer/Engineer'
+    ("AI Developer & Engineer", "AI Developer & Engineer"),
+    ("AI Developer and Engineer", "AI Developer and Engineer"),
+    ("AI Developer Leadership Program", "AI Developer Leadership Program"),
+    ("AI Developer Relations Lead", "AI Developer Relations Lead"),
     ("AI Developer II", "AI Engineer II"),
     ("Data Developer", "Data Engineer"),
     ("Machine Learning Developer", "Machine Learning Engineer"),
@@ -244,6 +300,137 @@ def test_a_common_engineer_post_leaves_developer_titles_alone(profile):
     assert [exp.job_title for exp in resume.experience] == [
         "Senior AI Platform Engineer", "AI Developer", "Software Developer"]
     assert resume.headline == "Senior AI Platform Engineer" and notes == []
+
+
+@pytest.mark.parametrize("general", ["AI Developer", "AI Engineer"])
+@pytest.mark.parametrize("current,expected", [
+    ("Senior AI Developer / Tech Lead", "Senior AI Engineer / Tech Lead"),
+    ("Senior AI Developer & Team Lead", "Senior AI Engineer & Team Lead"),
+    ("Senior AI Developer and Team Lead", "Senior AI Engineer and Team Lead"),
+])
+def test_a_current_title_with_a_second_part_takes_the_usual_noun_under_the_name(profile, general, current, expected):
+    resume, notes = drafted(profile, posting("Senior AI Developer", general), "Senior AI Developer with 9+ years.",
+                            [current, "AI Developer", "Software Developer"], headline="Senior AI Developer")
+    assert resume.headline == resume.experience[0].job_title == expected
+    assert resume.summary == "Senior AI Engineer with 9+ years." and notes == []
+
+
+@pytest.mark.parametrize("current", ["Senior Applied AI Engineer", "Senior Applied AI Developer"])
+def test_a_common_title_with_only_another_noun_gives_engineer_in_the_three_places(profile, current):
+    """The model's 'Applied AI Engineer' for an 'Applied AI Developer' post: the post's own words with Engineer,
+    whether the draft's titles took it or kept Developer."""
+    analysis = posting("Senior Applied AI Developer", "Applied AI Engineer")
+    resume, notes = drafted(profile, analysis, (
+        "Senior Applied AI Developer with 8+ years of Python work; built Applied AI developer tools for 40 teams."),
+        [current, "AI Developer", "Software Engineer"], headline=current)
+    assert resume.headline == resume.experience[0].job_title == "Senior Applied AI Engineer"
+    assert resume.summary == ("Senior Applied AI Engineer with 8+ years of Python work; built Applied AI developer "
+                              "tools for 40 teams.")  # a phrase that is no title stays
+    assert [exp.job_title for exp in resume.experience] == [
+        "Senior Applied AI Engineer", "AI Engineer", "Software Engineer"]
+    assert notes == [] and validate.specialty_problems(resume, analysis) == []
+
+
+@pytest.mark.parametrize("general", ["Artificial Intelligence / Machine Learning Engineer",
+                                     "Generative AI and LLM Engineer"])
+def test_a_common_title_too_long_to_be_one_leaves_the_posts_usual_title(profile, general):
+    analysis = posting("Senior AI Developer", general)
+    resume, notes = drafted(profile, analysis, "Senior AI Developer with 9+ years of Python work.",
+                            ["Senior AI Developer", "AI Developer", "Software Engineer"],
+                            headline="Senior AI Developer")
+    assert resume.headline == resume.experience[0].job_title == "Senior AI Engineer"
+    assert resume.summary == "Senior AI Engineer with 9+ years of Python work."
+    assert [exp.job_title for exp in resume.experience] == ["Senior AI Engineer", "AI Engineer", "Software Engineer"]
+    assert notes == []
+
+
+def test_a_game_studios_programmer_post_keeps_its_titles(profile):
+    """Programmer is the usual noun at a game studio: an 'AI Programmer' post keeps it under the name, in the summary
+    and in the job titles."""
+    analysis = posting("Senior AI Programmer", "Gameplay Programmer")
+    resume, notes = drafted(profile, analysis, (
+        "Senior AI Programmer with 8+ years building NPC behavior trees in C++ and Unreal."),
+        ["Senior AI Programmer", "AI Programmer", "Gameplay Programmer"], headline="Senior AI Programmer")
+    assert resume.headline == resume.experience[0].job_title == "Senior AI Programmer"
+    assert resume.summary == "Senior AI Programmer with 8+ years building NPC behavior trees in C++ and Unreal."
+    assert [exp.job_title for exp in resume.experience] == [
+        "Senior AI Programmer", "AI Programmer", "Gameplay Programmer"]
+    assert notes == []
+
+
+def test_a_salesforce_platform_post_keeps_its_titles_and_asks_no_rewrite(profile):
+    """'Platform Developer (Salesforce)', for which the model keeps 'Salesforce Developer': Developer is the usual noun
+    of Salesforce work, so the titles stay and the path asks no rewrite toward 'Platform Engineer'."""
+    analysis = posting("Platform Developer (Salesforce)", "Salesforce Developer")
+    resume, notes = drafted(profile, analysis, "Senior Salesforce Developer with 6+ years of Apex work.",
+                            ["Senior Salesforce Developer", "Salesforce Developer", "Salesforce Administrator"],
+                            headline="Salesforce Developer")
+    assert resume.headline == resume.experience[0].job_title == "Senior Salesforce Developer"
+    assert resume.summary == "Senior Salesforce Developer with 6+ years of Apex work."
+    assert [exp.job_title for exp in resume.experience] == [
+        "Senior Salesforce Developer", "Salesforce Developer", "Salesforce Administrator"]
+    assert notes == [] and validate.title_path_problems(resume, analysis) == ([], False)
+
+
+def test_big_data_is_a_field_never_a_specialty(profile):
+    analysis = posting("Senior Big Data Developer", "Data Engineer")
+    resume, notes = drafted(profile, analysis, "Senior Big Data Engineer with 7+ years of big data pipelines on Spark.",
+                            ["Senior Big Data Engineer", "Data Developer", "Software Developer"],
+                            headline="Senior Big Data Engineer")
+    assert resume.headline == resume.experience[0].job_title == "Senior Big Data Engineer"
+    assert resume.summary == "Senior Big Data Engineer with 7+ years of big data pipelines on Spark."
+    assert [exp.job_title for exp in resume.experience] == [
+        "Senior Big Data Engineer", "Data Engineer", "Software Developer"]
+    assert notes == [] and validate.specialty_problems(resume, analysis) == []
+
+
+# ------------------------------------------------------------------ the noun step: only a post whose own noun changed
+def test_a_niche_engineer_post_leaves_older_developer_titles_alone(profile):
+    """A 'Voice AI Engineer' post changes no older title or summary phrase that a common 'AI Engineer' post keeps."""
+    resume, notes = drafted(profile, posting("Senior Voice AI Engineer", "AI Engineer"),
+                            "Senior AI Engineer with 8+ years, the first 3 as a data developer at Fabrikam.",
+                            ["Senior AI Engineer", "Data Developer", "Cloud Developer"])
+    assert [exp.job_title for exp in resume.experience] == ["Senior AI Engineer", "Data Developer", "Cloud Developer"]
+    assert resume.summary == "Senior AI Engineer with 8+ years, the first 3 as a data developer at Fabrikam."
+    assert notes == []
+
+
+def test_a_niche_full_stack_developer_post_leaves_an_older_data_developer_alone(profile):
+    resume, notes = drafted(profile, posting("Senior Payments Full Stack Developer", "Full Stack Developer"),
+                            "Senior Full Stack Developer with 8+ years.",
+                            ["Senior Full Stack Developer", "Full Stack Developer", "Data Developer"])
+    assert [exp.job_title for exp in resume.experience] == [
+        "Senior Full Stack Developer", "Full Stack Developer", "Data Developer"]
+    assert notes == []
+
+
+def test_a_niche_engineer_post_never_writes_its_special_title_into_an_older_job(profile):
+    analysis = posting("Senior Computer Vision Engineer", "Machine Learning Engineer")
+    resume, notes = drafted(profile, analysis, "Senior Machine Learning Engineer with 8+ years.",
+                            ["Senior Machine Learning Engineer", "Computer Vision Developer", "Software Engineer"])
+    assert resume.experience[1].job_title == "Computer Vision Developer"  # never 'Computer Vision Engineer'
+    assert notes == []
+
+
+@pytest.mark.parametrize("general", ["AI Developer Intern", "AI Engineer Intern"])
+def test_a_post_with_a_word_after_its_noun_still_takes_the_usual_noun(profile, general):
+    resume, notes = drafted(profile, posting("AI Developer Intern", general),
+                            "AI Developer Intern with Python and PyTorch coursework.",
+                            ["AI Developer Intern", "Data Developer", "Software Developer"])
+    assert resume.headline == resume.experience[0].job_title == "AI Engineer Intern"
+    assert resume.summary == "AI Engineer Intern with Python and PyTorch coursework."
+    assert [exp.job_title for exp in resume.experience] == ["AI Engineer Intern", "Data Engineer", "Software Developer"]
+    assert notes == []
+
+
+def test_an_ai_developer_lead_post_gives_a_lead_ai_engineer(profile):
+    resume, notes = drafted(profile, posting("AI Developer Lead", "AI Engineer"),
+                            "Lead AI Developer with 9+ years of Python work.",
+                            ["Lead AI Developer", "AI Developer", "Software Developer"])
+    assert resume.headline == resume.experience[0].job_title == "Lead AI Engineer"
+    assert resume.summary == "Lead AI Engineer with 9+ years of Python work."
+    assert [exp.job_title for exp in resume.experience] == ["Lead AI Engineer", "AI Engineer", "Software Developer"]
+    assert notes == []
 
 
 # ------------------------------------------------------------------ the post's level number
@@ -304,36 +491,42 @@ def test_a_senior_ai_developer_run_with_a_letter_keeps_the_posts_title_outside_t
 
 
 class KeepsDeveloper(LLMClient):
-    """A model that writes the post's noun everywhere: 'AI Developer' as the common title, under the name, at the
-    start of the summary and in the job titles."""
+    """A model that writes the post's noun everywhere: 'AI Developer' (or `general`) as the common title, and
+    `current` under the name, at the start of the summary and as the current job's title."""
 
-    def __init__(self, inner):
-        self.inner = inner
+    def __init__(self, inner, general="AI Developer", current="Senior AI Developer"):
+        self.inner, self.general, self.current = inner, general, current
 
     async def generate_structured(self, **kwargs):
         result = await self.inner.generate_structured(**kwargs)
         if kwargs["schema_name"] == "tailor_output":
-            result.data["jd_analysis"].update(target_role="Senior AI Developer", general_role="AI Developer")
+            result.data["jd_analysis"].update(target_role="Senior AI Developer", general_role=self.general)
             sections = result.data["sections"]
-            sections["headline"] = "Senior AI Developer"
-            sections["summary"] = "Senior AI Developer with " + sections["summary"].split(" with ", 1)[1]
-            titles = ["Senior AI Developer", "AI Developer", "Software Developer", "Associate Software Developer",
+            sections["headline"] = self.current
+            sections["summary"] = self.current + " with " + sections["summary"].split(" with ", 1)[1]
+            titles = [self.current, "AI Developer", "Software Developer", "Associate Software Developer",
                       "Junior Software Developer"]
             for exp, title in zip(sections["experience"], titles):
                 exp["job_title"] = title
         return result
 
 
-def test_a_model_that_keeps_ai_developer_still_ends_with_engineer(router, db, registry):
-    router.overrides["demo-concise"] = KeepsDeveloper(FakeClient(registry.get("demo-concise")))
+@pytest.mark.parametrize("general,current,usual", [
+    ("AI Developer", "Senior AI Developer", "Senior AI Engineer"),
+    # five words only for the spaced slash: an answer too long to be a title counts as none
+    ("Machine Learning / AI Developer", "Senior Machine Learning / AI Developer",
+     "Senior Machine Learning / AI Engineer"),
+])
+def test_a_model_that_keeps_ai_developer_still_ends_with_engineer(router, db, registry, general, current, usual):
+    router.overrides["demo-concise"] = KeepsDeveloper(FakeClient(registry.get("demo-concise")), general, current)
     result = asyncio.run(run_tailor(router, db, profile=five_jobs(), profile_id=None, jd=AI_DEV_POST,
                                     model_id="demo-concise", save=False))
     assert result.status == "ok" and result.retries == 0
     resume = result.resume
-    assert resume.headline == resume.experience[0].job_title == "Senior AI Engineer"
-    assert resume.summary.startswith("Senior AI Engineer with ")
+    assert resume.headline == resume.experience[0].job_title == usual
+    assert resume.summary.startswith(usual + " with ")
     assert [exp.job_title for exp in resume.experience] == [
-        "Senior AI Engineer", "AI Engineer", "Software Developer", "Associate Software Developer",
+        usual, "AI Engineer", "Software Developer", "Associate Software Developer",
         "Junior Software Developer"]  # Developer is the usual noun of software work
     assert result.analysis.target_role == "Senior AI Developer"
 
@@ -366,12 +559,14 @@ def test_the_prompt_names_the_usual_noun_of_each_field():
     text = tailor_system("estimate")
     assert "the target role title as the posting writes it" in text
     assert ("The role's noun is part of the common title too: in AI, machine learning, data, cloud, platform, "
-            'infrastructure, DevOps, MLOps, site reliability and security the usual title says "Engineer", whatever '
-            'noun the posting uses, so a "Developer" or "Programmer" title there is a special one ("AI Engineer" for '
-            '"AI Developer", "Machine Learning Engineer" for "Machine Learning Developer", "Data Engineer" for "Data '
-            'Developer"); where "Developer" is the usual noun the title stays as it is ("Software Developer", "Web '
-            'Developer", "Frontend Developer", "Full Stack Developer", "iOS Developer", "Salesforce '
-            'Developer").') in text
+            'infrastructure, DevOps, MLOps, site reliability and security the usual title says "Engineer", so a '
+            '"Developer" title there is a special one ("AI Engineer" for "AI Developer", "Machine Learning Engineer" '
+            'for "Machine Learning Developer", "Data Engineer" for "Data Developer"); where "Developer" is the usual '
+            'noun the title stays as it is ("Software Developer", "Web Developer", "Frontend Developer", "Full Stack '
+            'Developer", "iOS Developer", "Salesforce Developer", "Salesforce Platform Developer", "ServiceNow '
+            'Developer", "Power Platform Developer"), and so does a "Programmer" title, the usual noun at a game '
+            'studio ("AI Programmer", "Gameplay Programmer").') in text
+    assert "whatever noun the posting uses" not in text
     assert '"Backend Engineer" for "Payments Backend Engineer", "AI Engineer" for "Senior AI Developer");' in text
     assert '(for a "Senior Voice AI Engineer" or a "Senior AI Developer" post: "Senior AI Engineer")' in text
     assert PROMPT_VERSION == "v40"
@@ -397,7 +592,8 @@ LONG_TEXTS = [
     "A " + "AI-" * 5000 + "Developer tools", "a " + "ai &" * 5000 + " developer x", "a ai/ml " * 3000,
     "a " + "ai ops " * 3000 + "x", "a " + "data ops " * 3000 + "developer x", "big data " * 3000 + "developer x",
     "a " + "cyber security " * 3000 + "developer tools", "a " + "llm ops & " * 3000 + "developer x",
-    ("a ai " + "ai " * 50 + "x ") * 200,
+    ("a ai " + "ai " * 50 + "x ") * 200, "applied " * 3000 + "ai developer", "power" + " " * 5000 + "x",
+    "a " * 5000 + "developer", "Platform Developer (" + "Salesforce " * 2000 + ")",
 ]
 
 
@@ -406,6 +602,8 @@ def test_long_crafted_titles_and_summaries_are_read_in_time(profile, text):
     """Every pattern here is read in linear time: a pattern that backtracked without end would hang this test."""
     assert validate.usual_title(text) == text
     validate.common_title(posting(text, text))
+    validate.common_title(posting(text, "Applied AI Engineer"))  # the model's noun on the post's own words
+    validate.common_title(posting(text, "Salesforce Developer"))  # a word the post's short title leaves out
     analysis = posting("Senior AI Developer", "AI Developer")
     resume = validate.build_resume(profile, make_output(headline="AI Developer", summary="Built Python services."))
     resume.summary, resume.experience[1].job_title = text, text[:80]
