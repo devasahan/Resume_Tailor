@@ -8,7 +8,9 @@ job and the past tense for every other, as the prompt asks; its summary has 2-3 
 prompt asks (v39), its titles climb into the posting's field (Junior Software Engineer, Software Engineer, Platform
 Engineer, AI Platform Engineer, Senior AI Platform Engineer), its headline and its summary's first words are the most
 recent title, and the current job names the post's most wanted programming language (Python for AI work when the post
-names none).
+names none). Its common title takes the usual noun of the posting's field (v40: "AI Engineer" for a "Senior AI
+Developer" post, whose titles then climb to "Senior AI Engineer"), while the analysis keeps the posting's own title for
+the cover letter and History.
 
 Styles:  concise | detailed (too many long bullets, includes one invented number so the check can flag it)
          flaky (returns invalid JSON until the retry feedback appears in the prompt)
@@ -27,7 +29,7 @@ from ..parsing.heuristic import parse_resume_text
 from ..pipeline import languages
 from ..pipeline.facts import is_current, is_expired
 from ..pipeline.notes import clean_notes
-from ..pipeline.validate import same_certification
+from ..pipeline.validate import same_certification, usual_title
 from ..prompts import RETRY_MARKER
 from ..schemas import Company, JDAnalysis
 from .base import LLMClient, LLMResult, Usage
@@ -406,16 +408,17 @@ class FakeClient(LLMClient):
         companies = ctx.get("profile", {}).get("companies", [])
         keywords = extract_keywords(jd)
         prefix, base = guess_role(jd)
+        general = usual_title(base)  # the usual noun of the field: 'AI Engineer' for an 'AI Developer' post
         seniority = prefix or "Mid-level"
         target = f"{prefix} {base}".strip()
         k = (keywords + GENERIC)[:12]
         # the post's most wanted language, else the one this work is usually built in (Python for AI work), named at
         # the current job (the first one marked 'Present', else the most recent), as the prompt asks
-        posting = JDAnalysis(target_role=target, general_role=base, seniority=seniority, domain="General",
+        posting = JDAnalysis(target_role=target, general_role=general, seniority=seniority, domain="General",
                              must_have_skills=[], nice_to_have_skills=[], keywords=keywords)
         language = languages.wanted_language(posting, jd) or languages.usual_language(posting)
         current = next((i for i, c in enumerate(companies) if is_current(Company.model_validate(c), i)), 0)
-        titles = _title_ladder(prefix, base, len(companies), current)  # the current job's is the post's
+        titles = _title_ladder(prefix, general, len(companies), current)  # the current job's: the post's, usual noun
         bank = DETAILED if self.style == "detailed" else CONCISE
         if self.style == "detailed":  # deliberately too long, to exercise the fit-to-one-page steps; asked to
             # shorten, it follows the smaller budget it is given, as a real model would
@@ -479,8 +482,8 @@ class FakeClient(LLMClient):
         return {
             "jd_analysis": {
                 "company": guess_company(jd),
-                "target_role": target,
-                "general_role": base,
+                "target_role": target,  # the posting's own title: the cover letter and History name it
+                "general_role": general,
                 "seniority": seniority,
                 "domain": "General",
                 "must_have_skills": must[:6],  # what it shows in the summary or a bullet, as a real model does
@@ -497,7 +500,7 @@ class FakeClient(LLMClient):
                 for i in range(len(companies))
             ],
             "sections": {
-                "headline": titles[0] if titles else base,  # the most recent title, word for word
+                "headline": titles[0] if titles else general,  # the most recent title, word for word
                 "summary": summary,
                 "skills": groups,
                 "experience": experience,

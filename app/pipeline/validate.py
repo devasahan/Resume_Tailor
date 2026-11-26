@@ -8,6 +8,7 @@
   unshown_must_haves      required JD terms missing, or only listed, instead of shown in the summary or a bullet
   posting_match_flags     sentences added to match the JD that the user's hints do not back up
   same_title              the headline, the summary's first words and the current job's title read the same (v39)
+  usual_title             a title with the usual noun of its field: 'Senior AI Developer' -> 'Senior AI Engineer' (v40)
   title_path_problems     older titles that do not move into the target's field as they get closer to today
   missing_language        a current job that does not name the job post's most wanted programming language
   language_rule           what that rule asks of the current job (meets_language_rule: whether a text gives it)
@@ -1793,9 +1794,10 @@ _ROLE_LEVEL = re.compile(rf"^(?P<role>.*?\S)\s+(?P<level>{_LEVEL_NAMES}|[1-5])$"
 def role_level_fixes(resume: Resume, analysis: JDAnalysis) -> list[str]:
     """The headline and summary name the posting's role without the hiring company's level number (II, L5) when
     the candidate's current title (current_job) does not have that level: "Senior Software Engineer II with 7+ years"
-    claims a level the candidate never held. Changes the resume in place and returns a note per changed field, which
-    quotes what the field reads once same_title, next in build(), has put the current title under the name and at the
-    start of a summary that opens with its words."""
+    claims a level the candidate never held. The role is the posting's or its usual title (usual_title: 'AI Engineer II'
+    for an 'AI Developer II' post, as general_role_fixes writes it). Changes the resume in place and returns a note per
+    changed field, which quotes what the field reads once same_title, next in build(), has put the current title under
+    the name and at the start of a summary that opens with its words, else the form of the role it held."""
     match = _ROLE_LEVEL.match(analysis.target_role.strip())
     job = current_job(resume)
     if not match or job is None:
@@ -1805,8 +1807,11 @@ def role_level_fixes(resume: Resume, analysis: JDAnalysis) -> list[str]:
     title = _title_core(job.job_title)  # as same_title shows it: 'Software Engineer II (Backend)' has the level
     if re.search(rf"(?<![\w-]){level_pattern}$", title, re.IGNORECASE):
         return []  # the candidate's current title really has this level
-    role_pattern = r"\s+".join(map(either_spelling, role.split()))  # the draft may spell it the run's way
-    phrase = re.compile(rf"(?<![\w-])({role_pattern})\s+{level_pattern}(?![\w-])", re.IGNORECASE)
+    forms = list(dict.fromkeys([role, usual_title(role)]))  # 'AI Developer' and 'AI Engineer'
+    # the draft may spell it the run's way
+    patterns = [r"\s+".join(map(either_spelling, form.split())) for form in forms]
+    roles = "|".join(patterns)
+    phrase = re.compile(rf"(?<![\w-])({roles})\s+{level_pattern}(?![\w-])", re.IGNORECASE)
     notes = []
     for field in ("headline", "summary"):
         text = getattr(resume, field)
@@ -1815,8 +1820,10 @@ def role_level_fixes(resume: Resume, analysis: JDAnalysis) -> list[str]:
             setattr(resume, field, fixed)
             first = phrase.search(text)
             opening = _title_opening(title).match(fixed) if title else None
+            held = next((form for form, words in zip(forms, patterns)
+                         if re.fullmatch(words, first.group(1), re.IGNORECASE)), role)
             # the headline becomes the title, and so does an opening that holds the first level taken out
-            said = title if title and (field == "headline" or (opening and first.start() < opening.end())) else role
+            said = title if title and (field == "headline" or (opening and first.start() < opening.end())) else held
             notes.append(f"{field.title()}: wrote '{said}' instead of the posting's level '{analysis.target_role}', "
                          "which is not your title.")
     return notes
@@ -3063,6 +3070,78 @@ def same_title(resume: Resume) -> None:
     resume.summary = _title_opening(title).sub(lambda match: match.group(1) + title, resume.summary, count=1)
 
 
+# Fields whose usual title says 'Engineer' (the owner's choice, prompt v40): AI, machine learning, data, cloud,
+# platform, infrastructure, DevOps, MLOps, site reliability and security work. A 'Developer' or 'Programmer' of such a
+# field takes that noun ('AI Developer' -> 'AI Engineer'); where Developer is itself usual ('Software', 'Web',
+# 'Frontend', 'Full Stack', 'iOS', 'Salesforce' or 'Business Developer') the title stays
+_ENGINEER_FIELD = (
+    r"(?:artificial[\s-]+intelligence|machine[\s-]+learning|deep[\s-]+learning|computer[\s-]+vision|generative[\s-]+ai"
+    r"|gen[\s-]?ai|ai[\s-]?ops|ai|ml[\s-]?ops|ml|llm[\s-]?ops|llms?|nlp|big[\s-]+data|data[\s-]?ops|data|cloud"
+    r"|platforms?|infrastructure|infra|dev[\s-]?sec[\s-]?ops|dev[\s-]?ops|site[\s-]+reliability|sre"
+    r"|cyber[\s-]?security|security)(?!\w)")
+# One field or several, joined by a space, a hyphen, '/', '&' or 'and' ('AI/ML', 'Data and AI', 'AI Platform'). A run of
+# fields reads one way only (where a field starts with another, as 'AI Ops' with 'AI', the rest is no field) and each
+# joint takes one form, so a text is read in linear time
+_ENGINEER_FIELDS = rf"{_ENGINEER_FIELD}(?:(?:\s*[/&]\s*|\s+and\s+|[\s-]+){_ENGINEER_FIELD})*"
+_UNUSUAL_NOUN = r"(?P<noun>developer|programmer)(?![\w-])"  # one person: 'AI Developers' names no title
+_ROLE_TAIL = rf"\s+(?:{_LEVEL_NAMES}|[1-5]|intern|trainee)"  # a level after the role ('AI Developer II')
+_USUAL_ROLE = re.compile(
+    rf"(?P<before>(?:{_LEVEL_WORD}\s+)*{_ENGINEER_FIELDS}\s+){_UNUSUAL_NOUN}(?P<after>{_ROLE_TAIL})?", re.IGNORECASE)
+# Words that make 'Developer' part of a longer noun, never a role: 'AI developer tools', 'an AI developer platform',
+# 'AI Developer Advocate', 'AI developer experience'
+_DEVELOPER_COMPOUNDS = (
+    r"advocates?|advocacy|relations|evangelists?|experience|productivity|tools?|tooling|platforms?|portals?"
+    r"|ecosystems?|communit(?:y|ies)|programs?|success|support|marketing|docs|documentation|sdks?|apis?|kits?"
+    r"|consoles?|assistants?|agents?|copilots?")
+_NOT_COMPOUND = rf"(?!\s+(?:{_DEVELOPER_COMPOUNDS})(?![\w-]))"
+# A job title that is such a role, alone or before a comma, a bracket, a '|', a spaced dash or a level ('AI Developer,
+# Platform', 'AI Developer II'); never 'AI Developer Advocate'
+_USUAL_JOB_TITLE = re.compile(rf"^(?P<before>\s*(?:{_LEVEL_WORD}\s+)*{_ENGINEER_FIELDS}\s+){_UNUSUAL_NOUN}"
+                              rf"(?=\s*(?:$|[,(|])|\s+-\s|{_ROLE_TAIL}(?![\w-]))", re.IGNORECASE)
+# A summary that opens with such a role, after an article or not ('A senior AI developer with 9+ years ...')
+_USUAL_OPENING = re.compile(
+    rf"^(?P<before>\s*(?:an?\s+)?(?:{_LEVEL_WORD}\s+)*{_ENGINEER_FIELDS}\s+){_UNUSUAL_NOUN}{_NOT_COMPOUND}",
+    re.IGNORECASE)
+# Such a role later in the summary: after 'a' or 'an', and before punctuation, the end, a level or a word that goes on
+# about the person ('as a senior AI developer at Northwind'); never 'an AI developer platform', nor 'an AI developer
+# and data platform' ('and' may start another noun)
+_USUAL_MENTION = re.compile(
+    rf"(?<![\w-])(?P<before>an?\s+(?:{_LEVEL_WORD}\s+)*{_ENGINEER_FIELDS}\s+){_UNUSUAL_NOUN}"
+    rf"(?={_TITLE_LEVEL_AFTER}(?:\s*(?:[,.;:!?)]|$)|\s+(?:with|who|at|in|for|since|from|on|across|of|by)\b))",
+    re.IGNORECASE)
+
+
+def _engineer(match: re.Match) -> str:
+    """What comes before the noun, then 'Engineer' in the noun's letter case ('developer' -> 'engineer', 'DEVELOPER'
+    -> 'ENGINEER')."""
+    noun = match.group("noun")
+    return match.group("before") + ("ENGINEER" if noun.isupper() else "Engineer" if noun[0].isupper() else "engineer")
+
+
+def usual_title(role: str) -> str:
+    """The title with the usual noun of its field: 'Senior AI Developer' -> 'Senior AI Engineer', 'Lead AI/ML
+    Developer' -> 'Lead AI/ML Engineer', 'AI Developer II' -> 'AI Engineer II', 'Data Programmer' -> 'Data Engineer',
+    when every word before the noun is a level or a field whose usual title says Engineer (_ENGINEER_FIELD). Any other
+    title comes back as it is: 'Software Developer', 'Full Stack Developer', 'iOS Developer', 'Business Developer',
+    'AI Software Developer', 'AI Developer Advocate', 'AI Developers'."""
+    match = _USUAL_ROLE.fullmatch(role.strip())
+    return _engineer(match) + (match.group("after") or "") if match else role
+
+
+def _usual_nouns(resume: Resume) -> None:
+    """A role of a field whose usual title says Engineer takes that noun (usual_title) in the job titles and the
+    summary: a job title that is such a role ('Senior AI Developer' -> 'Senior AI Engineer', 'AI Developer, Platform' ->
+    'AI Engineer, Platform'), the summary's first words ('A senior AI developer with ...' -> 'A senior AI engineer with
+    ...', which same_title then makes the exact title) and a role the summary names later ('as a senior AI developer at
+    Northwind' -> 'as a senior AI engineer at Northwind'). A phrase that names no role stays ('AI developer tools', 'an
+    AI developer platform', 'AI Developer Advocate'), and so do the bullets and the skills. Changes the resume in
+    place."""
+    for exp in resume.experience:
+        exp.job_title = _USUAL_JOB_TITLE.sub(_engineer, exp.job_title, count=1)
+    resume.summary = _USUAL_OPENING.sub(_engineer, resume.summary, count=1)
+    resume.summary = _USUAL_MENTION.sub(_engineer, resume.summary)
+
+
 # A broad field is part of a common title, never a specialty: 'AI Platform Engineer', 'Data Platform Engineer' and
 # 'Cloud Security Engineer' are used as they are; 'Voice' in 'Voice AI Engineer' is a specialty
 _BROAD_FIELDS = frozenset({
@@ -3073,32 +3152,53 @@ _BROAD_FIELDS = frozenset({
 })
 
 
+_ROLE_NOUNS = frozenset({"engineer", "developer", "programmer"})
+
+
+def _role_words(title: str) -> list[str]:
+    """A title's words, each part of 'AI/ML' one of its own, without 'and' or '&': 'Data and AI/ML Engineer' ->
+    ['Data', 'AI', 'ML', 'Engineer']."""
+    return [word for word in re.split(r"[\s/]+", title) if word and word.lower() not in ("and", "&")]
+
+
 def _extra_words(special: str, common: str) -> list[str]:
     """The words of the special title that the common title lacks, in either spelling: ['Voice'] for 'Voice AI
-    Engineer' -> 'AI Engineer'."""
-    kept = {spelling.us_word(word) for word in common.split()}
-    return [word for word in special.split() if spelling.us_word(word) not in kept]
+    Engineer' -> 'AI Engineer'. The role's noun is never one when the common title has a role noun of its own ('AI
+    Developer' -> 'AI Engineer': none): a noun is no specialty."""
+    kept = {spelling.us_word(word) for word in _role_words(common)}
+    if kept & _ROLE_NOUNS:
+        kept |= _ROLE_NOUNS
+    return [word for word in _role_words(special) if spelling.us_word(word) not in kept]
 
 
 def common_title(analysis: JDAnalysis | None) -> tuple[str, str]:
-    """(the posting's special title, the most similar common title): ('Voice AI Engineer', 'AI Engineer'); ('', '')
-    when the posting's title is a common one already ('Senior Data Engineer' -> 'Data Engineer'), also when only broad
-    fields set it apart ('AI Platform Engineer' stays, whatever the model offers instead)."""
-    if analysis is None or not analysis.general_role.strip():
+    """(the posting's special title, the most similar common title): ('Voice AI Engineer', 'AI Engineer'), and ('AI
+    Developer', 'AI Engineer') for a title whose noun is not the usual one of its field (usual_title); ('', '') when the
+    posting's title is a common one already ('Senior Data Engineer' -> 'Data Engineer'), also when only broad fields or
+    the noun set it apart from the model's ('AI Platform Engineer' stays, whatever the model offers instead). The
+    model's common title (`general_role`) counts only when a niche specialty's words set the posting's apart ('Voice');
+    otherwise the posting's own field wins, with the usual noun ('AI Platform Developer' -> 'AI Platform Engineer', also
+    when the model says 'AI Developer'). An empty `general_role` (an older run's) counts as the posting's title."""
+    if analysis is None:
         return "", ""
-    special, common = _role_core(analysis.target_role), _role_core(analysis.general_role)
-    if (not special or not common or len(common.split()) > 4 or spelling.us_text(special) == spelling.us_text(common)
-            or all(spelling.us_word(word) in _BROAD_FIELDS for word in _extra_words(special, common))):
+    special = _role_core(analysis.target_role)
+    general = _role_core(analysis.general_role) or special
+    if not special or len(general.split()) > 4:
         return "", ""
-    return special, common
+    niche = (spelling.us_text(special) != spelling.us_text(general)
+             and not all(spelling.us_word(word) in _BROAD_FIELDS for word in _extra_words(special, general)))
+    common = usual_title(general if niche else special)
+    return ("", "") if spelling.us_text(common) == spelling.us_text(special) else (special, common)
 
 
 def specialty(analysis: JDAnalysis | None) -> str:
-    """What makes the posting's title a special one, when the common title is the special one without it: 'Voice'
-    for 'Voice AI Engineer' -> 'AI Engineer'. '' otherwise."""
+    """What makes the posting's title a special one, when the common title is the special one without it, with the
+    usual noun (usual_title): 'Voice' for 'Voice AI Engineer' -> 'AI Engineer', and for 'Voice AI Developer' -> 'AI
+    Engineer'. '' otherwise ('AI Developer' -> 'AI Engineer' has none)."""
     special, common = common_title(analysis)
     words, kept = special.split(), common.split()
-    if len(words) > len(kept) and spelling.us_text(" ".join(words[-len(kept):])) == spelling.us_text(common):
+    tail = " ".join(words[-len(kept):]) if kept else ""
+    if len(words) > len(kept) and spelling.us_text(usual_title(tail)) == spelling.us_text(common):
         return " ".join(words[: -len(kept)])
     return ""
 
@@ -3118,25 +3218,31 @@ def general_role_fixes(resume: Resume, analysis: JDAnalysis | None) -> None:
     """A special posting title is never copied: the headline is the most similar common title, and the summary and
     the job titles say it instead ('Voice AI Engineer' -> 'AI Engineer', 'a Senior Voice AI Engineer' -> 'a Senior AI
     Engineer'), and so does a current title that names the specialty in another form (_common_current_title). The
-    specialty belongs in the bullets. Changes the resume in place."""
+    specialty belongs in the bullets. A role of a field whose usual title says Engineer takes that noun in the job
+    titles and the summary (_usual_nouns: 'Senior AI Developer' -> 'Senior AI Engineer'), never in a phrase that names
+    no role ('AI developer tools'). Changes the resume in place."""
     special, common = common_title(analysis)
     if not special:
         _keep_posting_headline(resume, analysis)
         return
     resume.headline = common
-    words = r"[\s-]+".join(either_spelling(word) for word in special.split())
-    pattern = re.compile(rf"(?<![\w-])(?:(?P<article>an?)\s+)?{words}(?![\w-])", re.IGNORECASE)
+    if spelling.us_text(usual_title(special)) != spelling.us_text(common):  # a specialty to take out, not only a noun
+        words = r"[\s-]+".join(either_spelling(word) for word in special.split())
+        # 'Voice AI developer tools' names no role
+        compound = _NOT_COMPOUND if special.split()[-1].lower() in ("developer", "programmer") else ""
+        pattern = re.compile(rf"(?<![\w-])(?:(?P<article>an?)\s+)?{words}(?![\w-]){compound}", re.IGNORECASE)
 
-    def swap(match: re.Match) -> str:
-        article = match.group("article")
-        if not article:
-            return common
-        new = _article_for(common.split()[0])
-        return (new[0].upper() + new[1:] if article[0].isupper() else new) + " " + common
+        def swap(match: re.Match) -> str:
+            article = match.group("article")
+            if not article:
+                return common
+            new = _article_for(common.split()[0])
+            return (new[0].upper() + new[1:] if article[0].isupper() else new) + " " + common
 
-    resume.summary = pattern.sub(swap, resume.summary)
-    for exp in resume.experience:
-        exp.job_title = pattern.sub(swap, exp.job_title)
+        resume.summary = pattern.sub(swap, resume.summary)
+        for exp in resume.experience:
+            exp.job_title = pattern.sub(swap, exp.job_title)
+    _usual_nouns(resume)
     _common_current_title(resume, analysis, common)
 
 

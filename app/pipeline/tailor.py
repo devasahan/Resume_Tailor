@@ -561,7 +561,7 @@ async def run_tailor(
             # a certification is printed only in its own section, and only when the person has it
             validate.remove_certification_skills(resume, certification_names(out))
             validate.short_role_headline(resume)  # kept only by a resume with no job: same_title below
-            validate.general_role_fixes(resume, out.jd_analysis)  # 'Voice AI Engineer' -> 'AI Engineer'
+            validate.general_role_fixes(resume, out.jd_analysis)  # 'Voice AI Engineer', 'AI Developer' -> 'AI Engineer'
             notes = validate.fix_title_regressions(resume)
             notes += validate.role_level_fixes(resume, out.jd_analysis)
             validate.same_title(resume)  # 'Senior AI Platform Engineer' under the name, in the summary and the job
