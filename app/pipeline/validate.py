@@ -9,6 +9,7 @@
   posting_match_flags     sentences added to match the JD that the user's hints do not back up
   same_title              the headline, the summary's first words and the current job's title read the same (v39)
   usual_title             a title with the usual noun of its field: 'Senior AI Developer' -> 'Senior AI Engineer' (v40)
+  era_title_fixes         older titles of their time: 'AI Engineer' ending in 2022 -> 'Machine Learning Engineer' (v42)
   title_path_problems     older titles that do not move into the target's field as they get closer to today
   missing_language        a current job that does not name the job post's most wanted programming language
   language_rule           what that rule asks of the current job (meets_language_rule: whether a text gives it)
@@ -1877,6 +1878,9 @@ AI_TOOLS: dict[str, int] = {
     "prompt engineering": 2023, "vector database": 2023, "retrieval-augmented generation": 2023,
     "AI coding assistant": 2023, "Copilot": 2022, "agentic": 2025, "coding agent": 2025,
 }
+# Titles named for AI ('AI Engineer', 'LLM Engineer') became common with LLMs: a job that ended before this year has the
+# title that work had then (era_title_fixes: 'Machine Learning Engineer')
+AI_TITLE_YEAR = AI_TOOLS["LLM"]
 AI_RECENT_JOBS = 2
 _EVERYDAY_WORDS = {"Helm", "Astro", "Vite", "Copilot", "Bun", "Polars"}  # matched only as written: "at the helm" is fine
 _CURRENT = ("", "present", "current", "now", "today")
@@ -1884,6 +1888,16 @@ _CURRENT = ("", "present", "current", "now", "today")
 
 def _mentions_tool(text: str, term: str) -> bool:
     return mentions(text, term, case_sensitive=term in _EVERYDAY_WORDS or None)
+
+
+def end_year(end: str) -> int | None:
+    """The year a job ended, as parse_point reads its end ('Dec 2022', '12/2022' and '2022' -> 2022); None for a job
+    held now ('Present', 'Now', 'Current', also with a full stop after it) and for an end that is blank or cannot be
+    read ('someday')."""
+    if end.strip().lower().rstrip(".") in _CURRENT:
+        return None
+    point = parse_point(end, is_end=True)
+    return point[0] if point else None
 
 
 def era_problems(resume: Resume) -> list[str]:
@@ -3108,14 +3122,15 @@ _DEVELOPER_COMPOUNDS = (
     r"|kits?|consoles?|assistants?|agents?|copilots?|enablement|infrastructure|infra|onboarding|velocity"
     r"|efficiency|workflows?|environments?|journeys?|hubs?")
 _NOT_COMPOUND = rf"(?!\s+(?:{_DEVELOPER_COMPOUNDS})(?![\w-]))"
-# A job title that is such a role, alone or before a comma, a bracket, a '|', a middle dot, a spaced dash, a '/', a
-# '&', an 'and', a ':', a trailing 'Lead' or a level ('AI Developer, Platform', 'AI Developer II', 'Senior AI Developer
-# / Tech Lead', 'AI Developer · LLM'); never 'AI Developer Advocate', nor 'AI Developer/Engineer', which would read
-# 'AI Engineer/Engineer'
+# What may follow a role in a job title: nothing, a comma, a bracket, a '|', a middle dot, a spaced dash, a '/', a '&',
+# an 'and', a ':', a trailing 'Lead' or a level (_USUAL_JOB_TITLE, _FIELD_ROLE_TITLE)
+_ROLE_END = rf"(?=\s*(?:$|[,(|/&:\[·•])|\s+(?:-|and)\s|\s+lead(?![\w-])|{_ROLE_TAIL}(?![\w-]))"
+# A job title that is such a role, alone or before what _ROLE_END lets follow it ('AI Developer, Platform', 'AI
+# Developer II', 'Senior AI Developer / Tech Lead', 'AI Developer · LLM'); never 'AI Developer Advocate', nor 'AI
+# Developer/Engineer', which would read 'AI Engineer/Engineer'
 _USUAL_JOB_TITLE = re.compile(
     rf"^(?P<before>\s*(?:{_LEVEL_WORD}\s+)*{_ENGINEER_FIELDS}\s+){_UNUSUAL_NOUN}"
-    rf"(?!(?:\s*[/&]\s*|\s+and\s+)engineer(?![\w-]))"
-    rf"(?=\s*(?:$|[,(|/&:\[·•])|\s+(?:-|and)\s|\s+lead(?![\w-])|{_ROLE_TAIL}(?![\w-]))", re.IGNORECASE)
+    rf"(?!(?:\s*[/&]\s*|\s+and\s+)engineer(?![\w-])){_ROLE_END}", re.IGNORECASE)
 # A summary that opens with such a role, after an article or not ('A senior AI developer with 9+ years ...')
 _USUAL_OPENING = re.compile(
     rf"^(?P<before>\s*(?:an?\s+)?(?:{_LEVEL_WORD}\s+)*{_ENGINEER_FIELDS}\s+){_UNUSUAL_NOUN}{_NOT_COMPOUND}",
@@ -3212,6 +3227,129 @@ def _usual_nouns(resume: Resume) -> None:
     if job is None or not _KEPT_NOUN.match(_title_core(job.job_title)):
         resume.summary = _USUAL_OPENING.sub(_engineer, resume.summary, count=1)
     resume.summary = _USUAL_MENTION.sub(_own_mention, resume.summary)
+
+
+# The fields of a title named for AI, which became common only in AI_TITLE_YEAR, and those of machine learning, which
+# that work had before it: each written as one lower-case word without spaces or hyphens ('Gen AI' is 'genai')
+_AI_TITLE_FIELDS = frozenset({"ai", "artificialintelligence", "generativeai", "genai", "llm", "llms"})
+_ML_FIELDS = frozenset({"ml", "machinelearning", "deeplearning", "computervision", "nlp", "mlops"})
+# A job title whose role is a run of fields (_ENGINEER_FIELDS) and 'Engineer' or 'Developer', with levels before it and
+# what _USUAL_JOB_TITLE lets follow it (_ROLE_END): 'Senior AI Engineer II', 'AI Engineer, Platform', 'AI Engineer
+# (Remote)', 'AI Engineer / Tech Lead', 'AI Engineer: LLM Apps', 'AI Engineer | Python', 'AI Engineer - Search', 'AI
+# Engineer Lead'; never 'AI Engineering Manager', 'AI Developer Advocate', 'Applied AI Engineer', 'Engineer, AI' or 'AI
+# Engineers'
+_FIELD_ROLE_TITLE = re.compile(
+    rf"(?P<levels>\s*(?:{_LEVEL_WORD}\s+)*)(?P<fields>{_ENGINEER_FIELDS})\s+(?P<noun>engineer|developer){_ROLE_END}",
+    re.IGNORECASE)
+_ONE_FIELD = re.compile(rf"(?<!\w){_ENGINEER_FIELD}", re.IGNORECASE)  # each field of such a run, as the run reads it
+
+
+def _join_rank(join: str) -> int:
+    """How loosely a join ties two fields of a title: a space 2, 'and' or '&' 1, '/' or a hyphen 0 ('AI/ML' holds
+    together in 'Platform and AI/ML')."""
+    return 0 if re.search(r"[/-]", join) else 1 if re.search(r"&|and", join, re.IGNORECASE) else 2
+
+
+def _in_case_of(words: str, text: str) -> str:
+    """The words in all capitals or all lower case when the text is ('MACHINE LEARNING' for 'ENGINEER'), else as
+    written."""
+    return words.upper() if text.isupper() else words.lower() if text.islower() else words
+
+
+def earlier_title(title: str) -> str:
+    """The title that work had before titles named for AI became common (AI_TITLE_YEAR), for a title whose role is a run
+    of fields and 'Engineer' or 'Developer' (_FIELD_ROLE_TITLE). The fields of AI go (AI, Artificial Intelligence,
+    Generative AI, GenAI, LLM, LLMs; _AI_TITLE_FIELDS), in any letter case, and 'LLMOps' becomes 'MLOps'; then:
+    - when no field is left but those of machine learning (ML, Machine Learning, Deep Learning, Computer Vision, NLP,
+      MLOps), they stay as written ('NLP/AI Engineer' -> 'NLP Engineer'), but 'ML' alone is written 'Machine Learning'
+      ('AI/ML Engineer' -> 'Machine Learning Engineer'); when none is left at all, 'Machine Learning' comes in ('AI
+      Engineer' -> 'Machine Learning Engineer');
+    - when another field is left, 'ML' takes the place of the first field that went, unless one of machine learning is
+      left too ('AI Platform Engineer' -> 'ML Platform Engineer', 'Data and AI Engineer' -> 'Data and ML Engineer',
+      'AI/ML Platform Engineer' -> 'ML Platform Engineer').
+    A join left at either end goes ('AI & ML' -> 'Machine Learning'); between two fields that stay, the looser join
+    stays (_join_rank: 'ML/AI Platform' -> 'ML Platform', 'Platform and AI/ML' -> 'Platform and ML'). The levels, what
+    follows the role and the noun's letter case stay, 'Developer' becomes 'Engineer' (_USUAL_JOB_TITLE: 'AI Developer'
+    -> 'Machine Learning Engineer'), and the words put in follow the role's letter case ('ai engineer' -> 'machine
+    learning engineer', 'AI ENGINEER' -> 'MACHINE LEARNING ENGINEER'). Any other title comes back as it is: one with no
+    field of AI ('Machine Learning Engineer', 'AIOps Engineer') and one whose role is not such a run ('Voice AI
+    Engineer', 'Applied AI Engineer', 'AI Engineering Manager', 'AI Developer Advocate', 'AI Programmer')."""
+    match = _FIELD_ROLE_TITLE.match(title)
+    if not match:
+        return title
+    fields = match.group("fields")
+    found = list(_ONE_FIELD.finditer(fields))
+    keys = [re.sub(r"[\s-]+", "", part.group(0).lower()) for part in found]
+    if not any(key in _AI_TITLE_FIELDS or key == "llmops" for key in keys):
+        return title
+    items: list[list] = []  # [the field as it stays, or None where fields of AI go; the join before it; its key]
+    for index, (part, key) in enumerate(zip(found, keys)):
+        join = fields[found[index - 1].end():part.start()] if index else ""
+        if key not in _AI_TITLE_FIELDS:
+            word = part.group(0)
+            if key == "llmops":  # 'LLMOps' -> 'MLOps', 'llm ops' -> 'ml ops'
+                word, key = _in_case_of("ML", word[:3]) + word[3:], "mlops"
+            items.append([word, join, key])
+        elif not items or items[-1][0] is not None:  # the next fields of AI go with the first, and the joins between
+            items.append([None, join, key])
+    kept = [item for item in items if item[0] is not None]
+    case = f"{match.group('levels')}{' '.join(item[0] for item in kept)} {match.group('noun')}"  # the role's own words
+    other = any(item[2] not in _ML_FIELDS for item in kept)
+    if other and not any(item[2] in _ML_FIELDS for item in kept):  # 'ML' in the place of the first field that went
+        first = next(item for item in items if item[0] is None)
+        first[0], first[2] = _in_case_of("ML", case), "ml"
+    text = ""
+    for position, (word, join, _key) in enumerate(items):
+        if word is None:
+            continue
+        if position and items[position - 1][0] is None:  # after fields that went: one join, or none at the start
+            join = max(items[position - 1][1], join, key=_join_rank) if position > 1 else ""
+        text += (join if text else "") + word
+    if not other and (not kept or [item[2] for item in kept] == ["ml"]):
+        text = _in_case_of("Machine Learning", case)
+    new = title[:match.start("fields")] + text + title[match.end("fields"):]
+    return _USUAL_JOB_TITLE.sub(_engineer, new, count=1)
+
+
+def dated_title(title: str, end: str) -> str:
+    """The title a job that ended on `end` had: for one that ended before titles named for AI became common
+    (AI_TITLE_YEAR), earlier_title ('Senior AI Engineer' ending in 'Dec 2022' -> 'Senior Machine Learning Engineer');
+    else the title as it is (a job that ended in 2023 or later, one held now, one whose end cannot be read)."""
+    year = end_year(end)
+    return earlier_title(title) if year is not None and year < AI_TITLE_YEAR else title
+
+
+def _notes_name_role(notes: str, title: str) -> bool:
+    """Whether the person's notes name the title's role (_FIELD_ROLE_TITLE: its fields and its noun, without levels or
+    what follows), in any letter case and either spelling, with either noun: 'Joined as an AI developer on Search' names
+    the role of 'Senior AI Engineer'; 'Built an LLM prototype' names none."""
+    match = _FIELD_ROLE_TITLE.match(title)
+
+    def words(text: str) -> str:  # one field as one word ('Machine Learning' is 'ml'), between spaces
+        return " " + " ".join("engineer" if word == "developer" else word
+                              for word in languages.title_words(spelling.us_text(text))) + " "
+
+    return bool(match and notes) and words(f"{match.group('fields')} {match.group('noun')}") in words(notes)
+
+
+def era_title_fixes(resume: Resume) -> list[str]:
+    """Each job but the current one (current_job: under the name, its title is the post's) has the title of its time
+    (dated_title), also one listed above the current job: a job that ended before titles named for AI became common is
+    never titled for AI ('AI Engineer' -> 'Machine Learning Engineer', 'AI Platform Engineer' -> 'ML Platform
+    Engineer'). A title stays when that employer's project notes, as the model reads them (clean_notes), name its role
+    (_notes_name_role: 'Joined as an AI Engineer on Search' keeps 'Senior AI Engineer'); notes that only name AI work
+    ('Built an LLM prototype') keep nothing. Changes the resume in place and returns a note per changed title, in the
+    form of fix_title_regressions' (TITLE_NOTE), so first_draft_notes keeps it while the title stays."""
+    current, notes = current_job(resume), []
+    for exp in resume.experience:
+        company = resume.profile.companies[exp.company_index]
+        new = exp.job_title if exp is current else dated_title(exp.job_title, company.end)
+        if new == exp.job_title or _notes_name_role(clean_notes(company.projects), exp.job_title):
+            continue
+        notes.append(f"{company.name}: {TITLE_NOTE} '{exp.job_title}' to '{new}': titles named for AI became common "
+                     f"only in {AI_TITLE_YEAR}, after this job ended.")
+        exp.job_title = new
+    return notes
 
 
 # A broad field is part of a common title, never a specialty: 'AI Platform Engineer', 'Data Platform Engineer' and

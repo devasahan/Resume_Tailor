@@ -34,6 +34,16 @@ AI_DEV_POST = (
 )
 
 
+@pytest.fixture
+def profile(profile):
+    """conftest's profile, but the job before the current one ended in February 2023 (Northwind Labs since March 2023):
+    these tests are about the usual noun, the level and the three places, so the older titles they read stay as they are
+    through build()'s title steps. An AI title at a job that ended before 2023 takes the title of its time
+    (era_title_fixes), which tests/test_ai_career.py checks on conftest's own dates."""
+    profile.companies[0].start, profile.companies[1].end = "Mar 2023", "Feb 2023"
+    return profile
+
+
 # ------------------------------------------------------------------ the usual title of a field
 @pytest.mark.parametrize("role,usual", [
     ("Senior AI Developer", "Senior AI Engineer"),
@@ -252,6 +262,8 @@ def drafted(profile, analysis, summary, titles, headline="AI Developer"):
     validate.short_role_headline(resume)  # build()'s order
     validate.general_role_fixes(resume, analysis)
     notes = validate.fix_title_regressions(resume)
+    notes += validate.era_title_fixes(resume)
+    notes += validate.fix_title_regressions(resume)
     notes += validate.role_level_fixes(resume, analysis)
     validate.same_title(resume)
     return resume, notes
@@ -497,6 +509,8 @@ def built_twice(profile, analysis, current, opening):
         resume = validate.build_resume(profile, draft)
         validate.short_role_headline(resume)  # build()'s order
         validate.general_role_fixes(resume, analysis)
+        validate.fix_title_regressions(resume)
+        validate.era_title_fixes(resume)
         validate.fix_title_regressions(resume)
         validate.role_level_fixes(resume, analysis)
         validate.same_title(resume)
@@ -836,8 +850,7 @@ def test_a_senior_ai_developer_run_with_a_letter_keeps_the_posts_title_outside_t
     assert run["status"] == "ok" and run["retries"] == 0  # no rewrite pass
     resume = run["resume"]
     assert [exp["job_title"] for exp in resume["experience"]] == [
-        "Senior AI Engineer", "AI Engineer", "Software Engineer", "Associate Software Engineer",
-        "Junior Software Engineer"]
+        "Senior AI Engineer", "AI Engineer", "Data Engineer", "Software Engineer", "Junior Software Engineer"]
     assert resume["headline"] == "Senior AI Engineer" and resume["summary"].startswith("Senior AI Engineer with ")
     assert run["analysis"]["target_role"] == "Senior AI Developer" and run["analysis"]["general_role"] == "AI Engineer"
     assert run["cover_letter"]["paragraphs"][0].startswith(
@@ -952,7 +965,7 @@ def test_the_prompt_names_the_usual_noun_of_each_field():
     assert "whatever noun the posting uses" not in text
     assert '"Backend Engineer" for "Payments Backend Engineer", "AI Engineer" for "Senior AI Developer");' in text
     assert '(for a "Senior Voice AI Engineer" or a "Senior AI Developer" post: "Senior AI Engineer")' in text
-    assert PROMPT_VERSION == "v41"
+    assert PROMPT_VERSION == "v42"
 
 
 @pytest.mark.parametrize("target,general,usual", [

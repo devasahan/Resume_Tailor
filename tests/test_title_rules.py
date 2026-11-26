@@ -306,8 +306,7 @@ def test_a_longer_career_is_asked_for_the_whole_path(router, db, registry):
     ("Senior", "AI Platform Engineer", ["Senior AI Platform Engineer", "AI Platform Engineer", "Platform Engineer",
                                         "Software Engineer", "Junior Software Engineer"]),  # the owner's path
     ("Senior", "Machine Learning Engineer", ["Senior Machine Learning Engineer", "Machine Learning Engineer",
-                                             "Software Engineer", "Associate Software Engineer",
-                                             "Junior Software Engineer"]),
+                                             "Data Engineer", "Software Engineer", "Junior Software Engineer"]),
     ("", "Front End Developer", ["Front End Developer", "Associate Front End Developer", "Associate Software Developer",
                                  "Junior Software Developer", "Junior Software Developer"]),
     ("Senior", "Data and Analytics Engineer", ["Senior Data and Analytics Engineer", "Data and Analytics Engineer",
@@ -413,8 +412,8 @@ def test_a_run_whose_present_job_is_listed_second_gives_it_the_posts_title(route
     assert resume.profile.companies[current.company_index].name == "Bluefin Commerce"
     assert resume.headline == current.job_title == "Senior AI Platform Engineer"
     assert resume.summary.startswith("Senior AI Platform Engineer with ")
-    assert [e.job_title for e in resume.experience] == [
-        "Senior AI Platform Engineer", "Senior AI Platform Engineer", "AI Platform Engineer"]
+    assert [e.job_title for e in resume.experience] == [  # Contoso ended in Feb 2021: a title of its time
+        "Senior AI Platform Engineer", "Senior AI Platform Engineer", "ML Platform Engineer"]
     assert validate.title_path_problems(resume, result.analysis) == ([], False)
 
 

@@ -10,7 +10,9 @@ Engineer, AI Platform Engineer, Senior AI Platform Engineer), its headline and i
 recent title, and the current job names the post's most wanted programming language (Python for AI work when the post
 names none). Its common title takes the usual noun of the posting's field (v40: "AI Engineer" for a "Senior AI
 Developer" post, whose titles then climb to "Senior AI Engineer"), while the analysis keeps the posting's own title for
-the cover letter and History.
+the cover letter and History. Its middle jobs fit their work and each older title is one of its time (v42): a senior AI
+post's five jobs read Junior Software Engineer, Software Engineer, Data Engineer, AI Engineer, Senior AI Engineer, and a
+job that ended before 2023 is a "Machine Learning Engineer", never an "AI Engineer".
 
 Styles:  concise | detailed (too many long bullets, includes one invented number so the check can flag it)
          flaky (returns invalid JSON until the retry feedback appears in the prompt)
@@ -29,7 +31,7 @@ from ..parsing.heuristic import parse_resume_text
 from ..pipeline import languages
 from ..pipeline.facts import is_current, is_expired
 from ..pipeline.notes import clean_notes
-from ..pipeline.validate import same_certification, usual_title
+from ..pipeline.validate import dated_title, same_certification, usual_title
 from ..prompts import RETRY_MARKER
 from ..schemas import Company, JDAnalysis
 from .base import LLMClient, LLMResult, Usage
@@ -297,8 +299,15 @@ def _title_ladder(prefix: str, base: str, count: int, current: int = 0) -> list[
     the field one step lower: 'Associate Data Engineer'), then titles nearer the general one, one field word fewer at a
     time while what is left still names a field (FIELD_WORDS: 'Platform Engineer', never 'Learning Engineer'), then
     plain titles ('Software Engineer', 'Junior Software Engineer'; 'Associate Software Engineer' only when the career
-    needs one more step). A longer career keeps the oldest title. The posting's title is the current job's (`current`:
-    the one marked 'Present', else the most recent), and a job listed above it, which ended later, keeps it too."""
+    needs one more step). A senior post in AI's field alone ('Senior AI Engineer', 'Senior Machine Learning Engineer':
+    no nearer title) steps through 'Data Engineer' (data pipelines, the work before models in production) before the
+    plain titles, when the career has room for that step and a junior one (five jobs: Senior AI Engineer, AI Engineer,
+    Data Engineer, Software Engineer, Junior Software Engineer). A longer career keeps the oldest title. The posting's
+    title is the current job's (`current`: the one marked 'Present', else the most recent), and a job listed above it,
+    which ended later, keeps it too. These are the titles of today: _tailor gives each other job the one of its time
+    (dated_title: 'Machine Learning Engineer' for 'AI Engineer' at a job that ended before 2023)."""
+    from ..pipeline import validate  # late, as in fits_era
+
     level, _, rest = base.partition(" ")
     if not prefix and level in LEVEL_WORDS[:5] and rest:  # guess_role keeps a level its pattern cannot split off
         prefix, base = level, rest  # ('Senior iOS Developer', 'Senior Engineer')
@@ -314,6 +323,9 @@ def _title_ladder(prefix: str, base: str, count: int, current: int = 0) -> list[
     elif field and base != plain and not nearer and field[0] not in LEVEL_WORDS:  # the field's title one step
         ladder.append(f"Associate {base}")  # lower ('Associate Data Engineer'), never 'Associate Associate ...'
     ladder = list(dict.fromkeys(ladder + nearer + ([plain] if senior else [])))
+    if (senior and noun == "Engineer" and not nearer and validate._field_words(base) == {"ai"}
+            and count - current >= len(ladder) + 2):  # room for the Data step and a junior title
+        ladder.insert(len(ladder) - 1, "Data Engineer")  # before the plain title
     lowest = ([f"Associate {plain}"] if count - current > len(ladder) + 1 else []) + [f"Junior {plain}"]
     ladder = list(dict.fromkeys(ladder + lowest))
     return [ladder[min(max(i - current, 0), len(ladder) - 1)] for i in range(count)]
@@ -457,7 +469,11 @@ class FakeClient(LLMClient):
                                                now=LEAD_BASES[index % len(LEAD_BASES)][1],
                                                count1=CURRENT_COUNTS[0] if estimate else "the",
                                                count2=CURRENT_COUNTS[1] if estimate else "most"))
-            experience.append({"company_index": index, "job_title": titles[index], "bullets": bullets})
+            # each job but the current one has the title of its time (v42: 'Machine Learning Engineer' for 'AI
+            # Engineer' at a job that ended before 2023), as the prompt asks; the headline and the summary keep
+            # titles[0], the current job's title
+            title = titles[index] if index == current else dated_title(titles[index], end)
+            experience.append({"company_index": index, "job_title": title, "bullets": bullets})
 
         summary = (  # 2-3 sentences: the most recent title, the experience, the current focus, one result
             f"{titles[0] if titles else target} with hands-on experience delivering {k[0]} and {k[1]} work for product "

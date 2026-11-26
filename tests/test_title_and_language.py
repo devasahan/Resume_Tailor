@@ -802,5 +802,5 @@ def test_a_post_for_work_not_built_in_code_asks_for_no_language(router, db):
     assert not any("programming language" in w for w in result.ats_warnings)
 
 
-def test_the_prompt_version_is_v41():
-    assert PROMPT_VERSION == "v41"
+def test_the_prompt_version_is_v42():
+    assert PROMPT_VERSION == "v42"
