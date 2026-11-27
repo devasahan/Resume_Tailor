@@ -265,6 +265,10 @@ def test_a_job_listed_above_the_current_one_goes_by_its_own_dates():
     "Search ranking (2021): joined as an ai engineer, then led the ranking rebuild.",
     "Hired as an AI Developer for the search team.",  # either noun: the same role
     "- Senior AI Engineer on the Search team\n- Built the ranking service in Python",
+    # a sentence, a bracket or an item may end right before or after the role
+    "Search ranking (AI engineer, 2021-2022).",
+    "Joined Contoso.ai as an AI engineer. Tools: Python, PyTorch.",
+    "Role: AI Engineer | Search team",
 ])
 def test_a_title_the_persons_notes_name_stays(notes):
     resume = resume_of(("Senior AI Engineer", "Northwind Labs", "Jan 2023", "Present"),
@@ -279,6 +283,28 @@ def test_a_title_the_persons_notes_name_stays(notes):
     "Worked with the AI Platform team on Search.",
     "Mentored AI engineering interns.",
     "Source: https://contoso.example.com/ai-engineer",  # a source line is not the person's own words
+    # the role's words in two sentences, clauses, brackets, items or lines (_NOTES_BREAK)
+    "Search ranking (AI). Engineer on call for the ranking API.",
+    "Search ranking with AI\nEngineer on call for the ranking API",
+    "Ranking: AI; engineer on call for the ranking API.",
+    "Ranked search with Azure AI. Engineer on call for the API.",
+    'Shipped "Contoso AI." Engineer on call for its API.',  # a full stop before a quote mark
+    "Shipped the search assistant on Azure AI! Engineer of the quarter, Q3 2021.",
+    "Why rank with AI? Engineer time: the rules took 3 people.",
+    "Ranking with Azure AI;engineer on call for the API.",  # no space after the mark
+    "Shipped search ranking with AI (engineer on call for the API).",
+    "Search ranking (with AI) engineer on call for the API.",
+    "Shipped search ranking with AI [engineer on call for the API].",
+    "Search ranking [with Azure AI] engineer on call for the API.",
+    "Search ranking with Azure AI | Engineer on call for the API",
+    "Search ranking with Azure AI • Engineer on call for the API",
+    "Search ranking with Azure AI · Engineer on call for the API",
+    "Search ranking with Azure AI — Engineer on call for the API",
+    "Search ranking with Azure AI – Engineer on call for the API",
+    "Search ranking, phase A.\nI. Engineer on call for the ranking API.",  # no 'A.I.' across a line
+    # a full stop inside a word ends nothing, and makes no 'AI' of its own
+    "Won the Contoso.ai Engineer of the Quarter award (2021).",
+    "Hired as a Contoso.ai developer in 2020.",
 ])
 def test_notes_that_do_not_name_the_title_keep_nothing(notes):
     resume = resume_of(("Senior AI Engineer", "Northwind Labs", "Jan 2023", "Present"),
@@ -314,12 +340,94 @@ def test_notes_that_name_the_title_in_another_form_keep_it(title, notes):
     ("AI Engineer", "Built AI and developer tools for the search team.", "Machine Learning Engineer"),
     ("LLM Engineer", "Owned the LLM and developer tooling roadmap.", "Machine Learning Engineer"),
     ("Data and AI Engineer", "Joined as a data engineer and AI engineer.", "Data and ML Engineer"),
+    # another field right before the role's names a wider role, in either order and with any join
+    ("AI Engineer", "Joined as an AI/ML engineer.", "Machine Learning Engineer"),
+    ("AI Engineer", "Joined as an ML/AI engineer.", "Machine Learning Engineer"),
+    ("AI Engineer", "Joined as an AI and data engineer.", "Machine Learning Engineer"),
+    ("AI Engineer", "Joined as a Data and AI engineer.", "Machine Learning Engineer"),
+    ("AI Engineer", "Joined as a Data & AI engineer.", "Machine Learning Engineer"),
+    ("AI Engineer", "Joined as a Data, Cloud and AI developer.", "Machine Learning Engineer"),
+    ("AI Engineer", "Joined as a Deep Learning AI engineer.", "Machine Learning Engineer"),  # a field of two words
+    ("AI Engineer", "Joined as a Data Ops AI engineer.", "Machine Learning Engineer"),
+    ("Senior AI Engineer", "Joined as a senior ML/GenAI engineer.", "Senior Machine Learning Engineer"),
+    ("LLM Engineer", "Joined as an NLP/LLM engineer.", "Machine Learning Engineer"),
+    ("AI/ML Engineer", "Joined as a Data/AI/ML engineer.", "Machine Learning Engineer"),
+    ("Data and AI Engineer", "Joined as a Cloud, Data and AI engineer.", "Data and ML Engineer"),
+    # a field's form never runs across a line either (_NOTES_FIELD_FORMS)
+    ("LLMOps Engineer", "- Fine-tuned an open LLM\n- Ops engineer on call for the API", "MLOps Engineer"),
+    ("Generative AI Engineer", "Rebuilt the next-gen\nAI engineer hiring loop.", "Machine Learning Engineer"),
 ])
 def test_notes_that_name_another_role_in_those_words_keep_nothing(title, notes, renamed):
     resume = resume_of(("Senior AI Engineer", "Northwind Labs", "Jan 2023", "Present"),
                        (title, "Contoso", "Jun 2020", "Dec 2022"), notes={1: notes})
     assert validate.era_title_fixes(resume) == [era_note("Contoso", title, renamed)]
     assert validate.era_title_fixes(resume) == []  # a second pass changes nothing
+
+
+@pytest.mark.parametrize("title,notes,renamed", [
+    # the noun as the first word of a longer noun names no role, as 'AI and developer tools' names none
+    ("AI Engineer", "Rolled out AI developer tools (GitHub Copilot) to 40 engineers.", "Machine Learning Engineer"),
+    ("AI Engineer", "Built an AI engineer copilot for the support team.", "Machine Learning Engineer"),
+    ("AI Engineer", "Built the run-comparison UI for the AI developer platform.", "Machine Learning Engineer"),
+    ("AI Engineer", "Joined as an AI developer advocate.", "Machine Learning Engineer"),
+    ("AI Engineer", "Built AI-developer tooling for the search team.", "Machine Learning Engineer"),
+    ("LLM Engineer", "Built LLM developer tools.", "Machine Learning Engineer"),
+    ("Generative AI Engineer", "Built GenAI developer tools for the support team.", "Machine Learning Engineer"),
+    ("AI/ML Engineer", "Built AI and ML engineer tooling.", "Machine Learning Engineer"),
+    # a role never runs across the end of a sentence, a line or a clause
+    ("AI Engineer", "- Ranking models on Azure AI\n- Engineer on call for the search API", "Machine Learning Engineer"),
+    ("AI Engineer", "Trained models on Vertex AI\nDeveloper portal: built the docs site.", "Machine Learning Engineer"),
+    ("AI Engineer", "Search ranking with AI: engineer on the ranking team.", "Machine Learning Engineer"),
+    ("LLM Engineer", "Fine-tuned an LLM. Engineer on call for the API.", "Machine Learning Engineer"),
+    ("AI Platform Engineer", "Built the AI platform; engineer on call for its API.", "ML Platform Engineer"),
+])
+def test_notes_that_name_no_role_in_those_words_keep_nothing(title, notes, renamed):
+    resume = resume_of(("Senior AI Engineer", "Northwind Labs", "Jan 2023", "Present"),
+                       (title, "Contoso", "Jun 2020", "Dec 2022"), notes={1: notes})
+    assert validate.era_title_fixes(resume) == [era_note("Contoso", title, renamed)]
+    assert validate.era_title_fixes(resume) == []  # a second pass changes nothing
+
+
+@pytest.mark.parametrize("notes", [
+    "Joined as an AI engineer. Tools: Python, PyTorch.",  # 'Tools' starts the next sentence
+    "Joined as an AI engineer\nTools: Python, PyTorch",  # or the next line
+    "Joined as an AI engineer; tools: Python, PyTorch.",
+    "Joined as AI Engineer, Platform team.",  # a part after a comma is no longer noun
+    "Role: AI Engineer",
+])
+def test_notes_that_name_the_role_before_a_sentence_end_keep_it(notes):
+    resume = resume_of(("Senior AI Engineer", "Northwind Labs", "Jan 2023", "Present"),
+                       ("AI Engineer", "Contoso", "Jun 2020", "Dec 2022"), notes={1: notes})
+    assert validate.era_title_fixes(resume) == [] and titles_of(resume)[1] == "AI Engineer"
+
+
+@pytest.mark.parametrize("notes", [
+    "Joined as a Voice AI engineer on Search.",  # a specialty, no field
+    "Joined as a Vision AI engineer.",  # 'Vision' alone is no field, as in a title ('Vision AI Engineer')
+    "Joined the data team as an AI engineer.",
+    "Joined as a Sr. AI Engineer.",  # the dot of an abbreviation ends a part, never the role after it
+    # a field that ends the sentence, line or clause before the role is no part of it
+    "Moved the batch jobs to the cloud.\nAI engineer on Search from 2021.",
+    "- Owned the ML platform\n- AI engineer on Search",
+    "Ranking with ML; AI engineer for the search team.",
+    "Search infrastructure: AI engineer, then tech lead.",
+])
+def test_notes_that_name_the_role_after_a_specialty_or_another_sentence_keep_it(notes):
+    resume = resume_of(("Senior AI Engineer", "Northwind Labs", "Jan 2023", "Present"),
+                       ("AI Engineer", "Contoso", "Jun 2020", "Dec 2022"), notes={1: notes})
+    assert validate.era_title_fixes(resume) == [] and titles_of(resume)[1] == "AI Engineer"
+
+
+@pytest.mark.parametrize("notes", ["Joined as an ML/AI engineer on Search.", "Joined as an AI/ML engineer on Search."])
+@pytest.mark.parametrize("written", ["", "AI Engineer"])  # the demo's own title, or a model that writes the AI title
+def test_a_whole_run_reads_a_wider_role_in_either_order_as_another_role(router, db, registry, notes, written):
+    person = four_jobs_ending_2022()  # Contoso: Jun 2020 - Dec 2022
+    person.companies[1].projects = notes
+    _client, result = run(router, db, registry, person, **({"titles": ["", written]} if written else {}))
+    assert titles_of(result.resume) == ["Senior AI Engineer", "Machine Learning Engineer", "Software Engineer",
+                                        "Junior Software Engineer"]
+    assert result.retries == 0
+    assert result.notes.count(era_note("Contoso", "AI Engineer", "Machine Learning Engineer")) == (1 if written else 0)
 
 
 @pytest.mark.parametrize("target,general,older,renamed", [
@@ -420,6 +528,27 @@ def test_the_first_drafts_note_stays_while_the_title_does():
     assert first_draft_notes(notes, draft, fixed) == notes
     fixed.experience[1].job_title = "Data Engineer"  # the rewrite pass chose another title
     assert first_draft_notes(notes, draft, fixed) == []
+    # the same title after the second build: the note stays while the revision left the title as it was shown (or
+    # wrote it the same, as build_resume reads it), and goes when it wrote another one that build() brought back
+    fixed.experience[1].job_title = "Machine Learning Engineer"
+    shown = {0: "Senior AI Engineer", 1: "Machine Learning Engineer"}
+    assert first_draft_notes(notes, draft, fixed, shown) == notes
+    assert first_draft_notes(notes, draft, fixed, {**shown, 1: " Machine Learning  Engineer"}) == notes
+    assert first_draft_notes(notes, draft, fixed, {**shown, 1: "LLM Engineer"}) == []
+
+
+def test_a_title_the_revision_writes_again_in_the_other_spelling_keeps_the_first_drafts_note():
+    """A run in British spelling: the revision writes the title it was shown in American spelling, which build() spells
+    the run's way again, so it wrote no other title and the first draft's level note stays."""
+    draft = resume_of(("Senior Data Engineer", "Northwind Labs", "Jan 2023", "Present"),
+                      ("Data Modelling Engineer", "Contoso", "Jun 2020", "Dec 2022"),
+                      ("Data Modelling Engineer II", "Fabrikam", "Jul 2018", "May 2020"))
+    notes = validate.fix_title_regressions(draft)
+    assert titles_of(draft)[1] == "Data Modelling Engineer II" and len(notes) == 1
+    fixed = draft.model_copy(deep=True)
+    shown = {exp.company_index: exp.job_title for exp in draft.experience}
+    assert first_draft_notes(notes, draft, fixed, {**shown, 1: "Data Modeling Engineer II"}) == notes
+    assert first_draft_notes(notes, draft, fixed, {**shown, 1: "Data Modeling Engineer"}) == []
 
 
 # ------------------------------------------------------------------ whole runs: build()'s order
@@ -612,6 +741,10 @@ def test_an_llmops_post_reads_mlops_before_2023_as_its_field(router, db, registr
     ("Search ranking (2021): joined as an AI Engineer on Search, then led the ranking rebuild.", "AI Engineer"),
     ("Hired as an AI developer for the search team.", "AI Engineer"),  # either noun, any letter case
     ("Built an LLM prototype for search.", "Machine Learning Engineer"),  # AI work, not the title
+    ("Rolled out AI developer tools (GitHub Copilot) to 40 engineers.", "Machine Learning Engineer"),  # a longer noun
+    ("- Ranking models on Azure AI\n- Engineer on call for the search API", "Machine Learning Engineer"),  # two lines
+    ("Search ranking (AI). Engineer on call for the ranking API.", "Machine Learning Engineer"),  # two sentences
+    ("Hired as a Contoso.ai developer in 2020.", "Machine Learning Engineer"),  # one word, 'Contoso.ai'
     ("", "Machine Learning Engineer"),
 ])
 def test_the_demo_keeps_an_older_title_the_persons_notes_name(router, db, registry, notes, title):
@@ -623,6 +756,25 @@ def test_the_demo_keeps_an_older_title_the_persons_notes_name(router, db, regist
     assert titles_of(result.resume) == ["Senior AI Engineer", title, "Software Engineer", "Junior Software Engineer"]
     assert result.retries == 0 and not any(ERA_REASON in note for note in result.notes)
     assert result.resume.headline == "Senior AI Engineer"
+
+
+@pytest.mark.parametrize("notes", [
+    "Rolled out AI developer tools (GitHub Copilot) to 40 engineers.",
+    "- Ranking models on Azure AI\n- Engineer on call for the search API",
+    "Search ranking (AI). Engineer on call for the ranking API.",
+    "Hired as a Contoso.ai developer in 2020.",
+])
+def test_a_model_title_whose_notes_name_no_title_is_renamed_once(router, db, registry, notes):
+    """Notes that name a longer noun, split the words across two sentences or lines, or hold 'ai' only inside a word
+    ('Contoso.ai') name no title: a model's 'AI Engineer' at a job that ended in 2022 becomes the title of its time,
+    with its note once and no rewrite pass."""
+    person = four_jobs_ending_2022()
+    person.companies[1].projects = notes
+    _client, result = run(router, db, registry, person, titles=["", "AI Engineer"])
+    assert titles_of(result.resume) == ["Senior AI Engineer", "Machine Learning Engineer", "Software Engineer",
+                                        "Junior Software Engineer"]
+    assert result.resume.headline == "Senior AI Engineer" and result.retries == 0
+    assert result.notes.count(era_note("Contoso", "AI Engineer", "Machine Learning Engineer")) == 1
 
 
 @pytest.mark.parametrize("prefix,base,count,current,ladder", [
@@ -664,6 +816,7 @@ def test_the_demos_middle_jobs_fit_their_work(prefix, base, count, current, ladd
 @pytest.mark.parametrize("notes,title", [
     ("Joined as an AI Engineer on Search: built the ranking service.", "AI Engineer"),  # the person's own title
     ("Built an LLM prototype for search.", "Machine Learning Engineer"),  # AI work, not the title
+    ("Search ranking with AI\nEngineer on call for the ranking API", "Machine Learning Engineer"),  # two lines
 ])
 def test_with_a_rewrite_pass_the_title_the_notes_name_holds(router, db, registry, profile, notes, title, written):
     """The demo's revision agrees with build(): the title its notes name stays through the rewrite pass, the second
@@ -790,6 +943,9 @@ LONG_TITLES = [
     "ai platform " * 2000 + "developer advocate", "ai, " * 5000 + "engineer", "ai/ " * 7000 + "/ engineer",
     "gen" + " " * 20000 + "ai engineer", "llm" + "-" * 20000 + "ops engineer", "a. " * 7000 + "i. engineer",
     "and " * 5000 + "ai engineer", "ai and developer " * 1500 + "x",
+    # the notes read a part at a time, in forms that never cross a line, with longer nouns and fields before the role
+    ". " * 10000, "ai (" * 5000, "ai.\n" * 5000, "gen \n" * 4000, "a.\ni. " * 3000, "engineer" + " " * 20000 + "tools",
+    "ai engineer tools " * 1200, "data ai engineer " * 1200, "deep learning ai engineer " * 800, "contoso.ai " * 2000,
 ]
 
 
@@ -887,6 +1043,34 @@ def test_a_rename_takes_no_step_it_does_not_need_or_cannot_name(rows):
       ("Machine Learning Engineer", "Bluefin Commerce", "Mar 2019", "Present"),
       ("Software Engineer", "Contoso", "Jul 2016", "Feb 2019")],
      ["Machine Learning Engineer", "Machine Learning Engineer", "Software Engineer"]),
+    # a current 'AI Engineer' (a mid-level post) one level below the step: the line under the name would step down
+    ([("AI Engineer", "Northwind Labs", "Feb 2023", "Present"), ("AI Engineer", "Contoso", "Jan 2020", "Dec 2022"),
+      ("LLM Engineer", "Fabrikam", "Jan 2018", "Dec 2019")],
+     ["AI Engineer", "Machine Learning Engineer", "Machine Learning Engineer"]),
+    # a later job of another role one level below the step ('AI Engineer' after 'Machine Learning Engineer II')
+    ([("Senior AI Engineer", "Northwind Labs", "Feb 2024", "Present"),
+      ("AI Engineer", "Bluefin Commerce", "Jan 2021", "Dec 2023"), ("LLM Engineer", "Contoso", "Jan 2018", "Dec 2020"),
+      ("Machine Learning Engineer", "Fabrikam", "Jan 2016", "Dec 2017")],
+     ["Senior AI Engineer", "AI Engineer", "Machine Learning Engineer", "Machine Learning Engineer"]),
+    ([("Senior AI Engineer", "Northwind Labs", "Feb 2023", "Present"),
+      ("AI Platform Engineer", "Bluefin Commerce", "Jan 2021", "Dec 2022"),
+      ("LLM Engineer", "Contoso", "Jan 2019", "Dec 2020"), ("AI Engineer", "Fabrikam", "Jan 2017", "Dec 2018")],
+     ["Senior AI Engineer", "ML Platform Engineer", "Machine Learning Engineer", "Machine Learning Engineer"]),
+    # the current title with a part after the role, which the line under the name leaves out: its level is the role's
+    ([("Machine Learning Engineer (Remote)", "Northwind Labs", "Feb 2023", "Present"),
+      ("AI Engineer", "Contoso", "Jan 2020", "Dec 2022"),
+      ("Machine Learning Engineer", "Fabrikam", "Jan 2018", "Dec 2019")],
+     ["Machine Learning Engineer (Remote)", "Machine Learning Engineer", "Machine Learning Engineer"]),
+    # ... also when that part holds a level word: the line under the name reads 'AI Engineer'
+    ([("AI Engineer (Team Lead)", "Northwind Labs", "Feb 2023", "Present"),
+      ("AI Engineer", "Contoso", "Jan 2020", "Dec 2022"),
+      ("Machine Learning Engineer", "Fabrikam", "Jan 2018", "Dec 2019")],
+     ["AI Engineer (Team Lead)", "Machine Learning Engineer", "Machine Learning Engineer"]),
+    # a later job of the stepped role, written 'ML Engineer'
+    ([("Senior AI Engineer", "Northwind Labs", "Feb 2023", "Present"),
+      ("ML Engineer", "Bluefin Commerce", "Jan 2021", "Dec 2022"), ("AI Engineer", "Contoso", "Jan 2018", "Dec 2020"),
+      ("Machine Learning Engineer", "Fabrikam", "Jan 2016", "Dec 2017")],
+     ["Senior AI Engineer", "ML Engineer", "Machine Learning Engineer", "Machine Learning Engineer"]),
 ])
 def test_a_step_never_goes_above_a_later_job_or_the_current_one(rows, titles):
     resume = resume_of(*rows)
@@ -903,6 +1087,12 @@ def test_a_step_never_goes_above_a_later_job_or_the_current_one(rows, titles):
      ["Machine Learning Engineer", "Machine Learning Engineer", "Machine Learning Engineer"]),
     ("AI Engineer", "AI Engineer", ["AI Engineer", "AI Engineer", "Machine Learning Engineer II"],
      ["AI Engineer", "Machine Learning Engineer II", "Machine Learning Engineer II"]),
+    # the line under the name leaves the part after the role out: the step is never above it
+    ("Machine Learning Engineer", "Machine Learning Engineer",
+     ["Machine Learning Engineer (Remote)", "AI Engineer", "Machine Learning Engineer"],
+     ["Machine Learning Engineer", "Machine Learning Engineer", "Machine Learning Engineer"]),
+    ("AI Engineer", "AI Engineer", ["AI Engineer (Team Lead)", "AI Engineer", "Machine Learning Engineer"],
+     ["AI Engineer", "Machine Learning Engineer", "Machine Learning Engineer"]),
 ])
 def test_build_never_takes_a_step_back(profile, post, general, titles, final):
     """build()'s title steps (drafted) on conftest's dates (Contoso Systems Jun 2019 - Feb 2022): a step stays, and
@@ -913,6 +1103,24 @@ def test_build_never_takes_a_step_back(profile, post, general, titles, final):
     stepped = {note.split(": ")[0] for note in notes if note.endswith("still shows growth.")}
     lowered = {note.split(": ")[0] for note in notes if note.endswith("never steps down.")}
     assert not stepped & lowered
+
+
+@pytest.mark.parametrize("rows", [
+    # the current job at the step's level or higher, as the line under the name shows it
+    [("Senior AI Engineer (Remote)", "Northwind Labs", "Feb 2023", "Present")],
+    [("Lead AI Engineer", "Northwind Labs", "Feb 2023", "Present")],
+    [("AI Engineer II", "Northwind Labs", "Feb 2023", "Present")],
+    # a later job of another role at the step's level
+    [("Senior AI Engineer", "Northwind Labs", "Feb 2024", "Present"),
+     ("AI Engineer II", "Bluefin Commerce", "Jan 2023", "Jan 2024")],
+])
+def test_a_step_stays_under_later_titles_at_its_level_or_higher(rows):
+    resume = resume_of(*rows, ("AI Engineer", "Contoso", "Jan 2020", "Dec 2022"),
+                       ("Machine Learning Engineer", "Fabrikam", "Jan 2018", "Dec 2019"))
+    notes = validate.era_title_fixes(resume)
+    assert titles_of(resume)[-2:] == ["Machine Learning Engineer II", "Machine Learning Engineer"]
+    assert notes[-1] == ("Contoso: title changed from 'Machine Learning Engineer' to 'Machine Learning Engineer II' so "
+                         "the career path still shows growth.")
 
 
 @pytest.mark.parametrize("older,stepped", [
@@ -942,6 +1150,47 @@ def test_a_rewrite_pass_that_writes_the_ai_title_again_keeps_the_step_and_notes_
     assert result.notes.count("Contoso: title changed from 'Machine Learning Engineer' to 'Machine Learning Engineer "
                               "II' so the career path still shows growth.") == 1
     assert validate.title_growth_problems(result.resume) == []
+
+
+@pytest.mark.parametrize("written,notes", [
+    # the step's level with the AI title: renamed again, with one note, never also the first draft's path to it
+    ("AI Engineer II", [era_note("Contoso", "AI Engineer II", "Machine Learning Engineer II")]),
+    # another AI title: renamed and stepped again, and only that path is noted
+    ("LLM Engineer", [era_note("Contoso", "LLM Engineer", "Machine Learning Engineer"),
+                      ("Contoso: title changed from 'Machine Learning Engineer' to 'Machine Learning Engineer II' so "
+                       "the career path still shows growth.")]),
+])
+def test_a_rewrite_pass_that_writes_another_ai_title_notes_one_path_to_the_title(router, db, registry, written, notes):
+    """The draft showed the step 'Machine Learning Engineer II'; the revision changes nothing but writes another AI
+    title for that job, which build() brings back to the same title: the notes say where it came from this time."""
+    person = career(("Northwind Labs", "Feb 2023", "Present"), ("Contoso", "Jun 2020", "Dec 2022"),
+                    ("Fabrikam", "Jul 2018", "May 2020"))
+    _client, result = run(router, db, registry, person, titles=["", "AI Engineer", "Machine Learning Engineer"],
+                          language=False, empty=True, again={1: written})
+    assert result.retries == 1
+    assert titles_of(result.resume)[1:] == ["Machine Learning Engineer II", "Machine Learning Engineer"]
+    assert [note for note in result.notes if note.startswith("Contoso: ")] == notes
+
+
+def test_a_title_the_revision_left_keeps_its_first_note_when_the_second_build_moves_it_and_back(router, db, registry):
+    """The revision writes the jobs around Contoso's and leaves Contoso's 'Machine Learning Engineer' (the model's 'AI
+    Engineer', renamed) as shown: the second build raises it to Fabrikam's new level and lowers it again under
+    Northwind Labs' renamed title. The first draft's note stays, so the notes tell the whole path from the model's
+    title."""
+    person = career(("Bluefin Commerce", "Jan 2023", "Present"), ("Northwind Labs", "Mar 2021", "Dec 2022"),
+                    ("Contoso", "Jan 2020", "Feb 2021"), ("Fabrikam", "Jul 2017", "Dec 2019"))
+    jd = AI_ENGINEER_POST.replace("Senior AI Engineer", "Machine Learning Engineer", 1)
+    client, result = run(router, db, registry, person, jd=jd,
+                         titles=["", "Machine Learning Engineer", "AI Engineer", "Data Engineer"], language=False,
+                         empty=True, again={1: "AI Engineer", 3: "Machine Learning Engineer II"})
+    assert result.retries == 1 and client.draft["experience"][2]["job_title"] == "Machine Learning Engineer"
+    assert titles_of(result.resume)[2] == "Machine Learning Engineer"
+    assert [note for note in result.notes if note.startswith("Contoso: ")] == [
+        era_note("Contoso", "AI Engineer", "Machine Learning Engineer"),
+        ("Contoso: title changed from 'Machine Learning Engineer' to 'Machine Learning Engineer II' so the career "
+         "path never steps down."),
+        ("Contoso: title changed from 'Machine Learning Engineer II' to 'Machine Learning Engineer' so the career "
+         "path never steps down.")]
 
 
 def test_a_rename_that_meets_the_job_before_it_asks_no_rewrite_pass(router, db, registry, profile):

@@ -3327,8 +3327,22 @@ def dated_title(title: str, end: str) -> str:
 
 # The forms of a field that the person's notes may write apart or with dots, as one word each, read before
 # languages.title_words (which reads 'GenAI' as 'ai'): 'GenAI', 'Gen AI' and 'Generative AI' are 'generativeai',
-# 'LLM Ops' is 'llmops' and 'A.I.' is 'ai'
-_NOTES_FIELD_FORMS = re.compile(r"(?<!\w)(?:(gen(?:erative)?[\s-]*ai)|(llm[\s-]*ops)|a\.\s?i\.?)(?!\w)", re.IGNORECASE)
+# 'LLM Ops' is 'llmops' and 'A.I.' is 'ai'; never across a line ('an LLM' above '- Ops on call' is no 'LLMOps')
+_NOTES_FIELD_FORMS = re.compile(
+    r"(?<!\w)(?:(gen(?:erative)?(?:[^\S\n]|-)*ai)|(llm(?:[^\S\n]|-)*ops)|a\.[^\S\n]?i\.?)(?!\w)", re.IGNORECASE)
+# Where a sentence, a clause, a bracket, an item or a line of the notes ends: a role never runs across it ('Search
+# ranking (AI). Engineer on call' and a line 'Ranking on Azure AI' above 'Engineer on call' name no 'AI Engineer'), and
+# a field before it is no part of the role after it ('Moved the jobs to the cloud.\nAI engineer on Search' names 'AI
+# Engineer'). A full stop with a letter or a digit right after it is part of a word, never an end ('Contoso.ai',
+# 'Node.js'). Read after _NOTES_FIELD_FORMS, so the dots of 'A.I.' are gone by then
+_NOTES_BREAK = re.compile(r"(?:\.(?!\w)|[!?;:()\[\]|•·—–\n])+")
+# The noun as the first word of a longer noun, which names no role ('AI developer tools', 'an AI engineer copilot', 'AI
+# Developer Advocate', 'AI-developer tooling': _DEVELOPER_COMPOUNDS, as the summary's rules read it)
+_NOTES_COMPOUND = re.compile(rf"(?<!\w)(?:engineer|developer)(?=\s+(?:{_DEVELOPER_COMPOUNDS})(?![\w-]))",
+                             re.IGNORECASE)
+# A field as the notes' words read it: one word, or two or three written apart ('data', 'deep learning', 'dev sec ops');
+# never a word that is only part of one ('Learning', 'Vision' or 'Ops' alone)
+_NOTES_FIELD = re.compile(rf"{_ENGINEER_FIELD}|generativeai", re.IGNORECASE)
 
 
 def _notes_name_role(notes: str, title: str) -> bool:
@@ -3336,29 +3350,47 @@ def _notes_name_role(notes: str, title: str) -> bool:
     what follows), in any letter case and either spelling, with either noun: 'Joined as an AI developer on Search' names
     the role of 'Senior AI Engineer'; 'Built an LLM prototype' names none. The fields may come in any order and with any
     join ('ML/AI' or 'AI and ML' for 'AI/ML', 'Data & AI' for 'Data and AI'), each written in any of its forms
-    (_NOTES_FIELD_FORMS: 'GenAI' for 'Generative AI', 'LLM Ops' for 'LLMOps'). A 'GenAI engineer' was an AI engineer
-    too, but an 'AI engineer' names no 'Generative AI Engineer'; 'Built AI and developer tools' names no role."""
+    (_NOTES_FIELD_FORMS: 'GenAI' for 'Generative AI', 'LLM Ops' for 'LLMOps'), with no other field right before them:
+    an 'ML/AI engineer' or a 'Data and AI engineer', like an 'AI/ML engineer', names no 'AI Engineer', while a 'Voice AI
+    engineer' names it (a specialty, no field). A 'GenAI engineer' was an AI engineer too, but an 'AI engineer' names no
+    'Generative AI Engineer'. The notes are read one sentence, clause, bracket, item or line at a time (_NOTES_BREAK;
+    notes are one project per line): a role never runs across where one ends, nor out of a word ('Contoso.ai
+    engineer'), and a field before that end is no part of the role after it ('Moved the jobs to the cloud.' above 'AI
+    engineer on Search' names 'AI Engineer'). The noun that starts a longer noun names no role (_NOTES_COMPOUND). So
+    'Built AI and developer tools', 'Built AI developer tools', 'Search ranking (AI). Engineer on call' and a line
+    'Ranking on Azure AI' above 'Engineer on call for the API' name no role."""
     match = _FIELD_ROLE_TITLE.match(title)
     if not match or not notes:
         return False
 
-    def words(text: str) -> list[str]:  # one field as one word ('Machine Learning' is 'ml'), either noun 'engineer'
-        text = _NOTES_FIELD_FORMS.sub(
+    def forms(text: str) -> str:  # each field in one form ('GenAI' and 'Generative AI' are 'generativeai')
+        return _NOTES_FIELD_FORMS.sub(
             lambda found: "generativeai" if found.group(1) else "llmops" if found.group(2) else "ai",
             spelling.us_text(text))
+
+    def words(text: str) -> list[str]:  # one field as one word ('Machine Learning' is 'ml'), either noun 'engineer'
         return ["engineer" if word == "developer" else word for word in languages.title_words(text)]
 
-    fields = sorted(word for word in words(match.group("fields")) if word != "and")
+    def ends_on_field(said: list[str], end: int) -> bool:  # whether the words before `end` end on a field
+        return any(_NOTES_FIELD.fullmatch(" ".join(said[end - size:end])) for size in (1, 2, 3) if end >= size)
+
+    fields = sorted(word for word in words(forms(match.group("fields"))) if word != "and")
     wanted = set(fields)
-    named = ["ai" if word == "generativeai" and word not in wanted else word for word in words(notes)]
-    # an 'and' between two of the role's fields joins them ('Data and AI'); any other ends them ('AI and developer')
-    said = [word for index, word in enumerate(named) if word != "and" or not 0 < index < len(named) - 1
-            or not {named[index - 1], named[index + 1]} <= wanted]
-    run = 0  # how many of the role's fields come right before this word: the last len(fields) of them are compared
-    for index, word in enumerate(said):
-        if word == "engineer" and fields and run >= len(fields) and sorted(said[index - len(fields):index]) == fields:
-            return True
-        run = run + 1 if word in wanted else 0
+    for part in _NOTES_BREAK.split(forms(notes)):  # a sentence, a clause, a bracket, an item or a line at a time
+        named = ["ai" if word == "generativeai" and word not in wanted else word
+                 for word in words(_NOTES_COMPOUND.sub(" ", part))]
+        # an 'and' between two of the role's fields joins them ('Data and AI'); any other ends them ('AI and developer')
+        said = [word for index, word in enumerate(named) if word != "and" or not 0 < index < len(named) - 1
+                or not {named[index - 1], named[index + 1]} <= wanted]
+        run = 0  # how many of the role's fields come right before this word: the last len(fields) of them are compared
+        for index, word in enumerate(said):
+            start = index - len(fields)
+            # the role's fields, and no other field right before them, also joined by an 'and': 'ML/AI', 'Data and
+            # AI' and 'Deep Learning AI' name another role
+            if (word == "engineer" and fields and run >= len(fields) and sorted(said[start:index]) == fields
+                    and not ends_on_field(said, start - 1 if start > 0 and said[start - 1] == "and" else start)):
+                return True
+            run = run + 1 if word in wanted else 0
     return False
 
 
@@ -3370,10 +3402,11 @@ def era_title_fixes(resume: Resume) -> list[str]:
     (_notes_name_role: 'Joined as an AI Engineer on Search' keeps 'Senior AI Engineer'); notes that only name AI work
     ('Built an LLM prototype') keep nothing. A renamed title that would read as the job before it, after a stay of 2+
     years, keeps the step up its AI title showed (_step_above: 'Machine Learning Engineer II' after 'Machine Learning
-    Engineer'), unless a job after it or the current job would then read as a step down from it (_steps_down: a
-    current 'AI Engineer' after a 'Machine Learning Engineer III'); then the rewrite pass asks for growth, as for any
-    same title. Changes the resume in place and returns a note per change, in the form of fix_title_regressions'
-    (TITLE_NOTE), so first_draft_notes keeps it while the title stays."""
+    Engineer'), unless a job after it, or the current job as the line under the name shows it, has a lower level, of
+    any role (a current 'AI Engineer' after a 'Machine Learning Engineer II'); then the rewrite pass asks for growth,
+    as for any same title. Changes the resume in place and returns a note per change, in the form of
+    fix_title_regressions' (TITLE_NOTE), so first_draft_notes keeps it while the title stays and the rewrite pass wrote
+    no other one for that job."""
     current, exps = current_job(resume), resume.experience
     companies = [resume.profile.companies[exp.company_index] for exp in exps]
     dated = [exp.job_title if exp is current else dated_title(exp.job_title, company.end)
@@ -3386,13 +3419,18 @@ def era_title_fixes(resume: Resume) -> list[str]:
         if dated[index] != exps[index].job_title and months is not None and months >= 24:  # a stay to show growth
             stepped[index] = _step_above(dated[index], stepped[index + 1], exps[index].job_title,
                                          exps[index + 1].job_title)
-    # then the newest first: a step stays only when no job after it, and not the current job, would read as a step
-    # down from it; else the next level pass (fix_title_regressions) would take it back ('Machine Learning Engineer II'
-    # under a current 'Machine Learning Engineer'), or a step down would show ('AI Engineer' after 'Machine Learning
-    # Engineer III')
+    # then the newest first: a step stays only when no job after it has a lower level, of any role, and neither has
+    # the current job as the line under the name shows it (_title_core: 'AI Engineer' for 'AI Engineer (Team Lead)');
+    # else the next level pass (fix_title_regressions) would take it back ('Machine Learning Engineer II' under a
+    # current 'Machine Learning Engineer'), or the later title would read as a step down ('AI Engineer' after
+    # 'Machine Learning Engineer II')
+    shown = [_title_core(current.job_title)] if current is not None else []
     for index in range(len(stepped)):
-        later = [*stepped[:index], current.job_title] if current is not None else stepped[:index]
-        if stepped[index] != dated[index] and any(_steps_down(title, stepped[index]) for title in later):
+        if stepped[index] == dated[index]:
+            continue
+        later = [title for exp, title in zip(exps[:index], stepped) if exp is not current] + shown
+        level = title_level(stepped[index])[1]
+        if any(title_level(title)[1] < level for title in later):
             stepped[index] = dated[index]
     notes = []
     for exp, company, new, step in zip(exps, companies, dated, stepped):

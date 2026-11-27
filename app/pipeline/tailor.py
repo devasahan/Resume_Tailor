@@ -202,14 +202,23 @@ def reviewer_warnings(resume: Resume, style: FitStyle | None = None, analysis: J
     return warnings
 
 
-def first_draft_notes(notes: list[str], draft: Resume, fixed: Resume) -> list[str]:
+def first_draft_notes(notes: list[str], draft: Resume, fixed: Resume,
+                      written: dict[int, str] | None = None) -> list[str]:
     """The first draft's notes that stay after the rewrite pass: one about a corrected job title, the headline or the
     summary, while that text stays as it was, and one about a job's bullets put in its tense while the rewrite changed
-    none of that job's bullets (build() then finds nothing more to change there, so it is never noted twice). Other
-    notes about bullets (a closing teamwork clause) go, as the rewrite may have replaced those bullets: build() notes
-    what it changes in the fixed draft."""
+    none of that job's bullets (build() then finds nothing more to change there, so it is never noted twice). A job
+    title stays as it was only when the revision wrote no other one (`written`: each job's title as the revision left
+    it, before build(), by company_index): one it wrote anew that build() brings back to the same title has build()'s
+    own notes, which say where it came from ('AI Engineer II' to 'Machine Learning Engineer II', never also the first
+    draft's 'AI Engineer' to 'Machine Learning Engineer'). Other notes about bullets (a closing teamwork clause) go, as
+    the rewrite may have replaced those bullets: build() notes what it changes in the fixed draft."""
     pairs = [(draft.profile.companies[a.company_index].name, a, b) for a, b in zip(draft.experience, fixed.experience)]
-    titles = {name for name, a, b in pairs if a.job_title == b.job_title}
+
+    def left_as_shown(exp) -> bool:  # the revision left its title as shown, or wrote it the same as build() reads it
+        title = validate.clean_text((written or {}).get(exp.company_index, exp.job_title))
+        return spelling.us_text(title) == spelling.us_text(exp.job_title)
+
+    titles = {name for name, a, b in pairs if a.job_title == b.job_title and left_as_shown(a)}
     # by name, so a job is kept only while every job of that name kept its bullets
     tensed = {name for name, _a, _b in pairs} - {name for name, a, b in pairs if a.bullets != b.bullets}
     fields = {field.title() for field in ("headline", "summary") if getattr(fixed, field) == getattr(draft, field)}
@@ -832,8 +841,10 @@ async def run_tailor(
 
             def revised(data: dict):
                 """The fixed draft, with the first draft's notes that are still true of it (first_draft_notes)."""
-                out, fixed, notes = build(validate.apply_revision(output, resume, TailorRevision.model_validate(data)))
-                return out, fixed, first_draft_notes(first_notes, resume, fixed) + notes
+                applied = validate.apply_revision(output, resume, TailorRevision.model_validate(data))
+                written = {exp.company_index: exp.job_title for exp in applied.sections.experience}  # before build()
+                out, fixed, notes = build(applied)
+                return out, fixed, first_draft_notes(first_notes, resume, fixed, written) + notes
 
             return Ask(
                 required=bool(named),  # a certification claim is removed even past the time limit
