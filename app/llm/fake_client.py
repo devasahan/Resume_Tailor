@@ -12,7 +12,7 @@ names none). Its common title takes the usual noun of the posting's field (v40: 
 Developer" post, whose titles then climb to "Senior AI Engineer"), while the analysis keeps the posting's own title for
 the cover letter and History. Its middle jobs fit their work and each older title is one of its time (v42): a senior AI
 post's five jobs read Junior Software Engineer, Software Engineer, Data Engineer, AI Engineer, Senior AI Engineer, and a
-job that ended before 2023 is a "Machine Learning Engineer", never an "AI Engineer".
+job that ended before 2023 is a "Machine Learning Engineer", not an "AI Engineer", unless its notes name that title.
 
 Styles:  concise | detailed (too many long bullets, includes one invented number so the check can flag it)
          flaky (returns invalid JSON until the retry feedback appears in the prompt)
@@ -299,13 +299,17 @@ def _title_ladder(prefix: str, base: str, count: int, current: int = 0) -> list[
     the field one step lower: 'Associate Data Engineer'), then titles nearer the general one, one field word fewer at a
     time while what is left still names a field (FIELD_WORDS: 'Platform Engineer', never 'Learning Engineer'), then
     plain titles ('Software Engineer', 'Junior Software Engineer'; 'Associate Software Engineer' only when the career
-    needs one more step). A senior post in AI's field alone ('Senior AI Engineer', 'Senior Machine Learning Engineer':
-    no nearer title) steps through 'Data Engineer' (data pipelines, the work before models in production) before the
-    plain titles, when the career has room for that step and a junior one (five jobs: Senior AI Engineer, AI Engineer,
-    Data Engineer, Software Engineer, Junior Software Engineer). A longer career keeps the oldest title. The posting's
-    title is the current job's (`current`: the one marked 'Present', else the most recent), and a job listed above it,
-    which ended later, keeps it too. These are the titles of today: _tailor gives each other job the one of its time
-    (dated_title: 'Machine Learning Engineer' for 'AI Engineer' at a job that ended before 2023)."""
+    needs one more step). For a senior post, a nearer title is no step of its own when it had the same title of its time
+    as the posting's title ('AI Engineer' under 'Generative AI Engineer', 'ML Engineer' under 'AI & ML Engineer': each
+    is 'Machine Learning Engineer' at a job that ended before 2023, so two jobs in a row would read the same). A senior
+    post whose title of its time is in AI's field alone ('Senior AI Engineer', 'Senior Machine Learning Engineer',
+    'Senior Generative AI Engineer': no nearer title) steps through 'Data Engineer' (data pipelines, the work before
+    models in production) before the plain titles, when the career has room for that step and a junior one (five jobs:
+    Senior AI Engineer, AI Engineer, Data Engineer, Software Engineer, Junior Software Engineer). A longer career keeps
+    the oldest title. The posting's title is the current job's (`current`: the one marked 'Present', else the most
+    recent), and a job listed above it, which ended later, keeps it too. These are the titles of today: _tailor gives
+    each other job the one of its time (dated_title: 'Machine Learning Engineer' for 'AI Engineer' at a job that ended
+    before 2023), unless that job's notes name its title ('joined as an AI Engineer')."""
     from ..pipeline import validate  # late, as in fits_era
 
     level, _, rest = base.partition(" ")
@@ -317,13 +321,17 @@ def _title_ladder(prefix: str, base: str, count: int, current: int = 0) -> list[
     senior = prefix == "Senior" or prefix in ABOVE_SENIOR
     nearer = [" ".join(field[k:] + [noun]) for k in range(1, len(field))
               if field[k][:1].isalnum() and set(languages.title_words(" ".join(field[k:]))) <= FIELD_WORDS]
+    if senior:  # the posting's title without its level is a step too: a nearer title of the same time adds none
+        then = languages.title_words(validate.earlier_title(base))  # ('Machine Learning' and 'ML' read the same)
+        nearer = [title for title in nearer if languages.title_words(validate.earlier_title(title)) != then]
     ladder = [f"{prefix} {base}".strip()] + ([f"Senior {base}"] if prefix in ABOVE_SENIOR else [])
     if senior:
         ladder.append(base)
     elif field and base != plain and not nearer and field[0] not in LEVEL_WORDS:  # the field's title one step
         ladder.append(f"Associate {base}")  # lower ('Associate Data Engineer'), never 'Associate Associate ...'
     ladder = list(dict.fromkeys(ladder + nearer + ([plain] if senior else [])))
-    if (senior and noun == "Engineer" and not nearer and validate._field_words(base) == {"ai"}
+    if (senior and noun == "Engineer" and not nearer
+            and validate._field_words(validate.earlier_title(base)) == {"ai"}
             and count - current >= len(ladder) + 2):  # room for the Data step and a junior title
         ladder.insert(len(ladder) - 1, "Data Engineer")  # before the plain title
     lowest = ([f"Associate {plain}"] if count - current > len(ladder) + 1 else []) + [f"Junior {plain}"]
@@ -416,6 +424,8 @@ class FakeClient(LLMClient):
         }
 
     def _tailor(self, ctx: dict) -> dict:
+        from ..pipeline import validate  # late, as in fits_era
+
         jd = ctx.get("jd", "")
         companies = ctx.get("profile", {}).get("companies", [])
         keywords = extract_keywords(jd)
@@ -470,9 +480,12 @@ class FakeClient(LLMClient):
                                                count1=CURRENT_COUNTS[0] if estimate else "the",
                                                count2=CURRENT_COUNTS[1] if estimate else "most"))
             # each job but the current one has the title of its time (v42: 'Machine Learning Engineer' for 'AI
-            # Engineer' at a job that ended before 2023), as the prompt asks; the headline and the summary keep
-            # titles[0], the current job's title
+            # Engineer' at a job that ended before 2023), unless that job's notes name its title ('joined as an AI
+            # Engineer'), as the prompt asks; the headline and the summary keep titles[0], the current job's title
             title = titles[index] if index == current else dated_title(titles[index], end)
+            own = str(company.get("projects", "")) if title != titles[index] else ""  # read only for a dated title
+            if own and validate._notes_name_role(clean_notes(own), titles[index]):
+                title = titles[index]  # the title the person's notes name
             experience.append({"company_index": index, "job_title": title, "bullets": bullets})
 
         summary = (  # 2-3 sentences: the most recent title, the experience, the current focus, one result

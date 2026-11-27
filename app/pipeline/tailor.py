@@ -549,11 +549,12 @@ async def run_tailor(
 
         def build(out: TailorOutput):
             """(output, resume, notes). The analysis keeps keywords only, titles that step down are corrected, an older
-            job's title is one of its time (era_title_fixes: 'Machine Learning Engineer', never 'AI Engineer', at a job
-            that ended before 2023), the headline and the summary's first words are the current job's title
-            (same_title: one title in three places), and figures and their bases are written in varied shapes (a base
-            in brackets at most once), on every draft, for free. Last, every word follows the spelling style (after the
-            title fixes, which match the posting's own spelling), the same way in the three places."""
+            job's title is one of its time (era_title_fixes: 'Machine Learning Engineer', not 'AI Engineer', at a job
+            that ended before 2023, unless the person's notes for it name that title), the headline and the summary's
+            first words are the current job's title (same_title: one title in three places), and figures and their
+            bases are written in varied shapes (a base in brackets at most once), on every draft, for free. Last, every
+            word follows the spelling style (after the title fixes, which match the posting's own spelling), the same
+            way in the three places."""
             validate.clean_analysis(out.jd_analysis, certification_names(out))
             resume = validate.build_resume(profile, out)
             if certifications_on:  # off: nothing is printed, whatever the model picked
@@ -564,9 +565,10 @@ async def run_tailor(
             validate.short_role_headline(resume)  # kept only by a resume with no job: same_title below
             validate.general_role_fixes(resume, out.jd_analysis)  # 'Voice AI Engineer', 'AI Developer' -> 'AI Engineer'
             # the level fix first, so an older 'Senior AI Engineer' under a current 'AI Engineer' is compared as the
-            # same role; then the titles of their time ('AI Engineer' ending in 2022 -> 'Machine Learning Engineer'),
-            # and the level fix again for a renamed title that now meets the same role at a higher level ('Machine
-            # Learning Engineer' after 'Machine Learning Engineer II'): it changes nothing when no title was renamed
+            # same role; then the titles of their time ('AI Engineer' ending in 2022 -> 'Machine Learning Engineer', or
+            # 'Machine Learning Engineer II' after a 'Machine Learning Engineer' job and a stay of 2+ years), and the
+            # level fix again for a renamed title that now meets the same role at a higher level ('Machine Learning
+            # Engineer' after 'Machine Learning Engineer II'): it changes nothing when no title was renamed
             notes = validate.fix_title_regressions(resume)
             notes += validate.era_title_fixes(resume)
             notes += validate.fix_title_regressions(resume)
